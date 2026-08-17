@@ -43,6 +43,12 @@ done
   missing = expected - Account.where(name: expected).pluck(:name)
   abort("Missing account boundaries: #{missing.join(", ")}") if missing.any?
 '
+"${compose[@]}" exec -T rails bundle exec rails runner '
+  require "/bootstrap/lib/branding"
+  actual = GlobalConfig.get(*Myinvest::Branding::CONFIG.keys)
+  mismatched = Myinvest::Branding::CONFIG.keys.reject { |name| actual[name] == Myinvest::Branding::CONFIG.fetch(name) }
+  abort("Mismatched global branding configuration: #{mismatched.join(", ")}") if mismatched.any?
+'
 
 "${compose[@]}" exec -T rails ruby -rsocket -e \
   "Socket.getaddrinfo('example.com', 443, Socket::AF_UNSPEC, Socket::SOCK_STREAM)"

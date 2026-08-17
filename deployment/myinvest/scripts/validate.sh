@@ -322,18 +322,25 @@ IMAGES
     printf 'Brand assets mount must be read-only.\n' >&2
     exit 1
   }
+  for service in rails sidekiq; do
+    premium_config_source="$(jq -r --arg service "$service" \
+      '.services[$service].volumes[] | select(.target == "/app/enterprise/config/premium_installation_config.yml") | .source' \
+      <<<"$rendered")"
+    [[ "$premium_config_source" == "$deployment_dir/chatwoot-config/premium_installation_config.yml" ]] || {
+      printf 'Premium branding configuration is not mounted into %s.\n' "$service" >&2
+      exit 1
+    }
+    jq -e --arg service "$service" \
+      '.services[$service].volumes[] | select(.target == "/app/enterprise/config/premium_installation_config.yml") | .read_only == true' \
+      <<<"$rendered" >/dev/null || {
+      printf 'Premium branding configuration mount must be read-only in %s.\n' "$service" >&2
+      exit 1
+    }
+  done
 fi
 
-for ingress_mode in direct cloudflare_tunnel; do
-  docker run --rm \
-    -e CADDY_SITE_ADDRESS=localhost \
-    -e CADDY_SITE_SCHEME=http \
-    -e "INGRESS_MODE=$ingress_mode" \
-    -e ACME_EMAIL=ops@example.invalid \
-    -v "$deployment_dir/Caddyfile:/etc/caddy/Caddyfile:ro" \
-    caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d \
-    caddy validate --config /etc/caddy/Caddyfile >/dev/null
-done
+"$deployment_dir/spec/branding_proxy_spec.sh"
+"$deployment_dir/spec/branding_edge_spec.sh"
 
 for helper in "$deployment_dir/scripts/backup.sh" "$deployment_dir/scripts/restore.sh"; do
   grep -q 'alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d' "$helper" || {
