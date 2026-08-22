@@ -51,7 +51,7 @@ describe('MessageProcessor', () => {
   it('uses only the configured tenant and hands off unsafe or unsupported questions', async () => {
     const supported = setup()
     await supported.processor.process({ tenant: tenants[1]!, payload: incomingPayload({ account: { id: 202 } }) })
-    expect(supported.search).toHaveBeenCalledWith('new_academy', expect.any(String), 4)
+    expect(supported.search).toHaveBeenCalledWith('new_academy', expect.any(String), 4, 0.1)
     expect(supported.answer).toHaveBeenCalledWith(expect.objectContaining({ tenantKey: 'new_academy' }))
     expect(supported.sendMessage).toHaveBeenCalledOnce()
 

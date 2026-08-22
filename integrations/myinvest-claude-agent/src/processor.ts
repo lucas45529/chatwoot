@@ -74,6 +74,7 @@ export class MessageProcessor {
         tenant.key,
         question,
         this.dependencies.maxSources,
+        this.dependencies.minRetrievalScore,
       )
       if (!sources[0] || sources[0].score < this.dependencies.minRetrievalScore) {
         // Frage mitschreiben (gekuerzt): die Retrieval-Miss-Reports bauen daraus
