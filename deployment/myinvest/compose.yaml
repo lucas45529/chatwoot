@@ -248,6 +248,11 @@ services:
       LOCAL_LLM_ALLOWED_HOSTS: ${LOCAL_LLM_ALLOWED_HOSTS:-}
       LOCAL_LLM_API_KEY: ${LOCAL_LLM_API_KEY:-}
       LOCAL_LLM_TIMEOUT_MS: ${LOCAL_LLM_TIMEOUT_MS:-30000}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.7-flash}
+      GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}
+      GEMINI_THINKING_EFFORT: ${GEMINI_THINKING_EFFORT:-high}
+      GEMINI_TIMEOUT_MS: ${GEMINI_TIMEOUT_MS:-30000}
     command: ["sh", "-ec", "node dist/migrate.js && exec node dist/server.js"]
     expose:
       - "8080"

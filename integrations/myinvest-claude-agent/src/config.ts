@@ -78,7 +78,7 @@ const envSchema = z.object({
   MAX_BODY_BYTES: z.coerce.number().int().min(1024).max(1048576).default(262144),
   KNOWLEDGE_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.05),
   KNOWLEDGE_MAX_SOURCES: z.coerce.number().int().min(1).max(10).default(4),
-  ANTHROPIC_PROVIDER: z.enum(['direct', 'bedrock', 'local']).default('direct'),
+  ANTHROPIC_PROVIDER: z.enum(['direct', 'bedrock', 'local', 'gemini']).default('direct'),
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-5'),
   AWS_REGION: z.string().default('eu-central-1'),
@@ -88,6 +88,12 @@ const envSchema = z.object({
   LOCAL_LLM_ALLOWED_HOSTS: emptyStringAsUndefined(z.string().min(1).max(2_048)),
   LOCAL_LLM_API_KEY: emptyStringAsUndefined(z.string().min(8)),
   LOCAL_LLM_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
+  GEMINI_API_KEY: emptyStringAsUndefined(z.string().min(8)),
+  GEMINI_MODEL: z.string().default('gemini-3.7-flash'),
+  GEMINI_BASE_URL: z.string().url().max(2_048)
+    .default('https://generativelanguage.googleapis.com/v1beta/openai'),
+  GEMINI_THINKING_EFFORT: z.enum(['low', 'medium', 'high']).default('high'),
+  GEMINI_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
 })
 
 export type AppConfig = ReturnType<typeof loadConfig>
@@ -139,6 +145,20 @@ export function validateLocalLlmBaseUrl(value: string, allowlistInput: string): 
   return `${url.protocol}//${url.host}/v1`
 }
 
+export function validateGeminiBaseUrl(value: string): string {
+  const url = new URL(value)
+  if (url.protocol !== 'https:') throw new Error('Gemini base URL must use HTTPS')
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('Gemini base URL must not contain credentials, query, or fragment')
+  }
+  if (normalizedHost(url.hostname) !== 'generativelanguage.googleapis.com') {
+    throw new Error('Gemini base URL host must be generativelanguage.googleapis.com')
+  }
+  const path = url.pathname.replace(/\/+$/, '')
+  if (path !== '/v1beta/openai') throw new Error('Gemini base URL must end in /v1beta/openai')
+  return `${url.protocol}//${url.host}/v1beta/openai`
+}
+
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const env = envSchema.parse(environment)
   if (env.LOCAL_FAKE_CLAUDE_ANSWER && !env.LOCAL_SMOKE) {
@@ -161,9 +181,17 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       env.LOCAL_LLM_ALLOWED_HOSTS,
     )
   }
+  let geminiBaseUrl = env.GEMINI_BASE_URL
+  if (env.ANTHROPIC_PROVIDER === 'gemini') {
+    if (!env.GEMINI_API_KEY) {
+      throw new Error('GEMINI_API_KEY is required for ANTHROPIC_PROVIDER=gemini')
+    }
+    geminiBaseUrl = validateGeminiBaseUrl(env.GEMINI_BASE_URL)
+  }
   return {
     ...env,
     LOCAL_LLM_BASE_URL: localLlmBaseUrl,
+    GEMINI_BASE_URL: geminiBaseUrl,
     tenants: buildTenantRegistry(parseTenantConfig(env.TENANTS_JSON)),
   }
 }
