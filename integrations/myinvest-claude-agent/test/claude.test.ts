@@ -44,6 +44,22 @@ describe('ClaudeClient', () => {
       unsafe.client.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] }),
     ).rejects.toThrow()
   })
+
+  it('applies the curated persona and keeps the JSON contract', async () => {
+    const valid = client({
+      action: 'answer',
+      answer: 'Unter Einstellungen.',
+      confidence: 0.9,
+      source_ids: ['approved-1'],
+    })
+    await valid.client.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] })
+    const system = valid.create.mock.calls[0]![0].system as string
+    expect(system).toContain('MyInvest Pro SaaS')
+    expect(system).toContain('MyInvest24 Kapitalanlagen-Assistent')
+    expect(system).toContain('WhatsApp')
+    expect(system).toContain('Widerruf oder Rückerstattung')
+    expect(system).toContain('Antworte nur als JSON: {"action":"answer|handoff"')
+  })
 })
 
 describe('OpenAICompatibleLocalClient', () => {
