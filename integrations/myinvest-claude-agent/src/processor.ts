@@ -76,7 +76,13 @@ export class MessageProcessor {
         this.dependencies.maxSources,
       )
       if (!sources[0] || sources[0].score < this.dependencies.minRetrievalScore) {
-        await handoff('retrieval_miss', `top_score=${sources[0]?.score ?? 'none'}`)
+        // Frage mitschreiben (gekuerzt): die Retrieval-Miss-Reports bauen daraus
+        // die Liste fehlender Wissensartikel.
+        const excerpt = question.slice(0, 120).replace(/\s+/g, ' ')
+        await handoff(
+          'retrieval_miss',
+          `top_score=${sources[0]?.score ?? 'none'} question=${JSON.stringify(excerpt)}`,
+        )
         return
       }
       const answer = await this.dependencies.claude.answer({
