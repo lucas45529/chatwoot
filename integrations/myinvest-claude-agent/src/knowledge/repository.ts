@@ -41,8 +41,14 @@ const STRICT_QUERY = `WITH input AS (
        )${SEARCH_BODY}`
 
 // Fallback bei null Treffern: OR-Verknuepfung der Lexeme, das Ranking sortiert.
+// Die Frage wird zusaetzlich ae/oe/ue/ss-normalisiert angehaengt, damit beide
+// Schreibweisen gegen den ebenfalls normalisierten Suchvektor (Migration 005)
+// matchen — sonst verfehlt z.B. "Förderung" das Dokument "KfW-Foerderung".
 const RELAXED_QUERY = `WITH input AS (
-         SELECT replace(plainto_tsquery('german', $2)::text, ' & ', ' | ')::tsquery AS query
+         SELECT replace(plainto_tsquery('german',
+                  $2 || ' ' || replace(replace(replace(replace(lower($2),
+                    'ä', 'ae'), 'ö', 'oe'), 'ü', 'ue'), 'ß', 'ss')
+                )::text, ' & ', ' | ')::tsquery AS query
        )${SEARCH_BODY}`
 
 export class PostgresKnowledgeRepository implements KnowledgeRepository {

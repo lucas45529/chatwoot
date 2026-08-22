@@ -140,6 +140,8 @@ The `claude-agent` service builds from `../../integrations/myinvest-claude-agent
 
 Keep the knowledge sources scoped by account/tenant in the agent. Retrieved content must never cross the three account boundaries.
 
+Retrieval quality is guarded by two loops: `docker exec myinvest-chatwoot-claude-agent-1 node scripts/eval-retrieval.mjs` runs a fixed battery of typical customer questions and fails when any top hit falls below `KNOWLEDGE_MIN_SCORE` (run it after every knowledge or agent deploy), and `scripts/retrieval-miss-report.sh` (host cron, Mondays 07:12) writes the week's `retrieval_miss` questions to `~/retrieval-miss-reports/` — those are the next knowledge articles to write. The search first AND-matches (`websearch_to_tsquery`), then falls back to OR-matching with ae/oe/ue/ss transliteration on both sides (migration `005_umlaut_transliteration.sql`).
+
 ## Backups and restore
 
 `backup.sh` briefly pauses writers to create an application-consistent snapshot containing both databases, local Active Storage, Redis, the complete local MinIO volume, an exact S3 object-version manifest, encrypted recovery metadata, and checksums. In production it then invokes `offsite-backup.sh`: the whole snapshot is stream-encrypted with OpenPGP AEAD/OCB/AES-256, uploaded to `BACKUP_OFFSITE_REMOTE`, and read back from the remote for a ciphertext SHA-256 comparison. It refuses to run unless bucket versioning is enabled and every database-referenced object version exists:

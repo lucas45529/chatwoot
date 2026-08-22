@@ -15,6 +15,7 @@ COPY --from=build --chown=app:app /app/package.json /app/pnpm-lock.yaml ./
 COPY --from=build --chown=app:app /app/node_modules ./node_modules
 COPY --from=build --chown=app:app /app/dist ./dist
 COPY --chown=app:app migrations ./migrations
+COPY --chown=app:app scripts ./scripts
 USER app
 EXPOSE 8080
 CMD ["node", "dist/server.js"]

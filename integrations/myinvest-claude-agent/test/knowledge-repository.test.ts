@@ -29,6 +29,9 @@ describe('knowledge search', () => {
     expect(hits.map((hit) => hit.title)).toEqual(['KfW-Foerderung'])
     expect(query).toHaveBeenCalledTimes(2)
     expect(query.mock.calls[1]?.[0]).toContain('plainto_tsquery')
+    // Umlaut-Transliteration (ae/oe/ue/ss) gegen den normalisierten Suchvektor.
+    expect(query.mock.calls[1]?.[0]).toContain("'ä', 'ae'")
+    expect(query.mock.calls[1]?.[0]).toContain("'ß', 'ss'")
   })
 
   it('returns empty when both queries find nothing', async () => {
