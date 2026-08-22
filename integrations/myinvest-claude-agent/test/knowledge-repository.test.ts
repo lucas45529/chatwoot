@@ -43,4 +43,30 @@ describe('knowledge search', () => {
     expect(hits).toEqual([])
     expect(query).toHaveBeenCalledTimes(2)
   })
+
+  it('falls back to OR matching when strict hits stay below minScore', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [row('Steuerreport-Immobilien-Kapitalanlage', 0.001)] })
+      .mockResolvedValueOnce({ rows: [row('06_Sonder_AfA_7b', 1.0)] })
+    const repository = new PostgresKnowledgeRepository({ query })
+
+    const hits = await repository.search('new_academy', 'Was ist die Sonder-AfA nach §7b EStG?', 4, 0.05)
+
+    expect(hits.map((hit) => hit.title)).toEqual(['06_Sonder_AfA_7b'])
+    expect(query).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps weak strict hits when the relaxed fallback finds nothing', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [row('irgendwas', 0.01)] })
+      .mockResolvedValueOnce({ rows: [] })
+    const repository = new PostgresKnowledgeRepository({ query })
+
+    const hits = await repository.search('saas', 'etwas exotisches', 4, 0.05)
+
+    expect(hits.map((hit) => hit.title)).toEqual(['irgendwas'])
+    expect(query).toHaveBeenCalledTimes(2)
+  })
 })

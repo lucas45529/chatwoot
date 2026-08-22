@@ -20,7 +20,12 @@ interface KnowledgeRow extends Record<string, unknown> {
 }
 
 export interface KnowledgeRepository {
-  search(tenantKey: TenantKey, query: string, limit: number): Promise<KnowledgeHit[]>
+  search(
+    tenantKey: TenantKey,
+    query: string,
+    limit: number,
+    minScore?: number,
+  ): Promise<KnowledgeHit[]>
 }
 
 const SEARCH_BODY = `
@@ -54,12 +59,26 @@ const RELAXED_QUERY = `WITH input AS (
 export class PostgresKnowledgeRepository implements KnowledgeRepository {
   constructor(private readonly database: Queryable) {}
 
-  async search(tenantKey: TenantKey, query: string, limit: number): Promise<KnowledgeHit[]> {
+  async search(
+    tenantKey: TenantKey,
+    query: string,
+    limit: number,
+    minScore = 0,
+  ): Promise<KnowledgeHit[]> {
     const strict = await this.runQuery(STRICT_QUERY, tenantKey, query, limit)
-    if (strict.length > 0) {
+    if (strict[0] && strict[0].score >= minScore) {
       return strict
     }
-    return this.runQuery(RELAXED_QUERY, tenantKey, query, limit)
+    // Strikte Treffer unter der Schwelle sind faktisch ein Miss: dann zaehlt
+    // der OR-Fallback, sonst handoff't der Prozessor trotz passender Dokumente.
+    const relaxed = await this.runQuery(RELAXED_QUERY, tenantKey, query, limit)
+    if (relaxed.length === 0) {
+      return strict
+    }
+    if (strict.length > 0 && relaxed[0] && strict[0]!.score > relaxed[0].score) {
+      return strict
+    }
+    return relaxed
   }
 
   private async runQuery(

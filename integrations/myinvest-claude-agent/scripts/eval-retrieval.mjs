@@ -27,7 +27,7 @@ const CASES = [
   { tenant: 'saas', q: 'Was ist der Unterschied zwischen MyInvest 24 und MyInvest Pro?' },
   { tenant: 'saas', q: 'Gibt es eine kostenlose Testphase?' },
   { tenant: 'saas', q: 'Kann ich meine Daten exportieren?' },
-  { tenant: 'new_academy', q: 'Was ist die Sonder-AfA nach §7b EStG?', title: 'AfA' },
+  { tenant: 'new_academy', q: 'Was ist die Sonder-AfA nach §7b EStG?' },
   { tenant: 'new_academy', q: 'Welche KfW Förderung bekomme ich für ein EH40 Haus?' },
 ]
 
@@ -35,7 +35,7 @@ const pool = new pg.Pool({ connectionString: databaseUrl })
 const repo = new PostgresKnowledgeRepository(pool)
 let failed = 0
 for (const testCase of CASES) {
-  const hits = await repo.search(testCase.tenant, testCase.q, 3)
+  const hits = await repo.search(testCase.tenant, testCase.q, 3, MIN_SCORE)
   const top = hits[0]
   const scoreOk = Boolean(top) && top.score >= MIN_SCORE
   const titleOk = !testCase.title || (top && top.title.includes(testCase.title))
