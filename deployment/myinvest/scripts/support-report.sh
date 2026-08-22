@@ -17,7 +17,7 @@ mkdir -p "$OUT_DIR"
 OUT="$OUT_DIR/$(date +%G-W%V).txt"
 
 set -a; . ./.env; set +a
-AGENT_PSQL=(docker compose exec -T postgres psql -U "$CLAUDE_AGENT_DATABASE_USER" -d "$CLAUDE_AGENT_DATABASE_NAME" -t)
+AGENT_PSQL=(docker compose exec -T postgres psql "$CLAUDE_AGENT_DATABASE_URL" -t)
 CHATWOOT_PSQL=(docker compose exec -T postgres psql "$AGENT_LEARNING_CHATWOOT_DATABASE_URL" -t)
 LOGS=$(docker compose logs claude-agent --since 168h --no-log-prefix 2>/dev/null || true)
 
