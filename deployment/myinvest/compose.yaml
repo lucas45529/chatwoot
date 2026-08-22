@@ -253,6 +253,7 @@ services:
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}
       GEMINI_THINKING_EFFORT: ${GEMINI_THINKING_EFFORT:-high}
       GEMINI_TIMEOUT_MS: ${GEMINI_TIMEOUT_MS:-30000}
+      GEMINI_MAX_TOKENS: ${GEMINI_MAX_TOKENS:-4096}
     command: ["sh", "-ec", "node dist/migrate.js && exec node dist/server.js"]
     expose:
       - "8080"

@@ -174,8 +174,9 @@ describe('gemini provider', () => {
       stream: false,
       temperature: 0,
       reasoning_effort: 'medium',
+      max_tokens: 4_096,
+      response_format: { type: 'json_object' },
     })
     expect(body).not.toHaveProperty('think')
-    expect(body).not.toHaveProperty('response_format')
   })
 })

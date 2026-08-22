@@ -25,8 +25,9 @@ OpenAI-compatible endpoint pinned to `https://generativelanguage.googleapis.com/
 (`GEMINI_BASE_URL` must match exactly; other hosts, plain HTTP, credentials, and query/fragment
 parts are rejected). `GEMINI_MODEL` defaults to `gemini-3.7-flash`, and `GEMINI_THINKING_EFFORT`
 (`low`/`medium`/`high`, default `high`) is sent as `reasoning_effort`. `GEMINI_TIMEOUT_MS` bounds
-each request like the local provider. Gemini processing is US-based; review the processing region
-and DPA before production use.
+each request like the local provider. `GEMINI_MAX_TOKENS` (default 4096) must cover both thinking
+and answer tokens, because the endpoint counts thinking against `max_tokens`. Gemini processing is
+US-based; review the processing region and DPA before production use.
 
 ## Bootstrap
 

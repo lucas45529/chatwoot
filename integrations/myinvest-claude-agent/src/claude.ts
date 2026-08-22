@@ -204,7 +204,11 @@ export function createClaudeClient(config: AppConfig): ClaudePort {
       config.GEMINI_TIMEOUT_MS,
       config.GEMINI_API_KEY,
       fetch,
-      { reasoning_effort: config.GEMINI_THINKING_EFFORT },
+      {
+        reasoning_effort: config.GEMINI_THINKING_EFFORT,
+        max_tokens: config.GEMINI_MAX_TOKENS,
+        response_format: { type: 'json_object' },
+      },
     )
   }
   return new ClaudeClient(
