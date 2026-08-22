@@ -158,6 +158,32 @@ if [[ "$LOCAL_SMOKE" != true ]]; then
       printf 'LOCAL_LLM_TIMEOUT_MS must be between 1000 and 120000.\n' >&2
       exit 1
     fi
+  elif [[ "$ANTHROPIC_PROVIDER" == gemini ]]; then
+    [[ "$ALLOW_DIRECT_ANTHROPIC" == false ]] || {
+      printf 'Gemini provider must not enable direct Anthropic processing.\n' >&2
+      exit 1
+    }
+    [[ -n "${GEMINI_API_KEY:-}" ]] || {
+      printf 'Gemini requires GEMINI_API_KEY.\n' >&2
+      exit 1
+    }
+    [[ "${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}" == \
+       https://generativelanguage.googleapis.com/v1beta/openai ]] || {
+      printf 'Gemini provider must use the pinned Google OpenAI-compatible endpoint.\n' >&2
+      exit 1
+    }
+    case "${GEMINI_THINKING_EFFORT:-high}" in
+      low|medium|high) ;;
+      *)
+        printf 'GEMINI_THINKING_EFFORT must be low, medium, or high.\n' >&2
+        exit 1
+        ;;
+    esac
+    if [[ ! "${GEMINI_TIMEOUT_MS:-30000}" =~ ^[0-9]+$ ]] ||
+       (( ${GEMINI_TIMEOUT_MS:-30000} < 1000 || ${GEMINI_TIMEOUT_MS:-30000} > 120000 )); then
+      printf 'GEMINI_TIMEOUT_MS must be between 1000 and 120000.\n' >&2
+      exit 1
+    fi
   else
     printf 'Unsupported ANTHROPIC_PROVIDER: %s\n' "$ANTHROPIC_PROVIDER" >&2
     exit 1

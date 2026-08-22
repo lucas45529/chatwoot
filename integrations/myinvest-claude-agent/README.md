@@ -20,6 +20,14 @@ or internal hostnames are accepted; redirects, metadata/public targets, URL cred
 non-`/v1` paths are rejected. `LOCAL_LLM_API_KEY` is optional for a network-isolated endpoint.
 Requests are time-bounded and send `stream:false` plus `think:false` for deterministic Ollama JSON.
 
+For Google Gemini, use `ANTHROPIC_PROVIDER=gemini` with `GEMINI_API_KEY`. The client talks to the
+OpenAI-compatible endpoint pinned to `https://generativelanguage.googleapis.com/v1beta/openai`
+(`GEMINI_BASE_URL` must match exactly; other hosts, plain HTTP, credentials, and query/fragment
+parts are rejected). `GEMINI_MODEL` defaults to `gemini-3.7-flash`, and `GEMINI_THINKING_EFFORT`
+(`low`/`medium`/`high`, default `high`) is sent as `reasoning_effort`. `GEMINI_TIMEOUT_MS` bounds
+each request like the local provider. Gemini processing is US-based; review the processing region
+and DPA before production use.
+
 ## Bootstrap
 
 1. Use the deployment stack's `.env`; `bootstrap.sh` creates all three account mappings without printing credentials.

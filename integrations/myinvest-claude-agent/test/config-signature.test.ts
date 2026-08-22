@@ -4,6 +4,7 @@ import {
   buildTenantRegistry,
   loadConfig,
   parseTenantConfig,
+  validateGeminiBaseUrl,
   validateLocalLlmBaseUrl,
 } from '../src/config.js'
 import { verifyChatwootSignature } from '../src/webhook/signature.js'
@@ -87,6 +88,47 @@ describe('tenant configuration', () => {
       ['http://local-llm:8000/admin', 'local-llm'],
     ]) {
       expect(() => validateLocalLlmBaseUrl(url!, hosts!)).toThrow()
+    }
+  })
+
+  it('requires an API key for the gemini provider and pins the Google endpoint', () => {
+    const environment = {
+      DATABASE_URL: 'postgresql://example.invalid/agent',
+      REDIS_URL: 'redis://example.invalid/1',
+      CHATWOOT_BASE_URL: 'https://support.example.invalid',
+      TENANTS_JSON: JSON.stringify(tenants),
+      ANTHROPIC_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'gemini-test-key',
+    }
+    const config = loadConfig(environment)
+    expect(config.GEMINI_BASE_URL).toBe('https://generativelanguage.googleapis.com/v1beta/openai')
+    expect(config.GEMINI_MODEL).toBe('gemini-3.7-flash')
+    expect(config.GEMINI_THINKING_EFFORT).toBe('high')
+    expect(config.GEMINI_TIMEOUT_MS).toBe(30_000)
+    expect(
+      loadConfig({
+        ...environment,
+        GEMINI_BASE_URL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+      }).GEMINI_BASE_URL,
+    ).toBe('https://generativelanguage.googleapis.com/v1beta/openai')
+    expect(() => loadConfig({ ...environment, GEMINI_API_KEY: '' })).toThrow(/GEMINI_API_KEY/)
+    expect(() => loadConfig({ ...environment, GEMINI_API_KEY: undefined })).toThrow(/GEMINI_API_KEY/)
+  })
+
+  it('accepts only the exact Google host and /v1beta/openai path for Gemini', () => {
+    expect(validateGeminiBaseUrl('https://generativelanguage.googleapis.com/v1beta/openai'))
+      .toBe('https://generativelanguage.googleapis.com/v1beta/openai')
+
+    for (const url of [
+      'http://generativelanguage.googleapis.com/v1beta/openai',
+      'https://example.com/v1beta/openai',
+      'https://generativelanguage.googleapis.com.evil.example/v1beta/openai',
+      'https://user:password@generativelanguage.googleapis.com/v1beta/openai',
+      'https://generativelanguage.googleapis.com/v1beta/openai?key=x',
+      'https://generativelanguage.googleapis.com/v1beta/openai#fragment',
+      'https://generativelanguage.googleapis.com/v1',
+    ]) {
+      expect(() => validateGeminiBaseUrl(url)).toThrow()
     }
   })
 })

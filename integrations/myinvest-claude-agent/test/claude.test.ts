@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ClaudeClient, OpenAICompatibleLocalClient } from '../src/claude.js'
+import { ClaudeClient, createClaudeClient, OpenAICompatibleLocalClient } from '../src/claude.js'
+import { loadConfig } from '../src/config.js'
+import { tenants } from './fixtures.js'
 
 const source = {
   sourceId: 'approved-1',
@@ -41,6 +43,22 @@ describe('ClaudeClient', () => {
     await expect(
       unsafe.client.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] }),
     ).rejects.toThrow()
+  })
+
+  it('applies the curated persona and keeps the JSON contract', async () => {
+    const valid = client({
+      action: 'answer',
+      answer: 'Unter Einstellungen.',
+      confidence: 0.9,
+      source_ids: ['approved-1'],
+    })
+    await valid.client.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] })
+    const system = valid.create.mock.calls[0]![0].system as string
+    expect(system).toContain('MyInvest Pro SaaS')
+    expect(system).toContain('MyInvest24 Kapitalanlagen-Assistent')
+    expect(system).toContain('WhatsApp')
+    expect(system).toContain('Widerruf oder Rückerstattung')
+    expect(system).toContain('Antworte nur als JSON: {"action":"answer|handoff"')
   })
 })
 
@@ -116,5 +134,48 @@ describe('OpenAICompatibleLocalClient', () => {
     )
     await expect(stalled.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] }))
       .rejects.toThrow()
+  })
+})
+
+describe('gemini provider', () => {
+  it('sends model and reasoning effort without Ollama flags to the pinned Google endpoint', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({
+          action: 'answer', answer: 'Unter Einstellungen.', confidence: 0.9,
+          source_ids: ['approved-1'],
+        }) } }],
+      }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchImplementation)
+    try {
+      const config = loadConfig({
+        DATABASE_URL: 'postgresql://example.invalid/agent',
+        REDIS_URL: 'redis://example.invalid/1',
+        CHATWOOT_BASE_URL: 'https://support.example.invalid',
+        TENANTS_JSON: JSON.stringify(tenants),
+        ANTHROPIC_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'gemini-test-key',
+        GEMINI_THINKING_EFFORT: 'medium',
+      })
+      const client = createClaudeClient(config)
+      await expect(client.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] }))
+        .resolves.toEqual({ text: 'Unter Einstellungen.', sourceIds: ['approved-1'] })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    const [url, request] = fetchImplementation.mock.calls[0]!
+    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions')
+    expect(request.redirect).toBe('error')
+    expect(request.headers.authorization).toBe('Bearer gemini-test-key')
+    const body = JSON.parse(request.body as string)
+    expect(body).toMatchObject({
+      model: 'gemini-3.7-flash',
+      stream: false,
+      temperature: 0,
+      reasoning_effort: 'medium',
+    })
+    expect(body).not.toHaveProperty('think')
+    expect(body).not.toHaveProperty('response_format')
   })
 })
