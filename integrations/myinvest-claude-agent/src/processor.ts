@@ -44,7 +44,20 @@ export class MessageProcessor {
       return
     }
 
-    const handoff = async () => {
+    const logHandoff = (reason: string, detail?: string) => {
+      console.log(
+        JSON.stringify({
+          event: 'agent_handoff',
+          reason,
+          tenant: tenant.key,
+          conversationId,
+          ...(detail ? { detail } : {}),
+        }),
+      )
+    }
+
+    const handoff = async (reason: string, detail?: string) => {
+      logHandoff(reason, detail)
       await this.dependencies.chatwoot.handoff(tenant, conversationId)
       await this.dependencies.state.markHandedOff(tenant.key, conversationId)
       await this.dependencies.state.completeDelivery(tenant.key, payload.id, 'handed_off')
@@ -52,7 +65,7 @@ export class MessageProcessor {
 
     const question = payload.content.trim()
     if (!question || explicitHuman.test(question) || sensitiveAdvice.test(question)) {
-      await handoff()
+      await handoff('guard_rule')
       return
     }
 
@@ -63,7 +76,7 @@ export class MessageProcessor {
         this.dependencies.maxSources,
       )
       if (!sources[0] || sources[0].score < this.dependencies.minRetrievalScore) {
-        await handoff()
+        await handoff('retrieval_miss', `top_score=${sources[0]?.score ?? 'none'}`)
         return
       }
       const answer = await this.dependencies.claude.answer({
@@ -84,8 +97,16 @@ export class MessageProcessor {
         payload.id,
       )
       await this.dependencies.state.completeDelivery(tenant.key, payload.id, 'replied')
-    } catch {
-      await handoff()
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: 'agent_answer_failed',
+          tenant: tenant.key,
+          conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+      await handoff('answer_error')
     }
   }
 }
