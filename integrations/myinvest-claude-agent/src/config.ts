@@ -94,6 +94,7 @@ const envSchema = z.object({
     .default('https://generativelanguage.googleapis.com/v1beta/openai'),
   GEMINI_THINKING_EFFORT: z.enum(['low', 'medium', 'high']).default('high'),
   GEMINI_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
+  GEMINI_MAX_TOKENS: z.coerce.number().int().min(256).max(16_384).default(4_096),
 })
 
 export type AppConfig = ReturnType<typeof loadConfig>

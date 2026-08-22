@@ -184,6 +184,11 @@ if [[ "$LOCAL_SMOKE" != true ]]; then
       printf 'GEMINI_TIMEOUT_MS must be between 1000 and 120000.\n' >&2
       exit 1
     fi
+    if [[ ! "${GEMINI_MAX_TOKENS:-4096}" =~ ^[0-9]+$ ]] ||
+       (( ${GEMINI_MAX_TOKENS:-4096} < 256 || ${GEMINI_MAX_TOKENS:-4096} > 16384 )); then
+      printf 'GEMINI_MAX_TOKENS must be between 256 and 16384.\n' >&2
+      exit 1
+    fi
   else
     printf 'Unsupported ANTHROPIC_PROVIDER: %s\n' "$ANTHROPIC_PROVIDER" >&2
     exit 1
