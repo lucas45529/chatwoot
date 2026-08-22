@@ -71,10 +71,12 @@ export interface CandidateExtraction {
   redactionVersion: number
 }
 
-const sensitiveTopic =
-  /\b(?:passwort|kennwort|otp|2fa|tan|kreditkarte|iban|konto(?:nummer)?|zahlung|abbuchung|lastschrift|refund|erstattung|anwalt|recht(?:lich|e|er)?|haftung|steuer(?:n|lich|beratung)?|rendite|anlageberatung|kaufempfehlung|verkaufsempfehlung|investmentberatung)\b/iu
-const likelySecret = /\b(?:sk|pk|api|access|secret|token)[-_][a-z0-9_-]{12,}\b/iu
-const directPersonalization = /\b(?:kundennummer|vertragsnummer|geburtsdatum|anschrift)\b/iu
+// Deckungsgleich mit der Guard-Liste des Prozessors: was live sowieso an
+// Menschen geht (Preis, Vertrag, Kuendigung, ...), soll der Loop nicht lernen.
+export const sensitiveTopic =
+  /\b(?:passwort|kennwort|otp|2fa|tan|kreditkarte|iban|konto(?:nummer)?|rechnung|bezahlen|zahlung|abbuchung|lastschrift|refund|erstattung|preis|kosten|anwalt|recht(?:lich|e|er)?|vertrag|klausel|haftung|widerruf|kündigung|steuer(?:n|lich|beratung)?|rendite|anlageberatung|kaufempfehlung|verkaufsempfehlung|investmentberatung)\b/iu
+export const likelySecret = /\b(?:sk|pk|api|access|secret|token)[-_][a-z0-9_-]{12,}\b/iu
+export const directPersonalization = /\b(?:kundennummer|vertragsnummer|geburtsdatum|anschrift)\b/iu
 
 const legacyRedactions: Array<[RegExp, string]> = [
   [/[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+/giu, '[E-MAIL]'],
@@ -128,7 +130,7 @@ function legacyRedactSupportText(input: string): { text: string; redactionCount:
   return redactWithRules(input, legacyRedactions)
 }
 
-function containsResidualPersonalData(value: string): boolean {
+export function containsResidualPersonalData(value: string): boolean {
   return (
     /@/u.test(value) ||
     /(?:\d[\s()./_+-]*){8,}/u.test(value) ||
