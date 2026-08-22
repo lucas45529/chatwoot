@@ -227,6 +227,8 @@ services:
       LOCAL_SMOKE: ${LOCAL_SMOKE:-false}
       LOCAL_FAKE_CLAUDE_ANSWER: ${LOCAL_FAKE_CLAUDE_ANSWER:-}
       DATABASE_URL: ${CLAUDE_AGENT_DATABASE_URL:?CLAUDE_AGENT_DATABASE_URL is required}
+      # Read-only Zugang auf die Chatwoot-DB fuer den Lern-Miner (learning:mine).
+      CHATWOOT_DATABASE_URL: ${AGENT_LEARNING_CHATWOOT_DATABASE_URL:-}
       REDIS_URL: ${CLAUDE_AGENT_REDIS_URL:?CLAUDE_AGENT_REDIS_URL is required}
       CHATWOOT_BASE_URL: http://rails:3000
       TENANTS_JSON: ${TENANTS_JSON:?TENANTS_JSON is required}

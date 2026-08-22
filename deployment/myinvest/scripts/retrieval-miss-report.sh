@@ -32,6 +32,13 @@ LOGS=$(docker compose logs claude-agent --since 168h --no-log-prefix 2>/dev/null
   echo
   echo "== Antwortfehler =="
   printf '%s\n' "$LOGS" | grep '"event":"agent_answer_failed"' || echo "(keine)"
+  echo
+  echo "== Lern-Kandidaten (Review-Warteschlange) =="
+  set -a; . ./.env; set +a
+  docker compose exec -T postgres psql -U "$CLAUDE_AGENT_DATABASE_USER" -d "$CLAUDE_AGENT_DATABASE_NAME" -t -c \
+    "SELECT status, count(*) FROM agent_knowledge_candidates WHERE status IN ('quarantined','pending_review') GROUP BY 1;
+     SELECT '#' || id || ' [' || status || '] ' || left(question_redacted, 100) FROM agent_knowledge_candidates WHERE status IN ('quarantined','pending_review') ORDER BY id DESC LIMIT 10;" \
+    2>/dev/null || echo "(Agent-DB nicht erreichbar)"
 } > "$OUT"
 
 echo "Report: $OUT"
