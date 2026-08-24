@@ -23,7 +23,8 @@ describe('history candidate classification', () => {
     ).resolves.toEqual({ classified: 1, rejected: 0 })
 
     expect(query.mock.calls[0]![0]).toContain("status = 'quarantined'")
-    expect(query.mock.calls[0]![0]).toContain('target_tenant IS NULL')
+    expect(query.mock.calls[0]![0]).not.toContain('target_tenant IS NULL')
+    expect(query.mock.calls[1]![0]).toContain('target_tenant IS NULL')
     expect(query.mock.calls[1]![0]).toContain('history-tenant-classifier')
     expect(query.mock.calls[1]![1]).toEqual([
       'hubspot-whatsapp-myinvest24-20260816',

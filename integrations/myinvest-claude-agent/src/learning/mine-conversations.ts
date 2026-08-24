@@ -4,6 +4,7 @@ import {
   containsResidualPersonalData,
   directPersonalization,
   likelySecret,
+  likelyNamedGreeting,
   redactSupportText,
   nonReusableSupportText,
   sensitiveTopic,
@@ -62,6 +63,7 @@ function candidateFromLivePair(
     sensitiveTopic.test(combined) ||
     likelySecret.test(combined) ||
     directPersonalization.test(combined) ||
+    likelyNamedGreeting.test(combined) ||
     nonReusableSupportText.test(combined)
   ) {
     return null
@@ -117,6 +119,19 @@ export function extractLiveCandidates(input: {
     if (!conversation.handedOff) continue
     examinedConversations += 1
     const candidatesBeforeConversation = candidates.length
+    const redactedConversation = redactSupportText(
+      conversation.messages.map((message) => message.content).join(' '),
+    ).text
+    if (
+      sensitiveTopic.test(redactedConversation) ||
+      likelySecret.test(redactedConversation) ||
+      directPersonalization.test(redactedConversation) ||
+      likelyNamedGreeting.test(redactedConversation) ||
+      containsResidualPersonalData(redactedConversation)
+    ) {
+      rejectedConversations += 1
+      continue
+    }
     // Ein Paar entsteht aus allen Kundennachrichten bis zur naechsten Antwort
     // eines Menschen; Bot-, Automations- und Kampagnen-Nachrichten dazwischen
     // zaehlen weder als Frage noch als Antwort.

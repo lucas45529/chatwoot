@@ -158,6 +158,40 @@ describe('live conversation mining', () => {
     expect(extract([sourcedAnswer]).candidates).toHaveLength(1)
   })
 
+  it('rejects an entire conversation once any turn is sensitive or personally addressed', () => {
+    const result = extract([
+      conversation({
+        messages: [
+          message({
+            messageId: 21,
+            content:
+              'Ein fremder Finanzierer hat keinen Datenschutzlink und verlangt Unterlagen.',
+          }),
+          message({
+            messageId: 22,
+            messageType: 1,
+            senderType: 'User',
+            content: 'Guten Morgen Philipp, wir prüfen den Vorgang intern.',
+            createdAt: new Date(t0.getTime() + 60 * 1000),
+          }),
+          message({
+            messageId: 23,
+            content: 'Ist danach mit der Finanzierung alles in Ordnung?',
+            createdAt: new Date(t0.getTime() + 2 * 60 * 1000),
+          }),
+          message({
+            messageId: 24,
+            messageType: 1,
+            senderType: 'User',
+            content: 'Bitte prüfen Sie den aktuellen Stand direkt im Vorgang.',
+            createdAt: new Date(t0.getTime() + 3 * 60 * 1000),
+          }),
+        ],
+      }),
+    ])
+    expect(result.candidates).toHaveLength(0)
+  })
+
   it('learns every customer-to-human pair in one handed-off conversation', () => {
     const result = extract([
       conversation({

@@ -3,6 +3,7 @@ import {
   containsResidualPersonalData,
   directPersonalization,
   likelySecret,
+  likelyNamedGreeting,
   nonReusableSupportText,
   sensitiveTopic,
 } from './extractor.js'
@@ -37,7 +38,6 @@ export async function classifyHistoryCandidates(
          FROM agent_knowledge_candidates
         WHERE source_export_id = $1
           AND source_namespace = 'hubspot-conversations-v3'
-          AND target_tenant IS NULL
           AND status = 'quarantined'
         ORDER BY id`,
       [exportId],
@@ -47,6 +47,7 @@ export async function classifyHistoryCandidates(
       if (
         sensitiveTopic.test(combined) ||
         likelySecret.test(combined) ||
+        likelyNamedGreeting.test(combined) ||
         directPersonalization.test(combined) ||
         nonReusableSupportText.test(combined) ||
         containsResidualPersonalData(combined)
