@@ -23,7 +23,6 @@ describe('knowledge isolation', () => {
 
 function setup(
   hits: unknown[] = [{ sourceId: 'source-1', title: 'Onboarding', content: 'Kontoeinrichtung', metadata: {}, score: 0.4 }],
-  options: { handoffAssigneeId?: number } = { handoffAssigneeId: 9 },
 ) {
   const search = vi.fn().mockResolvedValue(hits)
   const answer = vi.fn().mockResolvedValue({
@@ -40,8 +39,9 @@ function setup(
     isHandedOff: vi.fn().mockResolvedValue(false),
     beginDelivery: vi.fn().mockResolvedValue({ status: 'processing', acquired: true }),
     markSending: vi.fn().mockResolvedValue(undefined),
-    completeDelivery: vi.fn().mockResolvedValue(undefined),
-    markHandedOff: vi.fn().mockResolvedValue(undefined),
+    completeReply: vi.fn().mockResolvedValue(undefined),
+    completeHandoff: vi.fn().mockResolvedValue(undefined),
+    failDelivery: vi.fn().mockResolvedValue(undefined),
   }
   const processor = new MessageProcessor({
     knowledge: { search },
@@ -50,9 +50,19 @@ function setup(
     state,
     minRetrievalScore: 0.1,
     maxSources: 4,
-    handoffAssigneeId: options.handoffAssigneeId,
   })
-  return { processor, search, answer, sendMessage, sendPrivateNote, setPriority, addLabels, assign, handoff, state }
+  return {
+    processor,
+    search,
+    answer,
+    sendMessage,
+    sendPrivateNote,
+    setPriority,
+    addLabels,
+    assign,
+    handoff,
+    state,
+  }
 }
 
 describe('MessageProcessor', () => {
@@ -73,6 +83,7 @@ describe('MessageProcessor', () => {
       await unsafe.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
       expect(unsafe.answer).not.toHaveBeenCalled()
       expect(unsafe.handoff).toHaveBeenCalledOnce()
+      expect(unsafe.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
     }
 
     const unsupported = setup([])
@@ -81,28 +92,21 @@ describe('MessageProcessor', () => {
     expect(unsupported.handoff).toHaveBeenCalledOnce()
   })
 
-  it('persists handoff and safely suppresses duplicate or ambiguous deliveries', async () => {
+  it('suppresses terminal and concurrently owned deliveries without side effects', async () => {
     const handedOff = setup()
     handedOff.state.isHandedOff.mockResolvedValueOnce(true)
     await handedOff.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
     expect(handedOff.answer).not.toHaveBeenCalled()
     expect(handedOff.sendMessage).not.toHaveBeenCalled()
 
-    const completed = setup()
-    completed.state.beginDelivery.mockResolvedValueOnce({ status: 'replied', acquired: false })
-    await completed.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
-    expect(completed.sendMessage).not.toHaveBeenCalled()
-    expect(completed.handoff).not.toHaveBeenCalled()
-
-    for (const status of ['processing', 'sending'] as const) {
-      const ambiguous = setup()
-      ambiguous.state.beginDelivery.mockResolvedValueOnce({ status, acquired: false })
-      await ambiguous.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
-      // Parallele Lieferung: keine zweite Kundennachricht, nur oeffnen.
-      expect(ambiguous.sendMessage).not.toHaveBeenCalled()
-      expect(ambiguous.setPriority).not.toHaveBeenCalled()
-      expect(ambiguous.handoff).toHaveBeenCalledOnce()
-      expect(ambiguous.state.completeDelivery).toHaveBeenCalledWith('saas', 55, 'handed_off')
+    for (const status of ['replied', 'handed_off', 'processing', 'sending'] as const) {
+      const duplicate = setup()
+      duplicate.state.beginDelivery.mockResolvedValueOnce({ status, acquired: false })
+      await duplicate.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+      expect(duplicate.sendMessage).not.toHaveBeenCalled()
+      expect(duplicate.setPriority).not.toHaveBeenCalled()
+      expect(duplicate.handoff).not.toHaveBeenCalled()
+      expect(duplicate.state.completeHandoff).not.toHaveBeenCalled()
     }
   })
 
@@ -113,13 +117,16 @@ describe('MessageProcessor', () => {
     ])
     selected.answer.mockResolvedValueOnce({ text: 'Antwort', sourceIds: ['source-2'] })
     await selected.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
-    expect(selected.sendMessage).toHaveBeenCalledWith(tenants[0], 77, 'Antwort', 55)
+    expect(selected.sendMessage).toHaveBeenCalledWith(tenants[0], 77, 'Antwort', 55, 'answer')
     expect(selected.sendPrivateNote).toHaveBeenCalledWith(
       tenants[0],
       77,
       expect.stringContaining('Quelle Zwei [source-2]'),
+      55,
+      'answer_sources',
     )
     expect(selected.sendPrivateNote.mock.calls[0]![2]).not.toContain('Quelle Eins')
+    expect(selected.state.completeReply).toHaveBeenCalledWith('saas', 55)
   })
 
   it('escalates a critical report with priority, labels, note, assignment and a visible reply', async () => {
@@ -135,40 +142,82 @@ describe('MessageProcessor', () => {
       tenants[0],
       77,
       expect.stringContaining('triage_sicherheit'),
+      55,
+      'handoff_note',
     )
-    expect(critical.assign).toHaveBeenCalledWith(tenants[0], 77, 9)
+    expect(critical.assign).toHaveBeenCalledWith(tenants[0], 77, tenants[0]!.handoffAssigneeId)
     expect(critical.handoff).toHaveBeenCalledOnce()
     expect(critical.sendMessage).toHaveBeenCalledWith(
       tenants[0],
       77,
       expect.stringContaining('als dringend markiert'),
       55,
+      'handoff_ack',
     )
-    expect(critical.state.markHandedOff).toHaveBeenCalledWith('saas', 77)
+    expect(critical.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
 
-  it('still answers the customer when escalation side steps fail', async () => {
+  it('attempts every escalation step but never records an incomplete handoff as terminal', async () => {
     const flaky = setup()
-    flaky.state.beginDelivery.mockResolvedValue({ status: 'processing', acquired: true })
-    flaky.setPriority.mockRejectedValueOnce(new Error('Chatwoot request toggle_priority returned 404'))
-    flaky.addLabels.mockRejectedValueOnce(new Error('Chatwoot request labels returned 403'))
-    flaky.handoff.mockRejectedValueOnce(new Error('Chatwoot request toggle_status returned 404'))
-    await flaky.processor.process({
+    flaky.setPriority.mockRejectedValueOnce(new Error('toggle_priority returned 404'))
+    flaky.addLabels.mockRejectedValueOnce(new Error('labels returned 403'))
+    flaky.handoff.mockRejectedValueOnce(new Error('toggle_status returned 404'))
+
+    await expect(
+      flaky.processor.process({
+        tenant: tenants[0]!,
+        payload: incomingPayload({ content: 'Ich will mit einem Menschen sprechen.' }),
+      }),
+    ).rejects.toThrow(/escalation is incomplete/i)
+
+    expect(flaky.sendPrivateNote).toHaveBeenCalledOnce()
+    expect(flaky.assign).toHaveBeenCalledOnce()
+    expect(flaky.sendMessage).toHaveBeenCalledOnce()
+    expect(flaky.state.completeHandoff).not.toHaveBeenCalled()
+  })
+
+  it('retries advisory side effects, then preserves a visible handoff on the final attempt', async () => {
+    const retry = setup()
+    retry.setPriority.mockRejectedValueOnce(new Error('toggle_priority returned 503'))
+    await expect(
+      retry.processor.process({
+        tenant: tenants[0]!,
+        payload: incomingPayload({ content: 'Ich will mit einem Menschen sprechen.' }),
+        isFinalAttempt: false,
+      }),
+    ).rejects.toThrow(/escalation is incomplete/i)
+    expect(retry.state.completeHandoff).not.toHaveBeenCalled()
+
+    const finalAttempt = setup()
+    finalAttempt.setPriority.mockRejectedValueOnce(new Error('toggle_priority returned 403'))
+    await finalAttempt.processor.process({
       tenant: tenants[0]!,
       payload: incomingPayload({ content: 'Ich will mit einem Menschen sprechen.' }),
+      isFinalAttempt: true,
     })
-    expect(flaky.sendMessage).toHaveBeenCalledOnce()
-    expect(flaky.state.completeDelivery).toHaveBeenCalledWith('saas', 55, 'handed_off')
+    expect(finalAttempt.sendPrivateNote).toHaveBeenCalledOnce()
+    expect(finalAttempt.sendMessage).toHaveBeenCalledOnce()
+    expect(finalAttempt.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
 
-  it('skips assignment when no assignee is configured', async () => {
-    const unassigned = setup(undefined, {})
-    await unassigned.processor.process({
-      tenant: tenants[0]!,
-      payload: incomingPayload({ content: 'Ich hätte gern einen Rückruf.' }),
-    })
-    expect(unassigned.assign).not.toHaveBeenCalled()
-    expect(unassigned.setPriority).toHaveBeenCalledWith(tenants[0], 77, 'medium')
-    expect(unassigned.sendMessage).toHaveBeenCalledOnce()
+  it('does not convert a delivered answer into a contradictory handoff when the ledger fails', async () => {
+    const ledgerFailure = setup()
+    ledgerFailure.state.completeReply.mockRejectedValueOnce(new Error('database unavailable'))
+
+    await expect(
+      ledgerFailure.processor.process({ tenant: tenants[0]!, payload: incomingPayload() }),
+    ).rejects.toThrow(/database unavailable/)
+
+    expect(ledgerFailure.sendMessage).toHaveBeenCalledTimes(1)
+    expect(ledgerFailure.sendMessage).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      'Du startest mit der Kontoeinrichtung.',
+      55,
+      'answer',
+    )
+    expect(ledgerFailure.setPriority).not.toHaveBeenCalled()
+    expect(ledgerFailure.handoff).not.toHaveBeenCalled()
+    expect(ledgerFailure.state.completeHandoff).not.toHaveBeenCalled()
   })
 })

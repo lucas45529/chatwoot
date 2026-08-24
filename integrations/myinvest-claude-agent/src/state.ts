@@ -23,15 +23,15 @@ export interface AgentState {
     tenantKey: TenantKey,
     messageId: number,
     conversationId: number,
-    eventCreatedAt: string,
   ): Promise<DeliveryClaim>
   markSending(tenantKey: TenantKey, messageId: number): Promise<void>
-  completeDelivery(
+  completeReply(tenantKey: TenantKey, messageId: number): Promise<void>
+  completeHandoff(
     tenantKey: TenantKey,
     messageId: number,
-    status: Extract<DeliveryStatus, 'replied' | 'handed_off'>,
+    conversationId: number,
   ): Promise<void>
-  markHandedOff(tenantKey: TenantKey, conversationId: number): Promise<void>
+  failDelivery(tenantKey: TenantKey, messageId: number): Promise<void>
 }
 
 export class PostgresAgentState implements AgentState {
@@ -48,11 +48,16 @@ export class PostgresAgentState implements AgentState {
     return result.rows[0]?.exists === true
   }
 
+  /**
+   * Claim je (tenant, message). Neu erworben wird nur eine freie Zeile, der
+   * Retry-Sentinel (negative conversation_id) oder ein Lease, dessen Besitzer
+   * seit fuenf Minuten nichts mehr geschrieben hat. Alles andere gehoert einem
+   * anderen Worker oder ist terminal.
+   */
   async beginDelivery(
     tenantKey: TenantKey,
     messageId: number,
     conversationId: number,
-    eventCreatedAt: string,
   ): Promise<DeliveryClaim> {
     const result = await this.database.query<{ status: DeliveryStatus; acquired: boolean }>(
       `WITH claimed AS (
@@ -63,7 +68,10 @@ export class PostgresAgentState implements AgentState {
                status = 'processing',
                updated_at = now()
          WHERE agent_delivery_ledger.conversation_id < 0
-           AND $4::timestamptz > agent_delivery_ledger.updated_at
+            OR (
+              agent_delivery_ledger.status IN ('processing', 'sending')
+              AND agent_delivery_ledger.updated_at < now() - interval '5 minutes'
+            )
          RETURNING status, true AS acquired
        )
        SELECT status, acquired FROM claimed
@@ -72,7 +80,7 @@ export class PostgresAgentState implements AgentState {
          FROM agent_delivery_ledger
         WHERE tenant_key = $1 AND message_id = $2
        LIMIT 1`,
-      [tenantKey, messageId, conversationId, eventCreatedAt],
+      [tenantKey, messageId, conversationId],
     )
     const claim = result.rows[0]
     if (!claim) throw new Error('Delivery ledger did not return a claim')
@@ -80,34 +88,66 @@ export class PostgresAgentState implements AgentState {
   }
 
   async markSending(tenantKey: TenantKey, messageId: number): Promise<void> {
-    await this.database.query(
+    const result = await this.database.query<{ updated: number }>(
       `UPDATE agent_delivery_ledger
           SET status = 'sending', updated_at = now()
-        WHERE tenant_key = $1 AND message_id = $2 AND status = 'processing'`,
+        WHERE tenant_key = $1 AND message_id = $2 AND status = 'processing'
+        RETURNING 1 AS updated`,
       [tenantKey, messageId],
     )
+    if (!result.rows[0]) throw new Error('Delivery could not enter sending state')
   }
 
-  async completeDelivery(
+  async completeReply(tenantKey: TenantKey, messageId: number): Promise<void> {
+    const result = await this.database.query<{ updated: number }>(
+      `UPDATE agent_delivery_ledger
+          SET status = 'replied', updated_at = now()
+        WHERE tenant_key = $1 AND message_id = $2 AND status = 'sending'
+        RETURNING 1 AS updated`,
+      [tenantKey, messageId],
+    )
+    if (!result.rows[0]) throw new Error('Delivery could not complete as replied')
+  }
+
+  /** Conversation-state und Delivery-Ledger muessen atomar terminal werden. */
+  async completeHandoff(
     tenantKey: TenantKey,
     messageId: number,
-    status: Extract<DeliveryStatus, 'replied' | 'handed_off'>,
+    conversationId: number,
   ): Promise<void> {
-    await this.database.query(
-      `UPDATE agent_delivery_ledger
-          SET status = $3, updated_at = now()
-        WHERE tenant_key = $1 AND message_id = $2`,
-      [tenantKey, messageId, status],
+    const result = await this.database.query<{ completed: number }>(
+      `WITH completed AS (
+         UPDATE agent_delivery_ledger
+            SET status = 'handed_off', updated_at = now()
+          WHERE tenant_key = $1 AND message_id = $2
+            AND status = 'processing'
+         RETURNING 1
+       )
+       INSERT INTO agent_conversation_states (tenant_key, conversation_id, status)
+       SELECT $1, $3, 'handed_off' FROM completed
+       ON CONFLICT (tenant_key, conversation_id) DO UPDATE
+         SET status = 'handed_off', updated_at = now()
+       RETURNING 1 AS completed`,
+      [tenantKey, messageId, conversationId],
     )
+    if (!result.rows[0]) throw new Error('Delivery and conversation could not complete handoff')
   }
 
-  async markHandedOff(tenantKey: TenantKey, conversationId: number): Promise<void> {
-    await this.database.query(
-      `INSERT INTO agent_conversation_states (tenant_key, conversation_id, status)
-       VALUES ($1, $2, 'handed_off')
-       ON CONFLICT (tenant_key, conversation_id) DO UPDATE
-         SET status = 'handed_off', updated_at = now()`,
-      [tenantKey, conversationId],
+  /**
+   * Negative conversation_id ist der bestehende, schemafreie Retry-Sentinel.
+   * Der naechste BullMQ-Versuch kann genau diese nicht-terminale Zeile claimen.
+   */
+  async failDelivery(tenantKey: TenantKey, messageId: number): Promise<void> {
+    const result = await this.database.query<{ updated: number }>(
+      `UPDATE agent_delivery_ledger
+          SET conversation_id = -ABS(conversation_id),
+              status = 'processing',
+              updated_at = now()
+        WHERE tenant_key = $1 AND message_id = $2
+          AND status IN ('processing', 'sending')
+        RETURNING 1 AS updated`,
+      [tenantKey, messageId],
     )
+    if (!result.rows[0]) throw new Error('Delivery could not be re-armed for retry')
   }
 }

@@ -32,6 +32,7 @@ describe('triage', () => {
     ['Können wir einen Termin für ein Telefonat machen?', 'termin', 'medium'],
     ['Ist diese Klausel im Vertrag rechtlich wirksam?', 'beratung', 'medium'],
     ['Wie funktioniert das Onboarding?', 'allgemein', 'medium'],
+    ['Ich finde den Button oben rechts nicht.', 'allgemein', 'medium'],
   ])('classifies %s as %s', (question, category, priority) => {
     const outcome = triage(question)
     expect(outcome.category).toBe(category)

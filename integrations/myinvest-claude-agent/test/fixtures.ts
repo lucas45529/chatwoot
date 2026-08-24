@@ -3,9 +3,9 @@ import type { TenantConfig } from '../src/config.js'
 import type { ChatwootWebhookPayload } from '../src/domain.js'
 
 export const tenants: TenantConfig[] = [
-  { key: 'saas', accountId: 101, webhookSecret: 'saas-webhook-secret-with-32-bytes', agentBotToken: 'saas-agent-bot-token-with-32-bytes' },
-  { key: 'new_academy', accountId: 202, webhookSecret: 'new-academy-secret-with-32-bytes', agentBotToken: 'new-academy-token-with-32-bytes' },
-  { key: 'legacy_academy', accountId: 303, webhookSecret: 'legacy-academy-secret-with-32-bytes', agentBotToken: 'legacy-academy-token-with-32-bytes' },
+  { key: 'saas', accountId: 101, webhookSecret: 'saas-webhook-secret-with-32-bytes', agentBotToken: 'saas-agent-bot-token-with-32-bytes', handoffAssigneeId: 901 },
+  { key: 'new_academy', accountId: 202, webhookSecret: 'new-academy-secret-with-32-bytes', agentBotToken: 'new-academy-token-with-32-bytes', handoffAssigneeId: 902 },
+  { key: 'legacy_academy', accountId: 303, webhookSecret: 'legacy-academy-secret-with-32-bytes', agentBotToken: 'legacy-academy-token-with-32-bytes', handoffAssigneeId: 903 },
 ]
 
 export function incomingPayload(overrides: Partial<ChatwootWebhookPayload> = {}): ChatwootWebhookPayload {

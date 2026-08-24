@@ -1,5 +1,13 @@
 import type { TenantConfig } from './config.js'
+import type { ChatwootDeliveryStore } from './chatwoot-delivery-repository.js'
 import type { ConversationPriority } from './triage.js'
+
+/** Nachrichten, die der Kunde im Chat sieht. */
+export type PublicMessageKind = 'answer' | 'handoff_ack'
+/** Interne Notizen; fuer den Kunden nicht sichtbar. */
+export type PrivateMessageKind = 'answer_sources' | 'handoff_note'
+/** deliveryId + kind ist der Idempotenzschluessel jeder gesendeten Nachricht. */
+export type DeliveryMessageKind = PublicMessageKind | PrivateMessageKind
 
 export class ChatwootApiError extends Error {
   constructor(
@@ -12,9 +20,21 @@ export class ChatwootApiError extends Error {
 }
 
 export interface ChatwootPort {
-  sendMessage(tenant: TenantConfig, conversationId: number, content: string, deliveryId: number): Promise<void>
+  sendMessage(
+    tenant: TenantConfig,
+    conversationId: number,
+    content: string,
+    deliveryId: number,
+    kind: PublicMessageKind,
+  ): Promise<void>
   /** Interne Notiz — fuer den Kunden nicht sichtbar. */
-  sendPrivateNote(tenant: TenantConfig, conversationId: number, content: string): Promise<void>
+  sendPrivateNote(
+    tenant: TenantConfig,
+    conversationId: number,
+    content: string,
+    deliveryId: number,
+    kind: PrivateMessageKind,
+  ): Promise<void>
   setPriority(tenant: TenantConfig, conversationId: number, priority: ConversationPriority): Promise<void>
   /** Ergaenzt Labels, ohne bestehende zu verlieren. */
   addLabels(tenant: TenantConfig, conversationId: number, labels: readonly string[]): Promise<void>
@@ -22,11 +42,23 @@ export interface ChatwootPort {
   handoff(tenant: TenantConfig, conversationId: number): Promise<void>
 }
 
+/**
+ * Die Sichtbarkeit haengt allein an der Art. Der vollstaendige Record erzwingt
+ * die Entscheidung fuer jede neue Art, statt sie am Aufrufer haengen zu lassen.
+ */
+const PRIVATE_BY_KIND: Record<DeliveryMessageKind, boolean> = {
+  answer: false,
+  answer_sources: true,
+  handoff_ack: false,
+  handoff_note: true,
+}
+
 export class ChatwootClient implements ChatwootPort {
   private readonly baseUrl: string
 
   constructor(
     baseUrl: string,
+    private readonly deliveryStore: ChatwootDeliveryStore,
     private readonly request: typeof fetch = fetch,
   ) {
     this.baseUrl = baseUrl.replace(/\/$/, '')
@@ -37,24 +69,19 @@ export class ChatwootClient implements ChatwootPort {
     conversationId: number,
     content: string,
     deliveryId: number,
+    kind: PublicMessageKind,
   ): Promise<void> {
-    await this.post(tenant, conversationId, 'messages', {
-      content,
-      message_type: 'outgoing',
-      content_attributes: { myinvest_agent_delivery_id: String(deliveryId) },
-    })
+    await this.sendDeliveryMessage(tenant, conversationId, content, deliveryId, kind)
   }
 
   async sendPrivateNote(
     tenant: TenantConfig,
     conversationId: number,
     content: string,
+    deliveryId: number,
+    kind: PrivateMessageKind,
   ): Promise<void> {
-    await this.post(tenant, conversationId, 'messages', {
-      content,
-      message_type: 'outgoing',
-      private: true,
-    })
+    await this.sendDeliveryMessage(tenant, conversationId, content, deliveryId, kind)
   }
 
   async setPriority(
@@ -74,12 +101,9 @@ export class ChatwootClient implements ChatwootPort {
     // Chatwoot ersetzt die Label-Liste komplett; vorhandene Labels muessen
     // deshalb mitgesendet werden, sonst gehen manuelle Labels verloren.
     const existing = await this.currentLabels(tenant, conversationId)
-    const merged = [...existing]
-    for (const label of labels) {
-      if (!merged.includes(label)) merged.push(label)
-    }
-    if (merged.length === existing.length) return
-    await this.post(tenant, conversationId, 'labels', { labels: merged })
+    const missing = [...new Set(labels)].filter((label) => !existing.includes(label))
+    if (missing.length === 0) return
+    await this.post(tenant, conversationId, 'labels', { labels: [...existing, ...missing] })
   }
 
   async assign(
@@ -87,7 +111,14 @@ export class ChatwootClient implements ChatwootPort {
     conversationId: number,
     assigneeId: number,
   ): Promise<void> {
-    await this.post(tenant, conversationId, 'assignments', { assignee_id: assigneeId })
+    const response = await this.post(tenant, conversationId, 'assignments', {
+      assignee_id: assigneeId,
+    })
+    // Chatwoot antwortet auch mit 200, wenn niemand zugewiesen wurde.
+    const assignee = asObject(await this.json(response, 'assignment'))
+    if (assignee?.id !== assigneeId) {
+      throw new ChatwootApiError('Chatwoot did not assign the requested user', response.status)
+    }
   }
 
   async handoff(
@@ -97,16 +128,42 @@ export class ChatwootClient implements ChatwootPort {
     await this.post(tenant, conversationId, 'toggle_status', { status: 'open' })
   }
 
+  private async sendDeliveryMessage(
+    tenant: TenantConfig,
+    conversationId: number,
+    content: string,
+    deliveryId: number,
+    kind: DeliveryMessageKind,
+  ): Promise<void> {
+    if (
+      await this.deliveryStore.exists({
+        accountId: tenant.accountId,
+        conversationDisplayId: conversationId,
+        deliveryId,
+        kind,
+      })
+    ) {
+      return
+    }
+    await this.post(tenant, conversationId, 'messages', {
+      content,
+      message_type: 'outgoing',
+      ...(PRIVATE_BY_KIND[kind] ? { private: true } : {}),
+      content_attributes: {
+        myinvest_agent_delivery_id: String(deliveryId),
+        myinvest_agent_message_kind: kind,
+      },
+    })
+  }
+
+
   private async currentLabels(
     tenant: TenantConfig,
     conversationId: number,
   ): Promise<string[]> {
     const path = `/api/v1/accounts/${tenant.accountId}/conversations/${conversationId}/labels`
     const response = await this.fetchResponse(tenant, path, { method: 'GET' })
-    const body: unknown = await response.json()
-    if (!body || typeof body !== 'object' || !('payload' in body)) return []
-    const payload: unknown = body.payload
-    if (!Array.isArray(payload)) return []
+    const payload = await this.payload(response, 'labels')
     return payload.filter((entry): entry is string => typeof entry === 'string')
   }
 
@@ -115,13 +172,29 @@ export class ChatwootClient implements ChatwootPort {
     conversationId: number,
     action: string,
     body: Record<string, unknown>,
-  ): Promise<void> {
+  ): Promise<Response> {
     const path = `/api/v1/accounts/${tenant.accountId}/conversations/${conversationId}/${action}`
-    await this.fetchResponse(tenant, path, {
+    return this.fetchResponse(tenant, path, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     })
+  }
+
+  private async payload(response: Response, context: string): Promise<unknown[]> {
+    const entries = asObject(await this.json(response, context))?.payload
+    if (!Array.isArray(entries)) {
+      throw new ChatwootApiError(`Chatwoot ${context} response has no payload`, response.status)
+    }
+    return entries
+  }
+
+  private async json(response: Response, context: string): Promise<unknown> {
+    try {
+      return await response.json()
+    } catch {
+      throw new ChatwootApiError(`Chatwoot ${context} response is not JSON`, response.status)
+    }
   }
 
   private async fetchResponse(
@@ -148,4 +221,13 @@ export class ChatwootClient implements ChatwootPort {
     }
     return response
   }
+}
+
+/**
+ * Engt einen JSON-Wert auf ein Objekt ein. Die Assertion ist rein strukturell:
+ * jeder Feldzugriff bleibt danach `unknown` und wird einzeln geprueft.
+ */
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  return value as Record<string, unknown>
 }

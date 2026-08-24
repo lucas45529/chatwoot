@@ -18,11 +18,14 @@ describe('tenant configuration', () => {
     expect(() => parseTenantConfig(JSON.stringify(tenants.slice(0, 2)))).toThrow(/exactly/i)
     expect(() => buildTenantRegistry([tenants[0]!, { ...tenants[1]!, accountId: 101 }, tenants[2]!])).toThrow(/account/i)
     expect(() => buildTenantRegistry([tenants[0]!, { ...tenants[1]!, agentBotToken: tenants[0]!.agentBotToken }, tenants[2]!])).toThrow(/credential/i)
+    const withoutAssignee = tenants.map(({ handoffAssigneeId: _assignee, ...tenant }) => tenant)
+    expect(() => parseTenantConfig(JSON.stringify(withoutAssignee))).toThrow(/handoffAssigneeId/)
   })
 
   it('allows deterministic Claude output only in explicit local smoke mode', () => {
     const environment = {
       DATABASE_URL: 'postgresql://example.invalid/agent',
+      CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
       REDIS_URL: 'redis://example.invalid/1',
       CHATWOOT_BASE_URL: 'https://support.example.invalid',
       TENANTS_JSON: JSON.stringify(tenants),
@@ -38,6 +41,7 @@ describe('tenant configuration', () => {
   it('normalizes compose-provided empty optional local fields for non-local providers', () => {
     const config = loadConfig({
       DATABASE_URL: 'postgresql://example.invalid/agent',
+      CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
       REDIS_URL: 'redis://example.invalid/1',
       CHATWOOT_BASE_URL: 'https://support.example.invalid',
       TENANTS_JSON: JSON.stringify(tenants),
@@ -54,6 +58,7 @@ describe('tenant configuration', () => {
     expect(() => loadConfig({
       ...{
         DATABASE_URL: 'postgresql://example.invalid/agent',
+        CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
         REDIS_URL: 'redis://example.invalid/1',
         CHATWOOT_BASE_URL: 'https://support.example.invalid',
         TENANTS_JSON: JSON.stringify(tenants),
@@ -68,6 +73,7 @@ describe('tenant configuration', () => {
   it('allows a local provider only on an explicit internal host and fixed v1 path', () => {
     const environment = {
       DATABASE_URL: 'postgresql://example.invalid/agent',
+      CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
       REDIS_URL: 'redis://example.invalid/1',
       CHATWOOT_BASE_URL: 'https://support.example.invalid',
       TENANTS_JSON: JSON.stringify(tenants),
@@ -94,6 +100,7 @@ describe('tenant configuration', () => {
   it('requires an API key for the gemini provider and pins the Google endpoint', () => {
     const environment = {
       DATABASE_URL: 'postgresql://example.invalid/agent',
+      CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
       REDIS_URL: 'redis://example.invalid/1',
       CHATWOOT_BASE_URL: 'https://support.example.invalid',
       TENANTS_JSON: JSON.stringify(tenants),

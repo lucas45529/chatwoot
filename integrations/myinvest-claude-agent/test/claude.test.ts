@@ -58,6 +58,7 @@ describe('ClaudeClient', () => {
     expect(system).toContain('MyInvest24 Kapitalanlagen-Assistent')
     expect(system).toContain('WhatsApp')
     expect(system).toContain('Widerruf oder Rückerstattung')
+    expect(system).toContain('ob es damit geklappt hat')
     expect(system).toContain('Antworte nur als JSON: {"action":"answer|handoff"')
   })
 })
@@ -151,6 +152,7 @@ describe('gemini provider', () => {
     try {
       const config = loadConfig({
         DATABASE_URL: 'postgresql://example.invalid/agent',
+        CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
         REDIS_URL: 'redis://example.invalid/1',
         CHATWOOT_BASE_URL: 'https://support.example.invalid',
         TENANTS_JSON: JSON.stringify(tenants),

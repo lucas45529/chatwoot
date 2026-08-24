@@ -27,6 +27,8 @@ test_run_marker="production-e2e-$(date -u +%Y%m%dT%H%M%SZ)-$(openssl rand -hex 1
 }
 test_source_id="$test_run_marker"
 expected_account_id="$(jq -er '.[] | select(.key == "saas") | .accountId | select(type == "number")' "$deployment_dir/runtime/tenants.json")"
+# Zuweisung ist Pflicht und je Mandant account-spezifisch.
+expected_handoff_assignee_id="$(jq -er '.[] | select(.key == "saas") | .handoffAssigneeId | select(type == "number" and . > 0)' "$deployment_dir/runtime/tenants.json")"
 test_content='Die Produktionspfadprüfung beginnt im Testbereich unter Einstellungen.'
 test_content_hash="$(printf '%s' "$test_content" | shasum -a 256 | awk '{print $1}')"
 test_document_inserted=false
@@ -60,7 +62,9 @@ resolve_registered_recovery_conversations() {
       recovery = base.where("custom_attributes ->> '\''myinvest_production_e2e_recovery'\'' IN (?)", markers)
       marked = base.where("additional_attributes ->> '\''myinvest_production_e2e_run'\'' IN (?)", markers)
       Conversation.where(id: recovery.select(:id)).or(Conversation.where(id: marked.select(:id))).distinct.find_each do |conversation|
-        conversation.update!(status: :resolved, custom_attributes: conversation.custom_attributes.merge("myinvest_e2e_retired" => true))
+        conversation.update_labels([])
+        conversation.update!(status: :resolved, priority: nil, assignee: nil,
+                             custom_attributes: conversation.custom_attributes.merge("myinvest_e2e_retired" => true))
       end
     ' >/dev/null
 }
@@ -99,7 +103,9 @@ SQL')"
     exact = Conversation.where(account_id: account_id, display_id: display_ids).to_a
     raise "missing exact Production E2E conversation" unless exact.length == display_ids.length
     (marked + recovery + exact).uniq(&:id).each do |conversation|
-      conversation.update!(status: :resolved, custom_attributes: conversation.custom_attributes.merge("myinvest_e2e_retired" => true))
+      conversation.update_labels([])
+      conversation.update!(status: :resolved, priority: nil, assignee: nil,
+                           custom_attributes: conversation.custom_attributes.merge("myinvest_e2e_retired" => true))
     end
   ' >/dev/null
 }
@@ -283,7 +289,7 @@ create_external_widget_path() {
   chmod 600 "$e2e_runtime/${kind}-auth-token" "$config_path" "$conversation_path"
 }
 
-handoff_content='Ich möchte mit einem Menschen sprechen.'
+handoff_content='Guten Morgen, mein Kunde wurde von einem fremden Finanzierer mit KI-Avatar angeschrieben. Es fehlen Telefonnummer und Datenschutzlink; Dokumente sollen auf ein Drittportal hochgeladen werden. Das wirkt maximal unseriös.'
 answer_content='Wo beginnt die Produktionspfadprüfung?'
 create_external_widget_path handoff "$handoff_content"
 create_external_widget_path answer "$answer_content"
@@ -298,12 +304,21 @@ answer_conversation_id="$("${compose[@]}" exec -T -e E2E_ACCOUNT_ID="$account_id
   print Conversation.find_by!(account_id: Integer(ENV.fetch("E2E_ACCOUNT_ID")), display_id: Integer(ENV.fetch("E2E_DISPLAY_ID"))).id
 ')"
 deadline=$((SECONDS + ${E2E_TIMEOUT_SECONDS:-120}))
-until "${compose[@]}" exec -T -e E2E_CONVERSATION_ID="$conversation_id" rails bundle exec rails runner '
+# Die Uebergabe beweist den echten kritischen Fall: urgent, Sicherheitslabel,
+# Pflicht-Zuweisung und genau eine interne Notiz.
+until "${compose[@]}" exec -T \
+  -e E2E_CONVERSATION_ID="$conversation_id" -e E2E_ASSIGNEE_ID="$expected_handoff_assignee_id" \
+  rails bundle exec rails runner '
   conversation = Conversation.find(Integer(ENV.fetch("E2E_CONVERSATION_ID")))
-  exit(conversation.open? ? 0 : 1)
+  expected_assignee = Integer(ENV.fetch("E2E_ASSIGNEE_ID"), 10)
+  notes = conversation.messages.outgoing.select { |message| message.private? && message.content.to_s.include?("triage_sicherheit") }
+  labels = conversation.label_list
+  escalated = conversation.open? && conversation.priority == "urgent" &&
+              labels.include?("ki-uebergabe") && labels.include?("sicherheitsverdacht")
+  exit(escalated && conversation.assignee_id == expected_assignee && notes.one? ? 0 : 1)
 ' >/dev/null 2>&1; do
   (( SECONDS < deadline )) || {
-    printf 'Timed out waiting for the production AgentBot handoff.\n' >&2
+    printf 'Timed out waiting for the critical AgentBot handoff (urgent, security label, assignment, internal note).\n' >&2
     exit 1
   }
   sleep 2
@@ -320,7 +335,7 @@ while (( SECONDS < handoff_ack_deadline )); do
     --data-urlencode "website_token=$website_token" \
     "$external_base_url/messages" > "$e2e_runtime/handoff-messages.json"
   if jq -e --arg marker "$message_id" \
-    '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker) and (.content | type == "string") and (.content | length > 0))] | length == 1' \
+    '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker) and ((.content_attributes.myinvest_agent_message_kind // "") == "handoff_ack") and (.content | type == "string") and (.content | length > 0))] | length == 1' \
     "$e2e_runtime/handoff-messages.json" >/dev/null; then
     handoff_ack_visible=true
     break
@@ -347,7 +362,7 @@ while (( SECONDS < deadline )); do
     exit 1
   }
   if jq -e --arg marker "$answer_message_id" \
-    '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker) and (.content | type == "string") and ((.content | contains("Quellen:")) | not))] | length == 1' \
+    '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker) and ((.content_attributes.myinvest_agent_message_kind // "") == "answer") and (.content | type == "string") and ((.content | contains("Quellen:")) | not))] | length == 1' \
     "$e2e_runtime/answer-messages.json" >/dev/null; then
     public_answer_visible=true
     break
@@ -373,9 +388,16 @@ until "${compose[@]}" exec -T \
     marker = ENV.fetch("E2E_MESSAGE_ID")
     source_id = ENV.fetch("E2E_SOURCE_ID")
     outgoing = conversation.messages.outgoing.to_a
-    replies = outgoing.select { |message| !message.private? && message.content_attributes["myinvest_agent_delivery_id"] == marker }
+    replies = outgoing.select do |message|
+      !message.private? && message.content_attributes["myinvest_agent_delivery_id"] == marker &&
+        message.content_attributes["myinvest_agent_message_kind"] == "answer"
+    end
     # Der Quellenbeleg gehoert in die interne Notiz, nicht in den Kundenchat.
-    notes = outgoing.select { |message| message.private? && message.content.to_s.include?("Quellen:") && message.content.to_s.include?(source_id) }
+    notes = outgoing.select do |message|
+      message.private? && message.content_attributes["myinvest_agent_delivery_id"] == marker &&
+        message.content_attributes["myinvest_agent_message_kind"] == "answer_sources" &&
+        message.content.to_s.include?("Quellen:") && message.content.to_s.include?(source_id)
+    end
     exit(replies.one? && !replies.first.content.include?("Quellen:") && notes.one? ? 0 : 1)
   ' >/dev/null 2>&1; do
   (( SECONDS < deadline )) || {

@@ -33,7 +33,8 @@ required=(
   ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT POSTGRES_ADMIN_USER
   POSTGRES_ADMIN_PASSWORD POSTGRES_DATABASE POSTGRES_USERNAME POSTGRES_PASSWORD
   REDIS_PASSWORD REDIS_URL CLAUDE_AGENT_DATABASE CLAUDE_AGENT_DATABASE_USER
-  CLAUDE_AGENT_DATABASE_PASSWORD CLAUDE_AGENT_DATABASE_URL CLAUDE_AGENT_REDIS_URL
+  CLAUDE_AGENT_DATABASE_PASSWORD CLAUDE_AGENT_DATABASE_URL AGENT_LEARNING_CHATWOOT_DATABASE_URL
+  CLAUDE_AGENT_REDIS_URL
   TENANTS_JSON ANTHROPIC_PROVIDER ANTHROPIC_MODEL AWS_REGION BEDROCK_MODEL
   ALLOW_DIRECT_ANTHROPIC STORAGE_LOCAL_MINIO
   WEBHOOK_REPLAY_WINDOW_SECONDS DELIVERY_RETENTION_SECONDS MAX_BODY_BYTES
@@ -226,8 +227,15 @@ else
   done
 fi
 
-if command -v jq >/dev/null 2>&1 && ! jq -e 'type == "array"' >/dev/null <<<"$TENANTS_JSON"; then
-  printf 'TENANTS_JSON must be a JSON array.\n' >&2
+if command -v jq >/dev/null 2>&1 && ! jq -e '
+  type == "array" and
+  ((map(.key) | sort) == ["legacy_academy", "new_academy", "saas"]) and
+  all(.[];
+    (.accountId | type == "number" and . > 0) and
+    (.handoffAssigneeId | type == "number" and . > 0)
+  )
+' >/dev/null <<<"$TENANTS_JSON"; then
+  printf 'TENANTS_JSON must contain all canonical tenants with account and handoff assignee IDs.\n' >&2
   exit 1
 fi
 

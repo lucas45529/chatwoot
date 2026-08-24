@@ -13,7 +13,8 @@ module Myinvest; end
 # 2. Kein statischer Begruessungsbaustein auf Inboxen mit KI-Bot. Das Greeting
 #    wurde nach der Kundenfrage gesendet und las sich wie eine Nichtantwort
 #    ("Schreib uns dein Anliegen"), obwohl der Bot in Sekunden selbst antwortet.
-# 3. Die Labels der KI-Uebergabe, damit Filter und Uebersicht sie kennen.
+# 3. Die Labels der KI-Uebergabe in den drei kanonischen Mandanten-Accounts,
+#    damit Filter und Uebersicht sie kennen.
 class Myinvest::SupportExperience
   DASHBOARD_THEME_MARKER = 'myinvest-default-color-scheme'
   DASHBOARD_LIGHT_SCRIPT = <<~HTML
@@ -43,14 +44,26 @@ class Myinvest::SupportExperience
     { title: 'termin', color: '#22c55e', description: 'Termin- oder Rueckrufwunsch' },
     { title: 'beratung', color: '#64748b', description: 'Individuelle Steuer-, Rechts- oder Anlagefrage' }
   ].freeze
+  HANDOFF_LABEL_TITLES = HANDOFF_LABELS.map { |label| label.fetch(:title) }.freeze
+  # Labels gehoeren ausschliesslich in die drei kanonischen MyInvest-Accounts.
+  # Ein Schreibzugriff auf fremde Accounts derselben Chatwoot-Instanz waere ein
+  # Datenfehler, deshalb wird hier aufgeloest statt ueber alle Accounts gelaufen.
+  TENANT_KEYS = %w[saas new_academy legacy_academy].freeze
 
-  def initialize(dry_run: true)
+  def initialize(dry_run: true, handoff_assignees_json: ENV.fetch('SUPPORT_HANDOFF_ASSIGNEES_JSON', nil))
     @dry_run = dry_run
+    @handoff_assignees_json = handoff_assignees_json
   end
 
   def call
-    plan = { mode: dry_run ? 'dry-run' : 'apply', dashboard_theme: dashboard_theme_state, greeting_inboxes: bot_inboxes_with_greeting.map(&:id),
-             missing_labels: missing_labels_by_account }
+    handoff_assignees = validate_handoff_assignees!
+    plan = {
+      mode: dry_run ? 'dry-run' : 'apply',
+      dashboard_theme: dashboard_theme_state,
+      greeting_inboxes: bot_inboxes_with_greeting.map(&:id),
+      missing_labels: missing_labels_by_account,
+      handoff_assignees: handoff_assignees,
+    }
     return plan.merge(status: 'planned') if dry_run
 
     ActiveRecord::Base.transaction do
@@ -64,7 +77,7 @@ class Myinvest::SupportExperience
 
   private
 
-  attr_reader :dry_run
+  attr_reader :dry_run, :handoff_assignees_json
 
   def dashboard_theme_state
     current = InstallationConfig.find_by(name: 'DASHBOARD_SCRIPTS')&.value.to_s
@@ -75,9 +88,9 @@ class Myinvest::SupportExperience
 
   def apply_dashboard_theme!
     state = dashboard_theme_state
-    return if state == 'present'
-    # Fremden Inhalt niemals ueberschreiben: dann bleibt alles, wie es ist.
-    raise "DASHBOARD_SCRIPTS carries foreign content; refusing to overwrite" if state == 'foreign_value'
+    # Fremden Inhalt niemals ueberschreiben; Greeting und Labels bleiben davon
+    # unabhaengig und werden trotzdem konfiguriert.
+    return if %w[present foreign_value].include?(state)
 
     config = InstallationConfig.find_or_initialize_by(name: 'DASHBOARD_SCRIPTS')
     config.value = DASHBOARD_LIGHT_SCRIPT
@@ -86,22 +99,56 @@ class Myinvest::SupportExperience
   end
 
   def bot_inboxes_with_greeting
-    Inbox.includes(:agent_bot_inbox).select { |inbox| inbox.agent_bot_inbox.present? && inbox.greeting_enabled? }
+    Inbox.where(account_id: tenant_accounts.map(&:id)).includes(:agent_bot_inbox).select do |inbox|
+      inbox.agent_bot_inbox.present? && inbox.greeting_enabled?
+    end
   end
 
   def disable_bot_greetings!
     bot_inboxes_with_greeting.each { |inbox| inbox.update!(greeting_enabled: false) }
   end
 
-  def missing_labels_by_account
-    Account.all.to_h do |account|
-      existing = account.labels.pluck(:title)
-      [account.id, HANDOFF_LABELS.map { |label| label.fetch(:title) } - existing]
+  # Genau ein Account je kanonischem Mandantenschluessel. Die Aufloesung laeuft
+  # schon beim Plan, ein Treffer zu viel oder zu wenig bricht also ab, bevor
+  # irgendetwas geschrieben wird.
+  def tenant_accounts
+    @tenant_accounts ||= TENANT_KEYS.map do |tenant_key|
+      matches = Account.where("custom_attributes ->> 'myinvest_tenant_key' = ?", tenant_key).to_a
+      raise "Tenant #{tenant_key} must resolve to exactly one account" unless matches.one?
+
+      matches.first
     end
   end
 
+  def validate_handoff_assignees!
+    raise 'SUPPORT_HANDOFF_ASSIGNEES_JSON is required' if handoff_assignees_json.blank?
+
+    entries = JSON.parse(handoff_assignees_json)
+    unless entries.is_a?(Array) && entries.map { |entry| entry.fetch('key') }.sort == TENANT_KEYS.sort
+      raise 'Support handoff assignees must contain exactly the canonical tenants'
+    end
+    by_key = entries.to_h { |entry| [entry.fetch('key'), entry] }
+    tenant_accounts.to_h do |account|
+      tenant_key = account.custom_attributes.fetch('myinvest_tenant_key')
+      entry = by_key.fetch(tenant_key)
+      account_id = entry.fetch('accountId')
+      assignee_id = entry.fetch('handoffAssigneeId')
+      unless account_id == account.id && assignee_id.is_a?(Integer) && assignee_id.positive? &&
+             account.account_users.exists?(user_id: assignee_id)
+        raise "Invalid handoff assignee for tenant #{tenant_key}"
+      end
+      [tenant_key, assignee_id]
+    end
+  rescue JSON::ParserError, KeyError, TypeError
+    raise 'SUPPORT_HANDOFF_ASSIGNEES_JSON is invalid'
+  end
+
+  def missing_labels_by_account
+    tenant_accounts.to_h { |account| [account.id, HANDOFF_LABEL_TITLES - account.labels.pluck(:title)] }
+  end
+
   def upsert_labels!
-    Account.find_each do |account|
+    tenant_accounts.each do |account|
       HANDOFF_LABELS.each do |attributes|
         label = account.labels.find_or_initialize_by(title: attributes.fetch(:title))
         label.color = attributes.fetch(:color)

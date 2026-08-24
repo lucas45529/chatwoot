@@ -27,6 +27,11 @@ const CASES = [
   { tenant: 'saas', q: 'Was ist der Unterschied zwischen MyInvest 24 und MyInvest Pro?' },
   { tenant: 'saas', q: 'Gibt es eine kostenlose Testphase?' },
   { tenant: 'saas', q: 'Kann ich meine Daten exportieren?' },
+  {
+    tenant: 'saas',
+    q: 'Hallo, ich bekomme keinen Zugriff auf meine MyInvest App. Könnt ihr mir einen Link zum Anmelden schicken?',
+    title: 'Zugang',
+  },
   { tenant: 'new_academy', q: 'Was ist die Sonder-AfA nach §7b EStG?' },
   { tenant: 'new_academy', q: 'Welche KfW Förderung bekomme ich für ein EH40 Haus?' },
 ]

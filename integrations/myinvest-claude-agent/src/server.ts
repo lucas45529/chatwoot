@@ -3,6 +3,7 @@ import { Queue, Worker } from 'bullmq'
 import { Redis } from 'ioredis'
 import pg from 'pg'
 import { ChatwootClient } from './chatwoot-client.js'
+import { PostgresChatwootDeliveryStore } from './chatwoot-delivery-repository.js'
 import { createClaudeClient } from './claude.js'
 import { loadConfig } from './config.js'
 import { PostgresKnowledgeRepository } from './knowledge/repository.js'
@@ -15,18 +16,21 @@ import { webhookHttpError } from './webhook/http-error.js'
 const config = loadConfig()
 const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null })
 const pool = new pg.Pool({ connectionString: config.DATABASE_URL, max: 10 })
+const chatwootPool = new pg.Pool({ connectionString: config.CHATWOOT_DATABASE_URL, max: 4 })
+const deliveryStore = new PostgresChatwootDeliveryStore(chatwootPool)
+await deliveryStore.healthCheck()
 const queue = new Queue<DeliveryJob>(QUEUE_NAME, { connection: redis })
 const deliveryQueue = new DeliveryQueue(queue, {
   retentionSeconds: config.DELIVERY_RETENTION_SECONDS,
 })
+const state = new PostgresAgentState(pool)
 const processor = new MessageProcessor({
   knowledge: new PostgresKnowledgeRepository(pool),
   claude: createClaudeClient(config),
-  chatwoot: new ChatwootClient(config.CHATWOOT_BASE_URL),
-  state: new PostgresAgentState(pool),
+  chatwoot: new ChatwootClient(config.CHATWOOT_BASE_URL, deliveryStore),
+  state,
   minRetrievalScore: config.KNOWLEDGE_MIN_SCORE,
   maxSources: config.KNOWLEDGE_MAX_SOURCES,
-  handoffAssigneeId: config.HANDOFF_ASSIGNEE_ID,
 })
 const controller = new WebhookController({
   tenants: config.tenants,
@@ -41,7 +45,25 @@ const worker =
         QUEUE_NAME,
         async (job) => {
           const tenant = config.tenants.requireByKey(job.data.tenantKey)
-          await processor.process({ tenant, payload: job.data.payload })
+          const maxAttempts = job.opts.attempts ?? 1
+          try {
+            await processor.process({
+              tenant,
+              payload: job.data.payload,
+              isFinalAttempt: job.attemptsMade + 1 >= maxAttempts,
+            })
+          } catch (error) {
+            try {
+              await state.failDelivery(tenant.key, job.data.payload.id)
+            } catch (stateError) {
+              console.error(
+                'Agent delivery failure could not be persisted',
+                job.id,
+                stateError instanceof Error ? stateError.message : String(stateError),
+              )
+            }
+            throw error
+          }
         },
         { connection: redis.duplicate(), concurrency: 4 },
       )
@@ -53,7 +75,7 @@ worker?.on('failed', (job, error) =>
 const app = express()
 app.get('/health', async (_request, response) => {
   try {
-    await Promise.all([pool.query('SELECT 1'), redis.ping()])
+    await Promise.all([pool.query('SELECT 1'), deliveryStore.healthCheck(), redis.ping()])
     response.json({ status: 'ok' })
   } catch {
     response.status(503).json({ status: 'unavailable' })
@@ -94,6 +116,7 @@ async function shutdown(signal: string) {
   await queue.close()
   await redis.quit()
   await pool.end()
+  await chatwootPool.end()
   process.exit(0)
 }
 

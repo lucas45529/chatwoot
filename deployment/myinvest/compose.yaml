@@ -227,8 +227,8 @@ services:
       LOCAL_SMOKE: ${LOCAL_SMOKE:-false}
       LOCAL_FAKE_CLAUDE_ANSWER: ${LOCAL_FAKE_CLAUDE_ANSWER:-}
       DATABASE_URL: ${CLAUDE_AGENT_DATABASE_URL:?CLAUDE_AGENT_DATABASE_URL is required}
-      # Read-only Zugang auf die Chatwoot-DB fuer den Lern-Miner (learning:mine).
-      CHATWOOT_DATABASE_URL: ${AGENT_LEARNING_CHATWOOT_DATABASE_URL:-}
+      # Read-only: Delivery-Idempotenz und gepruefter Lern-Miner.
+      CHATWOOT_DATABASE_URL: ${AGENT_LEARNING_CHATWOOT_DATABASE_URL:?AGENT_LEARNING_CHATWOOT_DATABASE_URL is required}
       REDIS_URL: ${CLAUDE_AGENT_REDIS_URL:?CLAUDE_AGENT_REDIS_URL is required}
       CHATWOOT_BASE_URL: http://rails:3000
       TENANTS_JSON: ${TENANTS_JSON:?TENANTS_JSON is required}
@@ -237,7 +237,6 @@ services:
       MAX_BODY_BYTES: ${MAX_BODY_BYTES:-262144}
       KNOWLEDGE_MIN_SCORE: ${KNOWLEDGE_MIN_SCORE:-0.05}
       KNOWLEDGE_MAX_SOURCES: ${KNOWLEDGE_MAX_SOURCES:-4}
-      HANDOFF_ASSIGNEE_ID: ${HANDOFF_ASSIGNEE_ID:-}
       ANTHROPIC_PROVIDER: ${ANTHROPIC_PROVIDER:?ANTHROPIC_PROVIDER is required}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:?ANTHROPIC_MODEL is required}
@@ -264,6 +263,7 @@ services:
       - backend
       - egress
     restart: unless-stopped
+    stop_grace_period: 45s
     init: true
     depends_on:
       rails:
