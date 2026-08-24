@@ -357,7 +357,15 @@ function hasHumanOnlyLabel(labels: readonly string[]): boolean {
 }
 
 function contextualSearchQuery(question: string, context: ConversationContext): string {
+  let lastHumanIndex = -1
+  for (let index = context.turns.length - 1; index >= 0; index -= 1) {
+    if (context.turns[index]?.role === 'human') {
+      lastHumanIndex = index
+      break
+    }
+  }
   const customerTurns = context.turns
+    .slice(lastHumanIndex + 1)
     .filter((turn) => turn.role === 'customer')
     .slice(-3)
     .map((turn) => turn.text)

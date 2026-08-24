@@ -180,6 +180,37 @@ describe('MessageProcessor', () => {
     expect(thread.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
 
+  it('starts a new topic after the latest human reply instead of reusing stale identity context', async () => {
+    const newTopic = setup()
+    newTopic.loadContext.mockResolvedValueOnce({
+      turns: [
+        { role: 'customer', text: 'Mir wurden zwei Leads versprochen.' },
+        {
+          role: 'human',
+          text: 'Wie heißt du und mit welcher E-Mail-Adresse bist du registriert?',
+        },
+      ],
+      labels: ['ki-entwurf'],
+      needsIdentityClarification: true,
+      hasContactChannel: true,
+      humanRepliedAfterBot: true,
+    })
+
+    await newTopic.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Wie erstelle ich meinen ersten Kontakt?' }),
+    })
+
+    expect(newTopic.search).toHaveBeenCalled()
+    expect(newTopic.answer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: 'Wie erstelle ich meinen ersten Kontakt?',
+        sources: expect.arrayContaining([expect.objectContaining({ sourceId: 'source-1' })]),
+      }),
+    )
+    expect(newTopic.saveDraft).toHaveBeenCalled()
+  })
+
   it('keeps sensitive and explicit-human handoffs under human control', async () => {
     for (const label of ['zahlung', 'mensch-gewuenscht']) {
       const blocked = setup([])
