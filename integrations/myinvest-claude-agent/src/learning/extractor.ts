@@ -74,9 +74,11 @@ export interface CandidateExtraction {
 // Deckungsgleich mit der Guard-Liste des Prozessors: was live sowieso an
 // Menschen geht (Preis, Vertrag, Kuendigung, ...), soll der Loop nicht lernen.
 export const sensitiveTopic =
-  /\b(?:passwort|kennwort|otp|2fa|tan|kreditkarte|iban|konto(?:nummer)?|rechnung|bezahlen|zahlung|abbuchung|lastschrift|refund|erstattung|preis|kosten|anwalt|recht(?:lich|e|er)?|vertrag|klausel|haftung|widerruf|kündigung|steuer(?:n|lich|beratung)?|rendite|anlageberatung|kaufempfehlung|verkaufsempfehlung|investmentberatung)\b/iu
+  /\b(?:passwort|kennwort|otp|2fa|tan|kreditkarte|iban|konto(?:nummer)?|rechnung|bezahlen|zahlung|abbuchung|lastschrift|refund|erstattung|preis|kosten|anwalt|recht(?:lich|e|er)?|vertrag|klausel|haftung|widerruf|kündigung|steuer(?:n|lich|beratung)?|rendite|anlageberatung|kaufempfehlung|verkaufsempfehlung|investmentberatung|datenschutz|dsgvo|(?:lösch|loesch)(?:ung|en)|bank(?:verbindung|wechsel)|leads?\s+(?:versprochen|zugesagt))\b/iu
 export const likelySecret = /\b(?:sk|pk|api|access|secret|token)[-_][a-z0-9_-]{12,}\b/iu
 export const directPersonalization = /\b(?:kundennummer|vertragsnummer|geburtsdatum|anschrift)\b/iu
+export const nonReusableSupportText =
+  /\b(?:ist jemand (?:da|hier)|wie können wir helfen|wie koennen wir helfen|wie heißt du|wie heisst du|welche e-mail-adresse|mit wem (?:schreibe|spreche) ich)\b/iu
 
 const legacyRedactions: Array<[RegExp, string]> = [
   [/[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+/giu, '[E-MAIL]'],

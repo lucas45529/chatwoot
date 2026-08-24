@@ -1,22 +1,34 @@
 import pg from 'pg'
+import { parseTenantConfig } from '../config.js'
 import { tenantKeySchema, type TenantKey } from '../domain.js'
 import { extractLiveCandidates, type LiveConversation, type LiveMessage } from './mine-conversations.js'
-import { storeExtractedCandidates } from './repository.js'
+import { HANDED_OFF_DELIVERIES_SQL, LIVE_MESSAGES_SQL } from './live-queries.js'
+import {
+  approveCandidate,
+  publishCandidate,
+  storeExtractedCandidates,
+} from './repository.js'
 
-// Mining-Lauf: liest die zuletzt uebergebenen Konversationen (Agent-DB), holt
-// die Nachrichten aus der Chatwoot-DB (read-only Rolle) und stellt neue
-// Wissens-Kandidaten in Review (status pending_review).
+// Mining-Lauf: liest jede kuerzlich uebergebene Delivery, loest Chatwoots
+// account-gebundene display_id korrekt zur internen conversation.id auf und
+// lernt ausschliesslich aus Antworten, die ein Mensch wirklich gesendet hat.
+// Nach PII-/Risiko-Guards gilt der Sendeklick als Review: approve + publish
+// bleiben zwei getrennte, auditierte Transitionen.
 //   node dist/learning/mine-cli.js [--days 7] [--tenant saas]
 const databaseUrl = process.env.DATABASE_URL || process.env.CLAUDE_AGENT_DATABASE_URL
 const chatwootDatabaseUrl = process.env.CHATWOOT_DATABASE_URL
+const tenantsJson = process.env.TENANTS_JSON
 if (!databaseUrl) throw new Error('DATABASE_URL is required')
 if (!chatwootDatabaseUrl) throw new Error('CHATWOOT_DATABASE_URL is required')
+if (!tenantsJson) throw new Error('TENANTS_JSON is required')
 
 const daysArg = process.argv.indexOf('--days')
 const days = daysArg >= 0 ? Number(process.argv[daysArg + 1]) : 7
 if (!Number.isInteger(days) || days < 1 || days > 90) throw new Error('--days 1..90')
 const tenantArg = process.argv.indexOf('--tenant')
 const tenantFilter = tenantArg >= 0 ? tenantKeySchema.parse(process.argv[tenantArg + 1]) : null
+const tenantRegistry = parseTenantConfig(tenantsJson)
+const accountByTenant = new Map(tenantRegistry.map((tenant) => [tenant.key, tenant.accountId]))
 
 const agentPool = new pg.Pool({ connectionString: databaseUrl })
 const chatwootPool = new pg.Pool({ connectionString: chatwootDatabaseUrl })
@@ -27,22 +39,22 @@ interface HandedOffRow {
 }
 
 interface MessageRow {
-  conversation_id: string
+  conversation_display_id: string
   message_id: string
   message_type: number
-  sender_type: string
+  sender_type: string | null
   private: boolean
   content: string
   created_at: Date
+  external_echo: boolean
+  from_automation: boolean
+  from_campaign: boolean
+  agent_kind: string | null
 }
 
 try {
   const handedOff = await agentPool.query<HandedOffRow & Record<string, unknown>>(
-    `SELECT tenant_key, conversation_id::text
-       FROM agent_conversation_states
-      WHERE status = 'handed_off'
-        AND updated_at >= now() - ($1 || ' days')::interval
-        AND ($2::text IS NULL OR tenant_key = $2)`,
+    HANDED_OFF_DELIVERIES_SQL,
     [String(days), tenantFilter],
   )
 
@@ -51,6 +63,7 @@ try {
   let rejectedConversations = 0
   let inserted = 0
   let refreshed = 0
+  let published = 0
   const byTenant = new Map<TenantKey, string[]>()
   for (const row of handedOff.rows) {
     const list = byTenant.get(row.tenant_key) ?? []
@@ -58,42 +71,62 @@ try {
     byTenant.set(row.tenant_key, list)
   }
 
-  for (const [tenant, conversationIds] of byTenant) {
+  for (const [tenant, conversationDisplayIds] of byTenant) {
+    const accountId = accountByTenant.get(tenant)
+    if (!accountId) throw new Error(`Missing Chatwoot account for tenant ${tenant}`)
     const messages = await chatwootPool.query<MessageRow & Record<string, unknown>>(
-      `SELECT m.conversation_id::text, m.id::text AS message_id, m.message_type,
-              m.sender_type, m.private, m.content, m.created_at
-         FROM messages m
-        WHERE m.conversation_id = ANY($1::bigint[])
-          AND m.content IS NOT NULL
-          AND m.content <> ''
-        ORDER BY m.conversation_id, m.created_at ASC, m.id ASC`,
-      [conversationIds],
+      LIVE_MESSAGES_SQL,
+      [accountId, conversationDisplayIds],
     )
     const grouped = new Map<string, LiveMessage[]>()
     for (const row of messages.rows) {
-      const list = grouped.get(row.conversation_id) ?? []
+      const list = grouped.get(row.conversation_display_id) ?? []
       list.push({
         messageId: Number(row.message_id),
         messageType: row.message_type,
-        senderType: row.sender_type,
+        senderType: row.sender_type ?? '',
         private: row.private,
         content: row.content,
         createdAt: row.created_at,
+        externalEcho: row.external_echo,
+        fromAutomation: row.from_automation,
+        fromCampaign: row.from_campaign,
+        agentKind: row.agent_kind ?? undefined,
       })
-      grouped.set(row.conversation_id, list)
+      grouped.set(row.conversation_display_id, list)
     }
-    const conversations: LiveConversation[] = conversationIds.map((id) => ({
-      conversationId: Number(id),
+    const conversations: LiveConversation[] = conversationDisplayIds.map((displayId) => ({
+      conversationId: Number(displayId),
       handedOff: true,
-      messages: grouped.get(id) ?? [],
+      messages: grouped.get(displayId) ?? [],
     }))
     const extraction = extractLiveCandidates({ tenant, exportId, conversations })
     examinedConversations += extraction.examinedConversations
     rejectedConversations += extraction.rejectedConversations
-    if (extraction.candidates.length > 0) {
-      const stored = await storeExtractedCandidates(agentPool, extraction.candidates)
-      inserted += stored.inserted
-      refreshed += stored.refreshed
+    if (extraction.candidates.length === 0) continue
+
+    const stored = await storeExtractedCandidates(agentPool, extraction.candidates)
+    inserted += stored.inserted
+    refreshed += stored.refreshed
+    const candidateKeys = extraction.candidates.map((candidate) => candidate.candidateKey)
+    const awaitingReview = await agentPool.query<
+      { id: string; target_tenant: TenantKey; status: 'pending_review' | 'approved' } &
+        Record<string, unknown>
+    >(
+      `SELECT id::text, target_tenant, status
+         FROM agent_knowledge_candidates
+        WHERE candidate_key = ANY($1::text[])
+          AND target_tenant = $2
+          AND status IN ('pending_review', 'approved')
+        ORDER BY id`,
+      [candidateKeys, tenant],
+    )
+    for (const candidate of awaitingReview.rows) {
+      if (candidate.status === 'pending_review') {
+        await approveCandidate(agentPool, candidate.id, candidate.target_tenant, 'chatwoot-human-send')
+      }
+      await publishCandidate(agentPool, candidate.id, 'chatwoot-human-send')
+      published += 1
     }
   }
 
@@ -107,6 +140,7 @@ try {
       rejected_conversations: rejectedConversations,
       inserted,
       refreshed,
+      published,
     }),
   )
 } finally {

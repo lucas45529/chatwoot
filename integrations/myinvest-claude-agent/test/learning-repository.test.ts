@@ -180,6 +180,28 @@ describe('knowledge learning repository', () => {
     expect(calls.some((call) => String(call[0]).includes("status = 'published'"))).toBe(true)
   })
 
+  it('publishes human-sent live answers into the live-support namespace', async () => {
+    const database = fakePool((sql) => {
+      if (sql.includes('FROM agent_knowledge_candidates')) {
+        return {
+          rows: [{
+            id: '8', candidate_key: 'live-key', source_namespace: 'chatwoot-live-v1',
+            target_tenant: 'saas', question_redacted: 'Wie aktiviere ich die Funktion?',
+            answer_redacted: 'Öffnen Sie Einstellungen und aktivieren Sie die Funktion.',
+            content_hash: 'live-hash', status: 'approved',
+          }],
+        }
+      }
+      if (sql.includes('INSERT INTO agent_knowledge_documents')) return { rows: [{ id: '12' }] }
+      return { rows: [] }
+    })
+    await publishCandidate(database.pool, '8', 'chatwoot-human-send')
+    const publication = database.query.mock.calls.find((call) =>
+      String(call[0]).includes('INSERT INTO agent_knowledge_documents'),
+    )
+    expect(publication?.[1]?.[1]).toBe('reviewed-live-support')
+  })
+
   it('retires published knowledge immediately on negative feedback and never promotes on helpful feedback', async () => {
     const rows = [{
       id: '7', candidate_key: candidate.candidateKey, source_namespace: candidate.sourceNamespace,

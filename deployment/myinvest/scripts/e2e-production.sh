@@ -62,6 +62,7 @@ resolve_registered_recovery_conversations() {
       recovery = base.where("custom_attributes ->> '\''myinvest_production_e2e_recovery'\'' IN (?)", markers)
       marked = base.where("additional_attributes ->> '\''myinvest_production_e2e_run'\'' IN (?)", markers)
       Conversation.where(id: recovery.select(:id)).or(Conversation.where(id: marked.select(:id))).distinct.find_each do |conversation|
+        Redis::Alfred.delete(format(Redis::Alfred::CONVERSATION_DRAFT_MESSAGE, id: conversation.id))
         conversation.update_labels([])
         conversation.update!(status: :resolved, priority: nil, assignee: nil,
                              custom_attributes: conversation.custom_attributes.merge("myinvest_e2e_retired" => true))
@@ -103,6 +104,7 @@ SQL')"
     exact = Conversation.where(account_id: account_id, display_id: display_ids).to_a
     raise "missing exact Production E2E conversation" unless exact.length == display_ids.length
     (marked + recovery + exact).uniq(&:id).each do |conversation|
+      Redis::Alfred.delete(format(Redis::Alfred::CONVERSATION_DRAFT_MESSAGE, id: conversation.id))
       conversation.update_labels([])
       conversation.update!(status: :resolved, priority: nil, assignee: nil,
                            custom_attributes: conversation.custom_attributes.merge("myinvest_e2e_retired" => true))
@@ -350,27 +352,41 @@ done
 deadline=$((SECONDS + ${E2E_TIMEOUT_SECONDS:-120}))
 
 answer_auth_token="$(<"$e2e_runtime/answer-auth-token")"
-public_answer_visible=false
-while (( SECONDS < deadline )); do
-  curl --fail --silent --show-error --max-time 20 --get \
-    --header "X-Auth-Token: $answer_auth_token" \
-    --data-urlencode "website_token=$website_token" \
-    "$external_base_url/messages" > "$e2e_runtime/answer-messages.json"
-  jq -e '(.payload | type == "array") and (.meta | type == "object")' \
-    "$e2e_runtime/answer-messages.json" >/dev/null || {
-    printf 'External widget messages response does not match the expected schema.\n' >&2
+until "${compose[@]}" exec -T \
+  -e E2E_CONVERSATION_ID="$answer_conversation_id" -e E2E_MESSAGE_ID="$answer_message_id" \
+  -e E2E_SOURCE_ID="$test_source_id" -e E2E_ASSIGNEE_ID="$expected_handoff_assignee_id" \
+  rails bundle exec rails runner '
+    conversation = Conversation.find(Integer(ENV.fetch("E2E_CONVERSATION_ID")))
+    marker = ENV.fetch("E2E_MESSAGE_ID")
+    source_id = ENV.fetch("E2E_SOURCE_ID")
+    draft_key = format(Redis::Alfred::CONVERSATION_DRAFT_MESSAGE, id: conversation.id)
+    draft = Redis::Alfred.get(draft_key).to_s
+    notes = conversation.messages.outgoing.select do |message|
+      message.private? && message.content_attributes["myinvest_agent_delivery_id"] == marker &&
+        message.content_attributes["myinvest_agent_message_kind"] == "draft_note" &&
+        message.content.to_s.include?("Antwortvorschlag:") &&
+        message.content.to_s.include?("Quellen:") && message.content.to_s.include?(source_id)
+    end
+    ready = conversation.open? &&
+            conversation.assignee_id == Integer(ENV.fetch("E2E_ASSIGNEE_ID"), 10) &&
+            conversation.label_list.include?("ki-entwurf") &&
+            draft.include?("Einstellungen") && notes.one?
+    exit(ready ? 0 : 1)
+  ' >/dev/null 2>&1; do
+  (( SECONDS < deadline )) || {
+    printf 'Timed out waiting for the human-review AI draft.\n' >&2
     exit 1
   }
-  if jq -e --arg marker "$answer_message_id" \
-    '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker) and ((.content_attributes.myinvest_agent_message_kind // "") == "answer") and (.content | type == "string") and ((.content | contains("Quellen:")) | not))] | length == 1' \
-    "$e2e_runtime/answer-messages.json" >/dev/null; then
-    public_answer_visible=true
-    break
-  fi
   sleep 2
 done
-[[ "$public_answer_visible" == true ]] || {
-  printf 'The sourced answer was not visible through the external website widget API.\n' >&2
+curl --fail --silent --show-error --max-time 20 --get \
+  --header "X-Auth-Token: $answer_auth_token" \
+  --data-urlencode "website_token=$website_token" \
+  "$external_base_url/messages" > "$e2e_runtime/answer-messages.json"
+jq -e --arg marker "$answer_message_id" \
+  '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker))] | length == 0' \
+  "$e2e_runtime/answer-messages.json" >/dev/null || {
+  printf 'The AI draft leaked into the customer-visible widget conversation.\n' >&2
   exit 1
 }
 
@@ -381,36 +397,11 @@ ledger_rows="$("${compose[@]}" exec -T postgres sh -ec \
   exit 1
 }
 
-until "${compose[@]}" exec -T \
-  -e E2E_CONVERSATION_ID="$answer_conversation_id" -e E2E_MESSAGE_ID="$answer_message_id" -e E2E_SOURCE_ID="$test_source_id" \
-  rails bundle exec rails runner '
-    conversation = Conversation.find(Integer(ENV.fetch("E2E_CONVERSATION_ID")))
-    marker = ENV.fetch("E2E_MESSAGE_ID")
-    source_id = ENV.fetch("E2E_SOURCE_ID")
-    outgoing = conversation.messages.outgoing.to_a
-    replies = outgoing.select do |message|
-      !message.private? && message.content_attributes["myinvest_agent_delivery_id"] == marker &&
-        message.content_attributes["myinvest_agent_message_kind"] == "answer"
-    end
-    # Der Quellenbeleg gehoert in die interne Notiz, nicht in den Kundenchat.
-    notes = outgoing.select do |message|
-      message.private? && message.content_attributes["myinvest_agent_delivery_id"] == marker &&
-        message.content_attributes["myinvest_agent_message_kind"] == "answer_sources" &&
-        message.content.to_s.include?("Quellen:") && message.content.to_s.include?(source_id)
-    end
-    exit(replies.one? && !replies.first.content.include?("Quellen:") && notes.one? ? 0 : 1)
-  ' >/dev/null 2>&1; do
-  (( SECONDS < deadline )) || {
-    printf 'Timed out waiting for the production Claude answer.\n' >&2
-    exit 1
-  }
-  sleep 2
-done
 
 answer_ledger="$("${compose[@]}" exec -T postgres sh -ec \
   "PGPASSWORD=\"\$CLAUDE_AGENT_DATABASE_PASSWORD\" psql --tuples-only --no-align --username \"\$CLAUDE_AGENT_DATABASE_USER\" --dbname \"\$CLAUDE_AGENT_DATABASE\" --command \"SELECT count(*) || ':' || min(status) FROM agent_delivery_ledger WHERE tenant_key = 'saas' AND message_id = $answer_message_id\"")"
-[[ "$answer_ledger" == "1:replied" ]] || {
-  printf 'Production delivery ledger did not record exactly one Claude reply.\n' >&2
+[[ "$answer_ledger" == "1:handed_off" ]] || {
+  printf 'Production delivery ledger did not record exactly one drafted handoff.\n' >&2
   exit 1
 }
 
@@ -472,4 +463,4 @@ test_document_inserted=false
 find "$e2e_runtime" -depth -delete
 trap - EXIT
 
-printf 'Production E2E passed: external website ingress, public AgentBot handoff, one externally visible sourced reply, HMAC, replay suppression, and tenant rejection.\n'
+printf 'Production E2E passed: external website ingress, critical AgentBot handoff, human-review AI draft without public leakage, HMAC, replay suppression, and tenant rejection.\n'

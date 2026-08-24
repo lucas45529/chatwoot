@@ -21,6 +21,37 @@ describe('ChatwootClient', () => {
     )
   })
 
+  it('stores an AI proposal as a Chatwoot draft instead of sending it', async () => {
+    const deliveryStore = { exists: vi.fn().mockResolvedValue(false) }
+    const request = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const client = new ChatwootClient('https://chat.example.test', deliveryStore, request)
+    const saveDraft: unknown = Reflect.get(client, 'saveDraft')
+    expect(typeof saveDraft).toBe('function')
+    if (typeof saveDraft !== 'function') return
+
+    await saveDraft.call(client, tenants[0]!, 77, 'Antwortvorschlag')
+    expect(request).toHaveBeenCalledWith(
+      'https://chat.example.test/api/v1/accounts/101/conversations/77/draft_messages',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ draft_message: { message: 'Antwortvorschlag' } }),
+      }),
+    )
+  })
+
+  it('never overwrites an existing shared draft on retry', async () => {
+    const deliveryStore = { exists: vi.fn().mockResolvedValue(false) }
+    const request = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ has_draft: true, message: 'Menschlich bearbeitet' }), {
+        status: 200,
+      }),
+    )
+    const client = new ChatwootClient('https://chat.example.test', deliveryStore, request)
+    await client.saveDraft(tenants[0]!, 77, 'Neuer KI-Text')
+    expect(request).toHaveBeenCalledOnce()
+    expect(request.mock.calls[0]![1]).toEqual(expect.objectContaining({ method: 'GET' }))
+  })
+
   it('does not leak an upstream response or token in errors', async () => {
     const deliveryStore = { exists: vi.fn().mockResolvedValue(false) }
     const request = vi.fn().mockResolvedValue(new Response('secret upstream response', { status: 500 }))

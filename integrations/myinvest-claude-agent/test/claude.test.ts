@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ClaudeClient, createClaudeClient, OpenAICompatibleLocalClient } from '../src/claude.js'
+import { ClaudeClient, createClaudeClient, OpenAICompatibleClient } from '../src/claude.js'
 import { loadConfig } from '../src/config.js'
 import { tenants } from './fixtures.js'
 
@@ -28,16 +28,56 @@ describe('ClaudeClient', () => {
     })
     await expect(
       valid.client.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] }),
-    ).resolves.toEqual({ text: 'Unter Einstellungen.', sourceIds: ['approved-1'] })
+    ).resolves.toEqual({ action: 'answer', text: 'Unter Einstellungen.', sourceIds: ['approved-1'] })
     expect(valid.create).toHaveBeenCalledWith(
       expect.objectContaining({ model: 'test-model', temperature: 0 }),
     )
+  })
+
+  it('allows a source-free clarification grounded in recent conversation context', async () => {
+    const clarification = client({
+      action: 'clarify',
+      answer:
+        'Klar, ich schaue mir die zwei zugesagten Leads an. Wie heißt du und mit welcher E-Mail-Adresse bist du registriert?',
+      confidence: 0.9,
+      source_ids: [],
+    })
+    const input = {
+      tenantKey: 'saas' as const,
+      question: 'Die möchte ich gerne haben :)',
+      sources: [],
+      conversationContext: {
+        turns: [
+          { role: 'human' as const, text: 'Hallo, wie können wir helfen?' },
+          {
+            role: 'customer' as const,
+            text: 'Ich habe die Änderung der Bank bestätigt. Mir wurden zwei Leads versprochen.',
+          },
+        ],
+        labels: ['ki-uebergabe'],
+        needsIdentityClarification: true,
+        hasContactChannel: true,
+        humanRepliedAfterBot: true,
+      },
+    }
+    await expect(clarification.client.answer(input)).resolves.toEqual({
+      action: 'clarify',
+      text:
+        'Klar, ich schaue mir die zwei zugesagten Leads an. Wie heißt du und mit welcher E-Mail-Adresse bist du registriert?',
+      sourceIds: [],
+    })
+    const request = clarification.create.mock.calls[0]![0]
+    expect(request.system).toContain('clarify')
+    expect(request.messages[0].content).toContain('zwei Leads versprochen')
+    expect(request.messages[0].content).not.toContain('Telefonnummer')
   })
 
   it.each([
     { action: 'handoff', answer: '', confidence: 1, source_ids: ['approved-1'] },
     { action: 'answer', answer: 'Unsicher', confidence: 0.64, source_ids: ['approved-1'] },
     { action: 'answer', answer: 'Erfunden', confidence: 1, source_ids: ['foreign'] },
+    { action: 'answer', answer: 'Unbelegt', confidence: 1, source_ids: [] },
+    { action: 'clarify', answer: 'Wie heißt du?', confidence: 1, source_ids: ['approved-1'] },
   ])('rejects unsafe structured decisions', async (decision) => {
     const unsafe = client(decision)
     await expect(
@@ -59,11 +99,11 @@ describe('ClaudeClient', () => {
     expect(system).toContain('WhatsApp')
     expect(system).toContain('Widerruf oder Rückerstattung')
     expect(system).toContain('ob es damit geklappt hat')
-    expect(system).toContain('Antworte nur als JSON: {"action":"answer|handoff"')
+    expect(system).toContain('Antworte nur als JSON: {"action":"answer|handoff|clarify"')
   })
 })
 
-describe('OpenAICompatibleLocalClient', () => {
+describe('OpenAICompatibleClient', () => {
   it('uses the internal JSON endpoint without auth and validates selected sources', async () => {
     const fetchImplementation = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
@@ -73,7 +113,7 @@ describe('OpenAICompatibleLocalClient', () => {
         }) } }],
       }), { status: 200 }),
     )
-    const local = new OpenAICompatibleLocalClient(
+    const local = new OpenAICompatibleClient(
       'http://local-llm:8000/v1',
       'local-model',
       5_000,
@@ -81,7 +121,7 @@ describe('OpenAICompatibleLocalClient', () => {
       fetchImplementation,
     )
     await expect(local.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] }))
-      .resolves.toEqual({ text: 'Unter Einstellungen.', sourceIds: ['approved-1'] })
+      .resolves.toEqual({ action: 'answer', text: 'Unter Einstellungen.', sourceIds: ['approved-1'] })
     const [url, request] = fetchImplementation.mock.calls[0]!
     expect(url).toBe('http://local-llm:8000/v1/chat/completions')
     expect(request.redirect).toBe('error')
@@ -96,14 +136,14 @@ describe('OpenAICompatibleLocalClient', () => {
   })
 
   it('fails closed on HTTP errors and foreign source IDs', async () => {
-    const failed = new OpenAICompatibleLocalClient(
+    const failed = new OpenAICompatibleClient(
       'http://local-llm:8000/v1', 'local-model', 5_000, undefined,
       vi.fn().mockResolvedValue(new Response('', { status: 503 })),
     )
     await expect(failed.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] }))
       .rejects.toThrow(/status 503/)
 
-    const foreign = new OpenAICompatibleLocalClient(
+    const foreign = new OpenAICompatibleClient(
       'http://local-llm:8000/v1', 'local-model', 5_000, undefined,
       vi.fn().mockResolvedValue(new Response(JSON.stringify({
         choices: [{ message: { content: JSON.stringify({
@@ -117,7 +157,7 @@ describe('OpenAICompatibleLocalClient', () => {
 
   it('bounds response parsing and aborts stalled requests', async () => {
     for (const body of ['not-json', 'x'.repeat(1_000_001)]) {
-      const local = new OpenAICompatibleLocalClient(
+      const local = new OpenAICompatibleClient(
         'http://local-llm:8000/v1', 'local-model', 5_000, undefined,
         vi.fn().mockResolvedValue(new Response(body, { status: 200 })),
       )
@@ -130,7 +170,7 @@ describe('OpenAICompatibleLocalClient', () => {
         request?.signal?.addEventListener('abort', () => reject(request.signal?.reason), { once: true })
       }),
     ) as unknown as typeof fetch
-    const stalled = new OpenAICompatibleLocalClient(
+    const stalled = new OpenAICompatibleClient(
       'http://local-llm:8000/v1', 'local-model', 10, undefined, stalledFetch,
     )
     await expect(stalled.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] }))
@@ -162,7 +202,7 @@ describe('gemini provider', () => {
       })
       const client = createClaudeClient(config)
       await expect(client.answer({ tenantKey: 'saas', question: 'Wo?', sources: [source] }))
-        .resolves.toEqual({ text: 'Unter Einstellungen.', sourceIds: ['approved-1'] })
+        .resolves.toEqual({ action: 'answer', text: 'Unter Einstellungen.', sourceIds: ['approved-1'] })
     } finally {
       vi.unstubAllGlobals()
     }

@@ -11,6 +11,7 @@
     "dev": "tsx watch src/server.ts",
     "ingest": "tsx src/ingest.ts",
     "learning:extract": "tsx src/learning/extract-cli.ts",
+    "learning:classify-history": "tsx src/learning/classify-history-cli.ts",
     "learning:mine": "tsx src/learning/mine-cli.ts",
     "learning:refresh-redaction": "tsx src/learning/refresh-cli.ts",
     "learning:review": "tsx src/learning/review-cli.ts",

@@ -19,6 +19,7 @@ interface Queryable {
 
 export interface AgentState {
   isHandedOff(tenantKey: TenantKey, conversationId: number): Promise<boolean>
+  activateConversation(tenantKey: TenantKey, conversationId: number): Promise<void>
   beginDelivery(
     tenantKey: TenantKey,
     messageId: number,
@@ -46,6 +47,15 @@ export class PostgresAgentState implements AgentState {
       [tenantKey, conversationId],
     )
     return result.rows[0]?.exists === true
+  }
+
+  async activateConversation(tenantKey: TenantKey, conversationId: number): Promise<void> {
+    await this.database.query(
+      `UPDATE agent_conversation_states
+          SET status = 'active', updated_at = now()
+        WHERE tenant_key = $1 AND conversation_id = $2 AND status = 'handed_off'`,
+      [tenantKey, conversationId],
+    )
   }
 
   /**

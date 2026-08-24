@@ -272,8 +272,8 @@ module Myinvest
       end
 
       def attach_agent_bot!(channel)
-        agent_bot = AgentBot.find_by(account: account, name: 'MyInvest Claude Support')
-        raise ConfigurationError, 'Agent bot MyInvest Claude Support not found' unless agent_bot
+        agent_bot = AgentBot.find_by(account: account, name: 'MyInvest Support')
+        raise ConfigurationError, 'Agent bot MyInvest Support not found' unless agent_bot
 
         bot_inbox = AgentBotInbox.find_or_initialize_by(inbox: channel.inbox)
         bot_inbox.agent_bot = agent_bot

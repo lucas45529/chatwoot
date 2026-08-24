@@ -359,15 +359,20 @@ export async function publishCandidate(
     if (candidate.status !== 'approved' || !candidate.target_tenant) {
       throw new Error('Candidate must be explicitly approved and tenant-classified')
     }
+    const reviewedNamespace =
+      candidate.source_namespace === 'chatwoot-live-v1'
+        ? 'reviewed-live-support'
+        : 'reviewed-hubspot'
     const result = await client.query<{ id: string } & Record<string, unknown>>(
       `INSERT INTO agent_knowledge_documents
          (tenant_key, source_namespace, source_id, title, content, metadata, content_hash,
           publication_status, active, learning_candidate_id)
-       VALUES ($1, 'reviewed-hubspot', $2, 'Freigegebene Support-Antwort', $3, $4, $5,
-               'published', true, $6)
+       VALUES ($1, $2, $3, 'Freigegebene Support-Antwort', $4, $5, $6,
+               'published', true, $7)
        RETURNING id`,
       [
         candidate.target_tenant,
+        reviewedNamespace,
         `candidate:${candidate.candidate_key}`,
         `Frage: ${candidate.question_redacted}\n\nAntwort: ${candidate.answer_redacted}`,
         { source: candidate.source_namespace, review: 'human-approved' },

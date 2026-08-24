@@ -1,13 +1,13 @@
-# MyInvest Claude Agent for Chatwoot
+# MyInvest Support Agent for Chatwoot
 
-This service connects one Chatwoot Agent Bot per MyInvest support account to Claude. It acknowledges signed Chatwoot webhooks immediately, queues work in Redis, retrieves only that account's approved knowledge from PostgreSQL full-text search, and replies through the Agent Bot token.
+This service connects the account-scoped `MyInvest Support` AgentBot to Gemini. It verifies signed webhooks, reads a short PII-redacted conversation context, retrieves tenant-approved knowledge, and places substantive responses into Chatwoot's shared composer draft for human approval. Only deterministic greetings and safety acknowledgements are sent automatically.
 
 ## Isolation and handoff
 
 - `saas`, `new_academy`, and `legacy_academy` have independent Chatwoot account IDs, webhook secrets, bot tokens, and knowledge rows.
 - Every retrieval query requires `tenant_key`; tests guard the negative cross-tenant path.
-- Missing sources, confidence below `0.65`, explicit human requests, payment, tax, legal, or investment-advice questions open the conversation for a human.
-- Chatwoot HMAC, timestamp freshness, and delivery IDs are verified before queuing. Redis deduplicates deliveries for 24 hours; PostgreSQL keeps the durable reply/handoff ledger across restarts.
+- Missing identity or an under-specified follow-up can produce one source-free, fact-free clarification draft; unsupported first messages and every sensitive topic open the conversation for a human.
+- Chatwoot HMAC, timestamp freshness, and delivery IDs are verified before queuing. Redis deduplicates deliveries for 24 hours; PostgreSQL keeps the durable reply, draft, and handoff ledger across restarts.
 
 ## Provider
 
@@ -58,18 +58,22 @@ Never put customer exports, secrets, or generated `.env` files into Git.
 HubSpot v2 history bundles remain separate from active knowledge. Candidate extraction verifies
 the bundle manifest and message digest, pairs historical questions with human answers, removes
 common personal identifiers, rejects sensitive/attachment-based pairs, and writes every result
-with `target_tenant = NULL` and `status = quarantined`:
+with `target_tenant = NULL` and `status = quarantined`. The reviewed export-to-tenant mapping is
+then applied without publishing:
 
 ```sh
 pnpm learning:extract -- /private/hubspot-v2-bundle
 pnpm learning:refresh-redaction -- /private/hubspot-v2-bundle
-pnpm learning:review -- approve 42 saas reviewer-id
+pnpm learning:classify-history -- scripts/history-learning-tenants.json
+pnpm learning:review -- approve 42 legacy_academy reviewer-id
 pnpm learning:review -- publish 42 reviewer-id
 ```
 
-Approval and publication are separate audited transactions. Retrieval sees only `published` and
-`active` documents for the current tenant. Helpful feedback never auto-publishes anything;
-negative feedback immediately retires a linked learned document and leaves a review/audit trail.
-The redaction refresh updates only tenantless, unpublished quarantined candidates. Any legacy row
-that cannot be matched safely is overwritten with a DLP placeholder and rejected, never deleted or
-silently promoted.
+Historic HubSpot candidates always retain the separate approve/publish gate. New live support
+answers have a stronger approval signal: a human reviewed or edited the AI draft and actually
+pressed Send. The daily `learning:mine` loop extracts every customer-to-human pair, applies the
+same PII, secret, sensitive-topic and non-reusable-clarification guards, then records separate
+audited approve and publish transitions under actor `chatwoot-human-send`. Retrieval sees only
+`published` and `active` documents for the current tenant. Negative feedback immediately retires a
+linked learned document and leaves a review/audit trail. A redaction refresh forces reviewed rows
+back through review; unsafe legacy rows are rejected, never deleted or silently promoted.

@@ -26,17 +26,27 @@ function setup(
 ) {
   const search = vi.fn().mockResolvedValue(hits)
   const answer = vi.fn().mockResolvedValue({
+    action: 'answer',
     text: 'Du startest mit der Kontoeinrichtung.',
     sourceIds: ['source-1'],
   })
   const sendMessage = vi.fn().mockResolvedValue(undefined)
+  const saveDraft = vi.fn().mockResolvedValue(undefined)
   const sendPrivateNote = vi.fn().mockResolvedValue(undefined)
   const setPriority = vi.fn().mockResolvedValue(undefined)
   const addLabels = vi.fn().mockResolvedValue(undefined)
   const assign = vi.fn().mockResolvedValue(undefined)
   const handoff = vi.fn().mockResolvedValue(undefined)
+  const loadContext = vi.fn().mockResolvedValue({
+    turns: [],
+    labels: [],
+    needsIdentityClarification: false,
+    hasContactChannel: false,
+    humanRepliedAfterBot: false,
+  })
   const state = {
     isHandedOff: vi.fn().mockResolvedValue(false),
+    activateConversation: vi.fn().mockResolvedValue(undefined),
     beginDelivery: vi.fn().mockResolvedValue({ status: 'processing', acquired: true }),
     markSending: vi.fn().mockResolvedValue(undefined),
     completeReply: vi.fn().mockResolvedValue(undefined),
@@ -46,7 +56,8 @@ function setup(
   const processor = new MessageProcessor({
     knowledge: { search },
     claude: { answer },
-    chatwoot: { sendMessage, sendPrivateNote, setPriority, addLabels, assign, handoff },
+    chatwoot: { sendMessage, sendPrivateNote, saveDraft, setPriority, addLabels, assign, handoff },
+    context: { loadContext },
     state,
     minRetrievalScore: 0.1,
     maxSources: 4,
@@ -55,12 +66,14 @@ function setup(
     processor,
     search,
     answer,
+    saveDraft,
     sendMessage,
     sendPrivateNote,
     setPriority,
     addLabels,
     assign,
     handoff,
+    loadContext,
     state,
   }
 }
@@ -71,7 +84,8 @@ describe('MessageProcessor', () => {
     await supported.processor.process({ tenant: tenants[1]!, payload: incomingPayload({ account: { id: 202 } }) })
     expect(supported.search).toHaveBeenCalledWith('new_academy', expect.any(String), 4, 0.1)
     expect(supported.answer).toHaveBeenCalledWith(expect.objectContaining({ tenantKey: 'new_academy' }))
-    expect(supported.sendMessage).toHaveBeenCalledOnce()
+    expect(supported.saveDraft).toHaveBeenCalledOnce()
+    expect(supported.sendMessage).not.toHaveBeenCalled()
 
     for (const content of [
       'Ich möchte mit einem Menschen sprechen.',
@@ -92,6 +106,102 @@ describe('MessageProcessor', () => {
     expect(unsupported.handoff).toHaveBeenCalledOnce()
   })
 
+  it('answers a presence check naturally without retrieval or human handoff', async () => {
+    const presence = setup([])
+    await presence.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Ist jemand hier ?' }),
+    })
+
+    expect(presence.search).not.toHaveBeenCalled()
+    expect(presence.answer).not.toHaveBeenCalled()
+    expect(presence.setPriority).not.toHaveBeenCalled()
+    expect(presence.handoff).not.toHaveBeenCalled()
+    expect(presence.sendMessage).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      'Hey, ja — wir sind da. Wie können wir dir helfen?',
+      55,
+      'answer',
+    )
+    expect(presence.state.completeReply).toHaveBeenCalledWith('saas', 55)
+  })
+
+  it('resumes after a human reply and drafts a context-grounded clarification', async () => {
+    const thread = setup()
+    thread.state.isHandedOff.mockResolvedValueOnce(true)
+    thread.loadContext.mockResolvedValueOnce({
+      turns: [
+        { role: 'assistant', text: 'Danke für deine Nachricht. Ein Kollege meldet sich.' },
+        { role: 'human', text: 'Hallo, wie können wir helfen?' },
+        {
+          role: 'customer',
+          text: 'Ich habe die Änderung der Bank bestätigt. Mir wurden zwei Leads versprochen.',
+        },
+      ],
+      labels: ['ki-uebergabe'],
+      needsIdentityClarification: true,
+      hasContactChannel: true,
+      humanRepliedAfterBot: true,
+    })
+    thread.answer.mockResolvedValueOnce({
+      action: 'clarify',
+      text:
+        'Klar, ich schaue mir das an. Wie heißt du und mit welcher E-Mail-Adresse bist du registriert?',
+      sourceIds: [],
+    })
+
+    await thread.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Die möchte ich gerne haben :)' }),
+    })
+
+    expect(thread.state.activateConversation).toHaveBeenCalledWith('saas', 77)
+    expect(thread.search).not.toHaveBeenCalled()
+    expect(thread.answer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: 'Die möchte ich gerne haben :)',
+        sources: [],
+        conversationContext: expect.objectContaining({
+          needsIdentityClarification: true,
+          humanRepliedAfterBot: true,
+        }),
+      }),
+    )
+    expect(thread.saveDraft).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      'Klar, ich schaue mir das an. Wie heißt du und mit welcher E-Mail-Adresse bist du registriert?',
+    )
+    expect(thread.sendMessage).not.toHaveBeenCalled()
+    expect(thread.addLabels).toHaveBeenCalledWith(tenants[0], 77, ['ki-entwurf'])
+    expect(thread.assign).toHaveBeenCalledWith(tenants[0], 77, tenants[0]!.handoffAssigneeId)
+    expect(thread.handoff).toHaveBeenCalledOnce()
+    expect(thread.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
+  })
+
+  it('keeps sensitive and explicit-human handoffs under human control', async () => {
+    for (const label of ['zahlung', 'mensch-gewuenscht']) {
+      const blocked = setup([])
+      blocked.state.isHandedOff.mockResolvedValueOnce(true)
+      blocked.loadContext.mockResolvedValueOnce({
+        turns: [{ role: 'human', text: 'Ich übernehme den Fall.' }],
+        labels: ['ki-uebergabe', label],
+        needsIdentityClarification: false,
+        hasContactChannel: true,
+        humanRepliedAfterBot: true,
+      })
+      await blocked.processor.process({
+        tenant: tenants[0]!,
+        payload: incomingPayload({ content: 'Gibt es schon etwas Neues?' }),
+      })
+      expect(blocked.state.activateConversation).not.toHaveBeenCalled()
+      expect(blocked.answer).not.toHaveBeenCalled()
+      expect(blocked.saveDraft).not.toHaveBeenCalled()
+      expect(blocked.sendMessage).not.toHaveBeenCalled()
+    }
+  })
+
   it('suppresses terminal and concurrently owned deliveries without side effects', async () => {
     const handedOff = setup()
     handedOff.state.isHandedOff.mockResolvedValueOnce(true)
@@ -110,23 +220,25 @@ describe('MessageProcessor', () => {
     }
   })
 
-  it('keeps source references internal and out of the customer reply', async () => {
+  it('keeps sources internal and puts the answer into the human composer', async () => {
     const selected = setup([
       { sourceId: 'source-1', title: 'Quelle Eins', content: 'A', metadata: {}, score: 0.4 },
       { sourceId: 'source-2', title: 'Quelle Zwei', content: 'B', metadata: {}, score: 0.3 },
     ])
-    selected.answer.mockResolvedValueOnce({ text: 'Antwort', sourceIds: ['source-2'] })
+    selected.answer.mockResolvedValueOnce({ action: 'answer', text: 'Antwort', sourceIds: ['source-2'] })
     await selected.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
-    expect(selected.sendMessage).toHaveBeenCalledWith(tenants[0], 77, 'Antwort', 55, 'answer')
+    expect(selected.saveDraft).toHaveBeenCalledWith(tenants[0], 77, 'Antwort')
+    expect(selected.sendMessage).not.toHaveBeenCalled()
     expect(selected.sendPrivateNote).toHaveBeenCalledWith(
       tenants[0],
       77,
       expect.stringContaining('Quelle Zwei [source-2]'),
       55,
-      'answer_sources',
+      'draft_note',
     )
     expect(selected.sendPrivateNote.mock.calls[0]![2]).not.toContain('Quelle Eins')
-    expect(selected.state.completeReply).toHaveBeenCalledWith('saas', 55)
+    expect(selected.addLabels).toHaveBeenCalledWith(tenants[0], 77, ['ki-entwurf'])
+    expect(selected.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
 
   it('escalates a critical report with priority, labels, note, assignment and a visible reply', async () => {
@@ -200,24 +312,44 @@ describe('MessageProcessor', () => {
     expect(finalAttempt.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
 
-  it('does not convert a delivered answer into a contradictory handoff when the ledger fails', async () => {
+  it('falls back to a visible human handoff when draft preparation fails finally', async () => {
+    const draftFailure = setup()
+    draftFailure.saveDraft.mockRejectedValueOnce(new Error('draft endpoint unavailable'))
+
+    await draftFailure.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload(),
+      isFinalAttempt: true,
+    })
+
+    expect(draftFailure.setPriority).toHaveBeenCalled()
+    expect(draftFailure.assign).toHaveBeenCalled()
+    expect(draftFailure.handoff).toHaveBeenCalled()
+    expect(draftFailure.sendMessage).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      expect.stringContaining('Kollegen'),
+      55,
+      'handoff_ack',
+    )
+    expect(draftFailure.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
+  })
+
+  it('does not send a customer message when draft ledger completion fails', async () => {
     const ledgerFailure = setup()
-    ledgerFailure.state.completeReply.mockRejectedValueOnce(new Error('database unavailable'))
+    ledgerFailure.state.completeHandoff.mockRejectedValueOnce(new Error('database unavailable'))
 
     await expect(
       ledgerFailure.processor.process({ tenant: tenants[0]!, payload: incomingPayload() }),
     ).rejects.toThrow(/database unavailable/)
 
-    expect(ledgerFailure.sendMessage).toHaveBeenCalledTimes(1)
-    expect(ledgerFailure.sendMessage).toHaveBeenCalledWith(
+    expect(ledgerFailure.saveDraft).toHaveBeenCalledTimes(1)
+    expect(ledgerFailure.saveDraft).toHaveBeenCalledWith(
       tenants[0],
       77,
       'Du startest mit der Kontoeinrichtung.',
-      55,
-      'answer',
     )
+    expect(ledgerFailure.sendMessage).not.toHaveBeenCalled()
     expect(ledgerFailure.setPriority).not.toHaveBeenCalled()
-    expect(ledgerFailure.handoff).not.toHaveBeenCalled()
-    expect(ledgerFailure.state.completeHandoff).not.toHaveBeenCalled()
   })
 })

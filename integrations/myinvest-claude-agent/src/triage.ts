@@ -59,6 +59,23 @@ export function normalizeForTriage(input: string): string {
     .trim()
 }
 
+const SUPPORT_PRESENCE_REPLY = 'Hey, ja — wir sind da. Wie können wir dir helfen?'
+const PRESENCE_OR_GREETING =
+  /^(?:hallo|hi|hey|moin|guten morgen|guten tag|guten abend|ist jemand (?:da|hier)|seid ihr (?:da|hier)|jemand (?:da|hier)|koennt ihr mir helfen|kann mir jemand helfen|ich brauche hilfe|brauche hilfe)$/
+
+/**
+ * Antworten, die kein Wissensdokument brauchen. Nur vollstaendige, kurze
+ * Praesenz-/Begruessungsfragen matchen; "Guten Morgen, mein Kunde wurde ..."
+ * laeuft deshalb weiter durch die kritische Triage.
+ */
+export function directSupportReply(input: string): string | undefined {
+  const normalized = normalizeForTriage(input)
+    .replace(/[!?.,:;]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return PRESENCE_OR_GREETING.test(normalized) ? SUPPORT_PRESENCE_REPLY : undefined
+}
+
 // Reihenfolge = Rangfolge: die erste passende Regel gewinnt. Schwere Faelle
 // stehen oben, damit "Beschwerde ueber einen fremden Anbieter" nicht als
 // harmlose Terminfrage endet.
@@ -116,7 +133,7 @@ const RULES: readonly TriageRule[] = [
     pattern:
       /\bmenschen?\b|\bmitarbeiter(?:in)?\b|\bechte person\b|\bkeine ki\b|\bkein bot\b|\bberater(?:in)? sprechen\b|\bsupport[- ]?team\b/,
     priority: 'high',
-    labels: [HANDOFF_LABEL],
+    labels: [HANDOFF_LABEL, 'mensch-gewuenscht'],
     internalHint: 'Kunde hat ausdrücklich einen Menschen verlangt.',
     customerAck:
       'Klar, ich hole einen Kollegen dazu — er meldet sich bei dir.',

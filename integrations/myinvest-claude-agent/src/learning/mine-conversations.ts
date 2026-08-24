@@ -5,6 +5,7 @@ import {
   directPersonalization,
   likelySecret,
   redactSupportText,
+  nonReusableSupportText,
   sensitiveTopic,
   type KnowledgeCandidate,
 } from './extractor.js'
@@ -24,6 +25,10 @@ export interface LiveMessage {
   private: boolean
   content: string
   createdAt: Date
+  externalEcho?: boolean
+  fromAutomation?: boolean
+  fromCampaign?: boolean
+  agentKind?: string
 }
 
 export interface LiveConversation {
@@ -56,7 +61,8 @@ function candidateFromLivePair(
   if (
     sensitiveTopic.test(combined) ||
     likelySecret.test(combined) ||
-    directPersonalization.test(combined)
+    directPersonalization.test(combined) ||
+    nonReusableSupportText.test(combined)
   ) {
     return null
   }
@@ -79,6 +85,26 @@ function candidateFromLivePair(
   }
 }
 
+function isCustomerMessage(message: LiveMessage): boolean {
+  return (
+    message.messageType === 0 &&
+    message.senderType === 'Contact' &&
+    !message.private &&
+    message.content.trim().length > 0
+  )
+}
+
+function isHumanAnswer(message: LiveMessage): boolean {
+  return (
+    message.messageType === 1 &&
+    (message.senderType === 'User' || (!message.senderType && message.externalEcho === true)) &&
+    message.fromAutomation !== true &&
+    message.fromCampaign !== true &&
+    !message.private &&
+    message.content.trim().length > 0
+  )
+}
+
 export function extractLiveCandidates(input: {
   tenant: TenantKey
   exportId: string
@@ -90,33 +116,49 @@ export function extractLiveCandidates(input: {
   for (const conversation of input.conversations) {
     if (!conversation.handedOff) continue
     examinedConversations += 1
-    const question = conversation.messages.find(
-      (message) =>
-        message.messageType === 0 &&
-        message.senderType === 'Contact' &&
-        !message.private &&
-        message.content.trim().length > 0,
-    )
-    const answer = question
-      ? conversation.messages.find(
-          (message) =>
-            message.messageType === 1 &&
-            message.senderType === 'User' &&
-            !message.private &&
-            message.content.trim().length > 0 &&
-            message.createdAt.getTime() > question.createdAt.getTime() &&
-            message.createdAt.getTime() - question.createdAt.getTime() <= MAX_ANSWER_DELAY_MS,
-        )
-      : undefined
-    const candidate =
-      question && answer
-        ? candidateFromLivePair(input.tenant, input.exportId, conversation.conversationId, question, answer)
-        : null
-    if (candidate) {
-      candidates.push(candidate)
-    } else {
-      rejectedConversations += 1
+    const candidatesBeforeConversation = candidates.length
+    // Ein Paar entsteht aus allen Kundennachrichten bis zur naechsten Antwort
+    // eines Menschen; Bot-, Automations- und Kampagnen-Nachrichten dazwischen
+    // zaehlen weder als Frage noch als Antwort.
+    let pendingQuestions: LiveMessage[] = []
+    let clarificationDraftPending = false
+    for (const message of conversation.messages) {
+      if (isCustomerMessage(message)) {
+        pendingQuestions.push(message)
+        continue
+      }
+      if (message.agentKind === 'clarify_draft_note') {
+        clarificationDraftPending = true
+        continue
+      }
+      if (!isHumanAnswer(message)) continue
+      const firstQuestion = pendingQuestions[0]
+      const lastQuestion = pendingQuestions.at(-1)
+      if (!firstQuestion || !lastQuestion) continue
+      const question: LiveMessage = {
+        ...firstQuestion,
+        content: pendingQuestions.map((part) => part.content.trim()).join('\n'),
+        createdAt: lastQuestion.createdAt,
+      }
+      pendingQuestions = []
+      const wasClarification = clarificationDraftPending
+      clarificationDraftPending = false
+      if (
+        wasClarification ||
+        message.createdAt.getTime() - question.createdAt.getTime() > MAX_ANSWER_DELAY_MS
+      ) {
+        continue
+      }
+      const candidate = candidateFromLivePair(
+        input.tenant,
+        input.exportId,
+        conversation.conversationId,
+        question,
+        message,
+      )
+      if (candidate) candidates.push(candidate)
     }
+    if (candidates.length === candidatesBeforeConversation) rejectedConversations += 1
   }
   return { candidates, examinedConversations, rejectedConversations }
 }

@@ -96,7 +96,7 @@ The wrapper validates the confirmation, paginates HubSpot `conversations/v3/conv
 - sets the `whatsapp_cloud` provider config including `app_secret`;
 - registers only the Meta webhook callback (never the phone number) and converts provider failures to generic cutover errors;
 - verifies Meta health: exact phone, WABA, business portfolio, `CONNECTED`/`VERIFIED`/`CLOUD_API`, non-risky quality rating, and webhook callback;
-- attaches the tenant's `MyInvest Claude Support` AgentBot only after health passes;
+- attaches the tenant's `MyInvest Support` AgentBot only after health passes;
 - assigns an existing account administrator to the inbox;
 - never prints secrets or places them on argv.
 
@@ -129,11 +129,11 @@ Run the fail-closed preflight from this directory:
 
 The host wrapper needs Docker Compose v5 but no host Ruby. It uses `deployment/myinvest/.env` by default (or `ENV_FILE`) only for Compose interpolation. Both one-offs use the pinned, tools-profile `channel-readiness` service, which has no Compose environment, does not inherit the `rails` service, and has networking disabled. The first one-off validates the exact tenant manifest and restricted `CHANNEL_READINESS_*` credential references using a mode-`0600` env file containing only `TENANTS_JSON` and `CHANNEL_READINESS_CONFIG_JSON`. On the host, the wrapper requires exactly one nonempty assignment for every Active Record encryption secret, accepts Google OAuth only as a complete nonempty pair, and checks each referenced provider credential. It writes only Boolean presence markers, the two manifest fields, and the non-secret cutover flag to the second mode-`0600` env file; a trap removes all temporary files. Active Record encryption, Google OAuth, provider, application, database, Redis, storage, SMTP, MinIO-root, Anthropic/AWS, backup, admin, and agent-database secret values never enter argv, stdout, temporary assessment env files, or either container. The command starts the pinned Chatwoot image with `--no-deps` and does not connect to providers, send messages, create channels, or register webhooks. Its exact declarative JSON contract contains `version`, `dry_run`, `assessment`, overall `status`, and tenant/channel statuses plus fixed reason codes. It emits tenant keys and configured public channel names only; mailbox addresses, phone numbers, provider/account IDs, owners, OAuth values, tokens, app secrets, confirmations, environment-variable names, and env-file contents are never emitted. Duplicate email mailboxes, Instagram identifiers, or WhatsApp identities across tenants block every affected channel.
 
-## Claude agent handoff
+## MyInvest support agent
 
 The `claude-agent` service builds from `../../integrations/myinvest-claude-agent` and talks to Chatwoot over `http://rails:3000`. Chatwoot sends signed AgentBot webhooks through the public `/_agent/webhooks/chatwoot` route, so private-network SSRF access stays disabled. Bootstrap creates one website inbox and one account-scoped Agent Bot per account, connects each pair, and writes the canonical `TENANTS_JSON` keys `saas`, `new_academy`, and `legacy_academy` atomically to `.env`; no credential is printed. It then builds and starts the agent.
 
-1. Attach the generated `MyInvest Claude Support` bot only to the intended inboxes in its own account.
+1. Attach the generated `MyInvest Support` bot only to the intended inboxes in its own account.
 2. Never place provider credentials in Chatwoot custom attributes or knowledge-base documents.
 3. After a provider-setting change, recreate only the agent: `docker compose up -d --build --force-recreate claude-agent`.
 4. Test signature rejection, tenant isolation, escalation, opt-out, and an unknown-answer case before enabling auto-replies.
@@ -142,9 +142,13 @@ Keep the knowledge sources scoped by account/tenant in the agent. Retrieved cont
 
 Every handoff is visible on both sides. Before the conversation is reopened the agent sets a Chatwoot priority, adds the triage labels, writes an internal note with trigger and next step, and assigns the conversation to the required per-tenant `handoffAssigneeId` in `runtime/tenants.json`; afterwards the customer receives one short German reply that a colleague takes over. Security, data-protection, complaint, payment, appointment, explicit-human and individual-advice messages never reach the model at all — `src/triage.ts` decides that deterministically so the escalation also works when the LLM call fails. Source references are no longer appended to the customer message; they go into the internal note. Delivery messages carry a delivery ID and kind, so retries cannot duplicate an answer, acknowledgement, or private note.
 
-`AGENT_LEARNING_CHATWOOT_DATABASE_URL` is a required read-only Chatwoot database role. Besides the reviewed learning miner, the runtime uses it only to check delivery markers in `messages`; this is necessary because Chatwoot permits Agent Bots to create messages but not to call `messages#index`.
+Standalone greetings and presence checks such as `Hallo` or `Ist jemand hier?` bypass retrieval and receive the natural direct reply `Hey, ja — wir sind da. Wie können wir dir helfen?`. Longer messages never match this shortcut and continue through safety triage plus tenant-scoped knowledge retrieval.
 
-Dashboard theme, greeting suppression on bot inboxes, and the triage labels are one idempotent configuration step. Preview with `./scripts/apply-support-experience.sh`, apply with `./scripts/apply-support-experience.sh --apply`. It sets `DASHBOARD_SCRIPTS` so the agent dashboard defaults to the light theme (Chatwoot keeps the theme in `localStorage.color_scheme`; a manual choice is never overwritten), turns `greeting_enabled` off on AgentBot inboxes in the three canonical tenant accounts, and upserts the eight handoff labels in those accounts.
+All substantive Gemini outputs are review-first: the agent loads up to twelve recent, non-private, PII-redacted turns and writes its answer or one fact-free clarification into Chatwoot's shared composer draft. The conversation is labelled `ki-entwurf`, assigned to the configured human, and opened; nothing reaches the customer until that human reviews/edits the text and presses Send. Sensitive labels remain human-only. The human send reactivates ordinary handed-off threads for the next customer turn.
+
+`AGENT_LEARNING_CHATWOOT_DATABASE_URL` is a required read-only Chatwoot database role. It powers delivery-marker deduplication, recent conversation context, and the reviewed learning miner; Agent Bots still cannot call `messages#index`.
+
+Dashboard theme, greeting suppression on bot inboxes, AgentBot branding, and the triage/draft labels are one idempotent configuration step. Preview with `./scripts/apply-support-experience.sh`, apply with `./scripts/apply-support-experience.sh --apply`. It defaults the dashboard to light, disables inbox greetings on managed AgentBot inboxes, renames the user-visible bot to `MyInvest Support`, and upserts all ten support labels in the three canonical tenant accounts.
 
 Knowledge files under `integrations/myinvest-claude-agent/knowledge/<tenant>` are not part of the image. Copy and re-ingest a namespace explicitly, which retires exactly that namespace and nothing else:
 
@@ -154,7 +158,7 @@ docker exec myinvest-chatwoot-claude-agent-1 node dist/ingest.js saas saas-app-h
 docker exec myinvest-chatwoot-claude-agent-1 node scripts/eval-retrieval.mjs
 ```
 
-Retrieval quality is guarded by two loops: `docker exec myinvest-chatwoot-claude-agent-1 node scripts/eval-retrieval.mjs` runs a fixed battery of typical customer questions and fails when any top hit falls below `KNOWLEDGE_MIN_SCORE` (run it after every knowledge or agent deploy), and `scripts/support-report.sh` (host cron, Mondays 07:12) writes the weekly support analytics to `~/support-reports/` — volume per inbox, bot deflection, top customer topics and most-asked questions, `retrieval_miss` questions (the next knowledge articles to write), and pending learning candidates. The search first AND-matches (`websearch_to_tsquery`), then falls back to OR-matching with ae/oe/ue/ss transliteration on both sides (migration `005_umlaut_transliteration.sql`). The self-learning loop (`node dist/learning/mine-cli.js`, host cron Tuesdays 06:47) turns handed-off conversations with a human answer into reviewable knowledge candidates; review via `node dist/learning/review-cli.js list|approve|publish|reject` in the agent container.
+Retrieval quality is gated by `node scripts/eval-retrieval.mjs`. Install the reviewed learning schedule with `./scripts/install-learning-loop.sh --apply`: every morning the miner resolves account-scoped display IDs correctly, extracts every safe customer-to-human pair, and treats the human Send click as the approval signal; PII, secrets, sensitive/account-specific cases, greetings and clarification questions are rejected. Approval and publication remain separate audited DB transitions under actor `chatwoot-human-send`, producing tenant-scoped `reviewed-live-support` documents. The Monday report still summarizes volume, retrieval misses and the review queue.
 
 ## Backups and restore
 
@@ -198,13 +202,13 @@ PRODUCTION_E2E_CONFIRMATION=test:support.myinvest-pro.de ./scripts/e2e-productio
 
 The restore keeps Caddy, Sidekiq, and the agent stopped until reconciliation finishes. Restored BullMQ agent keys are isolated only in the database selected by `CLAUDE_AGENT_REDIS_URL`, renamed under a run-tagged namespace, and given a verified TTL no longer than `DELIVERY_RETENTION_SECONDS`; raw queued payloads therefore cannot persist unbounded. Reconciliation compares every agent delivery/state key with the restored Chatwoot tenant, message, conversation, and creation time while public ingress and asynchronous writers are paused. A stale delivery is operationally neutralized with a negative conversation marker and a terminal status. The agent may reclaim it only when the immutable incoming-message timestamp is newer than the preserved ledger timestamp, so its own stale queued job stays suppressed. Stale handoff states are neutralized to `active`. A second run must report zero remaining mismatches.
 
-The production E2E creates two clearly marked synthetic visitors through the externally routed website-widget API, not through Rails. It proves Cloudflare/Caddy/Chatwoot ingress, an AgentBot handoff, exactly one sourced reply visible again through the public widget API, HMAC/replay/tenant rejection, then resolves the synthetic conversations and retires the temporary knowledge document without deleting production records.
+The production E2E creates two marked synthetic visitors through the externally routed website-widget API. It proves Cloudflare/Caddy/Chatwoot ingress, the critical human handoff, and a source-grounded Gemini answer present only as a human-review composer draft (zero customer-visible leakage), plus HMAC/replay/tenant rejection and complete cleanup.
 
 ## Operations
 
 ### Historical support chats
 
-Historical chat bundles are tenant-bound and explicitly excluded from the Claude knowledge base. The Academy website exporter accepts its Neon connection only through the process environment and writes a mode-`0700` bundle with mode-`0600` files:
+Historical chat bundles remain tenant-bound archives and are never published directly. The verified HubSpot exports have already been imported into bot-free `History Import` inboxes and extracted into redacted quarantine candidates. `learning:classify-history` applies only the reviewed export-to-tenant map; historic candidates still require explicit approve and publish actions before retrieval can see them. The Academy website exporter accepts its Neon connection only through the process environment and writes a mode-`0700` bundle with mode-`0600` files:
 
 ```bash
 SOURCE_DATABASE_URL='postgresql://…' ./scripts/export-neon-support-history.sh /secure/path/academy-history

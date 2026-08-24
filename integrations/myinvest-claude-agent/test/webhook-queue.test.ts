@@ -27,6 +27,36 @@ describe('WebhookController', () => {
     ).rejects.toThrow()
   })
 
+  it('projects contact identity to booleans and never queues raw PII', async () => {
+    const enqueue = vi.fn().mockResolvedValue(undefined)
+    const controller = new WebhookController({
+      tenants: buildTenantRegistry(tenants),
+      queue: { enqueue },
+      replayWindowSeconds: 300,
+      now: () => nowMs,
+    })
+    const rawPayload = {
+      ...incomingPayload(),
+      sender: {
+        email: 'private@example.invalid',
+        phone_number: '+49 170 1234567',
+        identifier: null,
+        name: 'Private Name',
+      },
+    }
+    const raw = JSON.stringify(rawPayload)
+    await controller.handle(raw, signedHeaders(raw, tenants[0]!.webhookSecret, nowMs))
+    const queued = enqueue.mock.calls[0]![2]
+    expect(queued.identity).toEqual({
+      hasEmail: true,
+      hasPhone: true,
+      hasIdentifier: false,
+    })
+    expect(JSON.stringify(queued)).not.toContain('private@example.invalid')
+    expect(JSON.stringify(queued)).not.toContain('1234567')
+    expect(JSON.stringify(queued)).not.toContain('Private Name')
+  })
+
   it('turns queue failures into a retryable infrastructure error', async () => {
     const controller = new WebhookController({
       tenants: buildTenantRegistry(tenants),

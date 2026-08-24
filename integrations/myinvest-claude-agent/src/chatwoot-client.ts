@@ -4,8 +4,11 @@ import type { ConversationPriority } from './triage.js'
 
 /** Nachrichten, die der Kunde im Chat sieht. */
 export type PublicMessageKind = 'answer' | 'handoff_ack'
-/** Interne Notizen; fuer den Kunden nicht sichtbar. */
-export type PrivateMessageKind = 'answer_sources' | 'handoff_note'
+export type PrivateMessageKind =
+  | 'answer_sources'
+  | 'handoff_note'
+  | 'draft_note'
+  | 'clarify_draft_note'
 /** deliveryId + kind ist der Idempotenzschluessel jeder gesendeten Nachricht. */
 export type DeliveryMessageKind = PublicMessageKind | PrivateMessageKind
 
@@ -35,6 +38,7 @@ export interface ChatwootPort {
     deliveryId: number,
     kind: PrivateMessageKind,
   ): Promise<void>
+  saveDraft(tenant: TenantConfig, conversationId: number, content: string): Promise<void>
   setPriority(tenant: TenantConfig, conversationId: number, priority: ConversationPriority): Promise<void>
   /** Ergaenzt Labels, ohne bestehende zu verlieren. */
   addLabels(tenant: TenantConfig, conversationId: number, labels: readonly string[]): Promise<void>
@@ -48,8 +52,10 @@ export interface ChatwootPort {
  */
 const PRIVATE_BY_KIND: Record<DeliveryMessageKind, boolean> = {
   answer: false,
-  answer_sources: true,
   handoff_ack: false,
+  answer_sources: true,
+  draft_note: true,
+  clarify_draft_note: true,
   handoff_note: true,
 }
 
@@ -82,6 +88,28 @@ export class ChatwootClient implements ChatwootPort {
     kind: PrivateMessageKind,
   ): Promise<void> {
     await this.sendDeliveryMessage(tenant, conversationId, content, deliveryId, kind)
+  }
+
+  async saveDraft(
+    tenant: TenantConfig,
+    conversationId: number,
+    content: string,
+  ): Promise<void> {
+    const path = `/api/v1/accounts/${tenant.accountId}/conversations/${conversationId}/draft_messages`
+    const current = asObject(
+      await this.json(
+        await this.fetchResponse(tenant, path, { method: 'GET' }),
+        'draft',
+      ),
+    )
+    if (current?.has_draft === true && typeof current.message === 'string' && current.message) {
+      return
+    }
+    await this.fetchResponse(tenant, path, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ draft_message: { message: content } }),
+    })
   }
 
   async setPriority(
@@ -155,7 +183,6 @@ export class ChatwootClient implements ChatwootPort {
       },
     })
   }
-
 
   private async currentLabels(
     tenant: TenantConfig,

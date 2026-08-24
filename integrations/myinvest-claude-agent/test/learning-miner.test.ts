@@ -4,6 +4,7 @@ import {
   type LiveConversation,
   type LiveMessage,
 } from '../src/learning/mine-conversations.js'
+import { HANDED_OFF_DELIVERIES_SQL, LIVE_MESSAGES_SQL } from '../src/learning/live-queries.js'
 
 const t0 = new Date('2026-08-20T10:00:00Z')
 
@@ -40,6 +41,16 @@ function extract(conversations: LiveConversation[]) {
   return extractLiveCandidates({ tenant: 'saas', exportId: 'live-test', conversations })
 }
 
+
+describe('live mining SQL', () => {
+  it('resolves account-scoped display IDs before joining internal message IDs', () => {
+    expect(HANDED_OFF_DELIVERIES_SQL).toContain("status = 'handed_off'")
+    expect(LIVE_MESSAGES_SQL).toContain('message.conversation_id = conversation.id')
+    expect(LIVE_MESSAGES_SQL).toContain('conversation.account_id = $1')
+    expect(LIVE_MESSAGES_SQL).toContain('conversation.display_id = ANY($2::bigint[])')
+    expect(LIVE_MESSAGES_SQL).not.toContain('message.conversation_id = ANY')
+  })
+})
 describe('live conversation mining', () => {
   it('turns a handed-off human answer into a reviewable candidate', () => {
     const result = extract([conversation({})])
@@ -52,6 +63,132 @@ describe('live conversation mining', () => {
     expect(candidate.sourceNamespace).toBe('chatwoot-live-v1')
     expect(candidate.questionRedacted).toContain('Maklerfreigabe')
     expect(candidate.answerRedacted).toContain('Einstellungen')
+  })
+
+  it('treats a WhatsApp external echo as a human-approved answer', () => {
+    const result = extract([
+      conversation({
+        messages: [
+          message({ messageId: 1 }),
+          message({
+            messageId: 2,
+            messageType: 1,
+            senderType: '',
+            externalEcho: true,
+            content:
+              'Die Maklerfreigabe aktivieren Sie unter Einstellungen im Bereich Team.',
+            createdAt: new Date(t0.getTime() + 60 * 1000),
+          }),
+        ],
+      }),
+    ])
+    expect(result.candidates).toHaveLength(1)
+  })
+
+  it.each([
+    ['Ist jemand hier?', 'Hallo, wie können wir helfen?'],
+    [
+      'Ich habe den Bankwechsel bestätigt und mir wurden zwei Leads versprochen.',
+      'Wie heißt du und mit welcher E-Mail-Adresse bist du registriert?',
+    ],
+  ])('does not publish non-reusable or account-specific support text', (question, answer) => {
+    const result = extract([
+      conversation({
+        messages: [
+          message({ messageId: 1, content: question }),
+          message({
+            messageId: 2,
+            messageType: 1,
+            senderType: 'User',
+            content: answer,
+            createdAt: new Date(t0.getTime() + 60 * 1000),
+          }),
+        ],
+      }),
+    ])
+    expect(result.candidates).toHaveLength(0)
+  })
+
+  it('skips clarification drafts but learns reviewed answers with a follow-up question', () => {
+    const clarification = conversation({
+      messages: [
+        message({ messageId: 1, content: 'Mir fehlt noch die Zuordnung zu meinem Zugang.' }),
+        message({
+          messageId: 2,
+          messageType: 1,
+          senderType: 'AgentBot',
+          private: true,
+          agentKind: 'clarify_draft_note',
+          content: 'KI-Entwurf zur Identitätsklärung.',
+          createdAt: new Date(t0.getTime() + 30 * 1000),
+        }),
+        message({
+          messageId: 3,
+          messageType: 1,
+          senderType: 'User',
+          content: 'Wie lautet die registrierte E-Mail-Adresse?',
+          createdAt: new Date(t0.getTime() + 60 * 1000),
+        }),
+      ],
+    })
+    expect(extract([clarification]).candidates).toHaveLength(0)
+
+    const sourcedAnswer = conversation({
+      messages: [
+        message({ messageId: 11, content: 'Wo aktiviere ich die Maklerfreigabe?' }),
+        message({
+          messageId: 12,
+          messageType: 1,
+          senderType: 'AgentBot',
+          private: true,
+          agentKind: 'draft_note',
+          content: 'KI-Entwurf mit freigegebener Quelle.',
+          createdAt: new Date(t0.getTime() + 30 * 1000),
+        }),
+        message({
+          messageId: 13,
+          messageType: 1,
+          senderType: 'User',
+          content:
+            'Die Maklerfreigabe aktivieren Sie unter Einstellungen im Bereich Team. Hat es geklappt?',
+          createdAt: new Date(t0.getTime() + 60 * 1000),
+        }),
+      ],
+    })
+    expect(extract([sourcedAnswer]).candidates).toHaveLength(1)
+  })
+
+  it('learns every customer-to-human pair in one handed-off conversation', () => {
+    const result = extract([
+      conversation({
+        messages: [
+          message({ messageId: 1 }),
+          message({
+            messageId: 2,
+            messageType: 1,
+            senderType: 'User',
+            content:
+              'Die Maklerfreigabe aktivieren Sie unter Einstellungen im Bereich Team.',
+            createdAt: new Date(t0.getTime() + 60 * 1000),
+          }),
+          message({
+            messageId: 3,
+            content: 'Wo sehe ich danach, ob die Freigabe wirklich aktiv ist?',
+            createdAt: new Date(t0.getTime() + 2 * 60 * 1000),
+          }),
+          message({
+            messageId: 4,
+            messageType: 1,
+            senderType: 'User',
+            content:
+              'Der aktive Status steht direkt in der Teamübersicht neben dem jeweiligen Benutzer.',
+            createdAt: new Date(t0.getTime() + 3 * 60 * 1000),
+          }),
+        ],
+      }),
+    ])
+    expect(result.candidates).toHaveLength(2)
+    expect(result.candidates.map((candidate) => candidate.sourcePairDigest)).toHaveLength(2)
   })
 
   it('skips conversations that were never handed off', () => {

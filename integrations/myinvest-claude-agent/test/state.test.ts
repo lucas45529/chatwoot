@@ -10,6 +10,19 @@ describe('PostgresAgentState', () => {
     expect(query.mock.calls[0]![1]).toEqual(['legacy_academy', 42])
   })
 
+  it('reactivates only a previously handed-off conversation', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ updated: 1 }] })
+    const state = new PostgresAgentState({ query })
+    const activateConversation: unknown = Reflect.get(state, 'activateConversation')
+    expect(typeof activateConversation).toBe('function')
+    if (typeof activateConversation !== 'function') return
+
+    await activateConversation.call(state, 'saas', 71)
+    expect(query.mock.calls[0]![0]).toContain("SET status = 'active'")
+    expect(query.mock.calls[0]![0]).toContain("status = 'handed_off'")
+    expect(query.mock.calls[0]![1]).toEqual(['saas', 71])
+  })
+
   it('atomically claims new, failed-sentinel and stale deliveries', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [{ status: 'processing', acquired: true }] })
     const state = new PostgresAgentState({ query })

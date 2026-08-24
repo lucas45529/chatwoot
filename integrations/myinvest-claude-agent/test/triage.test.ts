@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { handoffNote, normalizeForTriage, triage } from '../src/triage.js'
+import { directSupportReply, handoffNote, normalizeForTriage, triage } from '../src/triage.js'
 
 describe('triage', () => {
   it('rates a foreign-provider fraud report as critical and keeps it away from the model', () => {
@@ -22,6 +22,19 @@ describe('triage', () => {
     expect(outcome.category).toBe('zugang')
     expect(outcome.priority).toBe('high')
     expect(outcome.humanOnly).toBe(false)
+  })
+
+  it('answers only standalone presence and greeting messages directly', () => {
+    for (const message of ['Ist jemand hier ?', 'Hallo!', 'Moin', 'Könnt ihr mir helfen?']) {
+      expect(directSupportReply(message)).toBe(
+        'Hey, ja — wir sind da. Wie können wir dir helfen?',
+      )
+    }
+    expect(
+      directSupportReply(
+        'Guten Morgen, mein Kunde wurde von einem fremden Finanzierer angeschrieben.',
+      ),
+    ).toBeUndefined()
   })
 
   it.each([

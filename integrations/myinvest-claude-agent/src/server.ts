@@ -28,6 +28,7 @@ const processor = new MessageProcessor({
   knowledge: new PostgresKnowledgeRepository(pool),
   claude: createClaudeClient(config),
   chatwoot: new ChatwootClient(config.CHATWOOT_BASE_URL, deliveryStore),
+  context: deliveryStore,
   state,
   minRetrievalScore: config.KNOWLEDGE_MIN_SCORE,
   maxSources: config.KNOWLEDGE_MAX_SOURCES,

@@ -16,20 +16,94 @@ module Myinvest; end
 # 3. Die Labels der KI-Uebergabe in den drei kanonischen Mandanten-Accounts,
 #    damit Filter und Uebersicht sie kennen.
 class Myinvest::SupportExperience
-  DASHBOARD_THEME_MARKER = 'myinvest-default-color-scheme'
-  DASHBOARD_LIGHT_SCRIPT = <<~HTML
-    <script data-myinvest="#{DASHBOARD_THEME_MARKER}">
-      // Helles Dashboard als Standard. Eine bewusste Auswahl des Agenten
-      // (Darstellung -> Dunkel/Automatisch) bleibt unangetastet.
+  DASHBOARD_SCRIPT_MARKER = 'myinvest-support-dashboard-v2'
+  LEGACY_DASHBOARD_SCRIPT_MARKER = 'myinvest-default-color-scheme'
+  DASHBOARD_SCRIPT = <<~HTML
+    <script data-myinvest="#{DASHBOARD_SCRIPT_MARKER}">
       (function () {
         try {
           if (!window.localStorage.getItem('color_scheme')) {
             window.localStorage.setItem('color_scheme', 'light');
             window.localStorage.setItem('color_scheme:ts', String(Date.now()));
           }
-        } catch (error) {
-          // localStorage kann blockiert sein - dann gilt der Chatwoot-Standard.
-        }
+        } catch (error) {}
+
+        const draftsKey = 'draftMessages';
+        const routePattern = /\\/app\\/accounts\\/(\\d+)\\/conversations\\/(\\d+)/;
+        let syncing = false;
+        const request = (url, options = {}) =>
+          window.axios({ url, ...options });
+        const readDrafts = () => {
+          try {
+            return JSON.parse(window.localStorage.getItem(draftsKey) || '{}');
+          } catch (error) {
+            return {};
+          }
+        };
+        const syncDraft = async () => {
+          if (syncing || !window.axios) return;
+          const route = window.location.pathname.match(routePattern);
+          if (!route) return;
+          syncing = true;
+          try {
+            const [, accountId, conversationId] = route;
+            const draftKey = `draft-${conversationId}-REPLY`;
+            const syncKey = `myinvest-synced-draft-${accountId}-${conversationId}`;
+            const clearedKey = `myinvest-cleared-draft-${accountId}-${conversationId}`;
+            const endpoint =
+              `/api/v1/accounts/${accountId}/conversations/${conversationId}/draft_messages`;
+            const drafts = readDrafts();
+            const localDraft = typeof drafts[draftKey] === 'string' ? drafts[draftKey] : '';
+            const syncedDraft = window.localStorage.getItem(syncKey) || '';
+
+            if (syncedDraft && !localDraft) {
+              await request(endpoint, { method: 'DELETE' });
+              window.localStorage.removeItem(syncKey);
+              window.localStorage.setItem(clearedKey, syncedDraft);
+              return;
+            }
+
+            const response = await request(endpoint);
+            const payload = response.data || {};
+            const serverDraft =
+              payload.has_draft && typeof payload.message === 'string' ? payload.message : '';
+            if (!serverDraft) {
+              window.localStorage.removeItem(clearedKey);
+              return;
+            }
+            if (localDraft) {
+              if (syncedDraft && localDraft !== syncedDraft) {
+                await request(endpoint, {
+                  method: 'PATCH',
+                  data: { draft_message: { message: localDraft } },
+                });
+                window.localStorage.setItem(syncKey, localDraft);
+              }
+              return;
+            }
+            if (window.localStorage.getItem(clearedKey) === serverDraft) return;
+
+            const freshDrafts = readDrafts();
+            const freshReply =
+              typeof freshDrafts[draftKey] === 'string' ? freshDrafts[draftKey] : '';
+            const freshNote = freshDrafts[`draft-${conversationId}-NOTE`] || '';
+            if (freshReply || freshNote) return;
+            freshDrafts[draftKey] = serverDraft;
+            window.localStorage.setItem(draftsKey, JSON.stringify(freshDrafts));
+            window.localStorage.setItem(`${draftsKey}:ts`, String(Date.now()));
+            window.localStorage.setItem(syncKey, serverDraft);
+            window.location.reload();
+          } catch (error) {
+            // The private answer-proposal note remains the fail-safe surface.
+          } finally {
+            syncing = false;
+          }
+        };
+
+        window.setInterval(syncDraft, 1000);
+        window.addEventListener('popstate', syncDraft);
+        window.addEventListener('hashchange', syncDraft);
+        window.setTimeout(syncDraft, 0);
       })();
     </script>
   HTML
@@ -42,13 +116,17 @@ class Myinvest::SupportExperience
     { title: 'zahlung', color: '#f59e0b', description: 'Rechnung, Zahlung oder Abrechnung' },
     { title: 'zugang', color: '#0ea5e9', description: 'Zugang, Login oder Freischaltung' },
     { title: 'termin', color: '#22c55e', description: 'Termin- oder Rueckrufwunsch' },
-    { title: 'beratung', color: '#64748b', description: 'Individuelle Steuer-, Rechts- oder Anlagefrage' }
+    { title: 'beratung', color: '#64748b', description: 'Individuelle Steuer-, Rechts- oder Anlagefrage' },
+    { title: 'mensch-gewuenscht', color: '#6366f1', description: 'Kunde verlangt ausdruecklich einen Menschen' },
+    { title: 'ki-entwurf', color: '#14b8a6', description: 'KI-Antwort wartet auf menschliche Freigabe' }
   ].freeze
   HANDOFF_LABEL_TITLES = HANDOFF_LABELS.map { |label| label.fetch(:title) }.freeze
   # Labels gehoeren ausschliesslich in die drei kanonischen MyInvest-Accounts.
   # Ein Schreibzugriff auf fremde Accounts derselben Chatwoot-Instanz waere ein
   # Datenfehler, deshalb wird hier aufgeloest statt ueber alle Accounts gelaufen.
   TENANT_KEYS = %w[saas new_academy legacy_academy].freeze
+  AGENT_BOT_NAME = 'MyInvest Support'
+  LEGACY_AGENT_BOT_NAME = 'MyInvest Claude Support'
 
   def initialize(dry_run: true, handoff_assignees_json: ENV.fetch('SUPPORT_HANDOFF_ASSIGNEES_JSON', nil))
     @dry_run = dry_run
@@ -62,6 +140,7 @@ class Myinvest::SupportExperience
       dashboard_theme: dashboard_theme_state,
       greeting_inboxes: bot_inboxes_with_greeting.map(&:id),
       missing_labels: missing_labels_by_account,
+      agent_bot_renames: managed_agent_bots.filter_map { |bot| bot.id if bot.name == LEGACY_AGENT_BOT_NAME },
       handoff_assignees: handoff_assignees,
     }
     return plan.merge(status: 'planned') if dry_run
@@ -69,6 +148,7 @@ class Myinvest::SupportExperience
     ActiveRecord::Base.transaction do
       apply_dashboard_theme!
       disable_bot_greetings!
+      rename_agent_bots!
       upsert_labels!
     end
     GlobalConfig.clear_cache
@@ -81,7 +161,8 @@ class Myinvest::SupportExperience
 
   def dashboard_theme_state
     current = InstallationConfig.find_by(name: 'DASHBOARD_SCRIPTS')&.value.to_s
-    return 'present' if current.include?(DASHBOARD_THEME_MARKER)
+    return 'present' if current.include?(DASHBOARD_SCRIPT_MARKER)
+    return 'owned_legacy' if current.include?(LEGACY_DASHBOARD_SCRIPT_MARKER)
 
     current.strip.empty? ? 'missing' : 'foreign_value'
   end
@@ -93,7 +174,7 @@ class Myinvest::SupportExperience
     return if %w[present foreign_value].include?(state)
 
     config = InstallationConfig.find_or_initialize_by(name: 'DASHBOARD_SCRIPTS')
-    config.value = DASHBOARD_LIGHT_SCRIPT
+    config.value = DASHBOARD_SCRIPT
     config.locked = false
     config.save!
   end
@@ -141,6 +222,27 @@ class Myinvest::SupportExperience
     end
   rescue JSON::ParserError, KeyError, TypeError
     raise 'SUPPORT_HANDOFF_ASSIGNEES_JSON is invalid'
+  end
+
+  def managed_agent_bots
+    @managed_agent_bots ||= tenant_accounts.map do |account|
+      bots = AgentBot.where(
+        account: account,
+        name: [AGENT_BOT_NAME, LEGACY_AGENT_BOT_NAME]
+      ).to_a
+      raise "Account #{account.id} must resolve to exactly one managed AgentBot" unless bots.one?
+
+      bots.first
+    end
+  end
+
+  def rename_agent_bots!
+    managed_agent_bots.each do |agent_bot|
+      agent_bot.update!(
+        name: AGENT_BOT_NAME,
+        description: "Tenant-scoped MyInvest support assistant for #{agent_bot.account.name}"
+      )
+    end
   end
 
   def missing_labels_by_account

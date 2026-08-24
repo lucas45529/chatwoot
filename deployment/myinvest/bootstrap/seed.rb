@@ -20,6 +20,9 @@ canonical_keys = account_names.map(&:first)
 configured_names = account_names.map { |_, name, _| name }
 raise 'MyInvest tenant account names must be distinct' unless configured_names.uniq.length == account_names.length
 
+agent_bot_name = 'MyInvest Support'
+legacy_agent_bot_name = 'MyInvest Claude Support'
+
 tenant_credentials = []
 # rubocop:disable Metrics/BlockLength
 ActiveRecord::Base.transaction do
@@ -72,8 +75,15 @@ ActiveRecord::Base.transaction do
       membership.role = :administrator
     end
 
-    agent_bot = AgentBot.find_or_initialize_by(account: account, name: 'MyInvest Claude Support')
-    agent_bot.description = "Tenant-scoped Claude handoff for #{name}"
+    managed_bots = AgentBot.where(
+      account: account,
+      name: [agent_bot_name, legacy_agent_bot_name]
+    ).to_a
+    raise "Duplicate managed AgentBots for tenant: #{key}" if managed_bots.length > 1
+
+    agent_bot = managed_bots.first || AgentBot.new(account: account)
+    agent_bot.name = agent_bot_name
+    agent_bot.description = "Tenant-scoped MyInvest support assistant for #{name}"
     agent_bot.outgoing_url = "#{ENV.fetch('FRONTEND_URL').delete_suffix('/')}/_agent/webhooks/chatwoot"
     agent_bot.save!
 

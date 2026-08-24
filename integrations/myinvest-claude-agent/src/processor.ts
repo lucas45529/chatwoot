@@ -1,10 +1,25 @@
 import type { ChatwootPort } from './chatwoot-client.js'
+import type { ChatwootConversationContextStore } from './chatwoot-delivery-repository.js'
 import type { ClaudeAnswer, ClaudePort } from './claude.js'
 import type { TenantConfig } from './config.js'
-import type { ChatwootWebhookPayload, KnowledgeHit } from './domain.js'
+import type { ChatwootWebhookPayload, ConversationContext, KnowledgeHit } from './domain.js'
 import type { KnowledgeRepository } from './knowledge/repository.js'
 import type { AgentState } from './state.js'
-import { handoffNote, triage, type TriageOutcome } from './triage.js'
+import { directSupportReply, handoffNote, triage, type TriageOutcome } from './triage.js'
+
+const HUMAN_ONLY_LABELS: Record<string, true> = {
+  sicherheitsverdacht: true,
+  datenschutz: true,
+  beschwerde: true,
+  zahlung: true,
+  termin: true,
+  beratung: true,
+  urgent: true,
+  billing: true,
+  'mensch-gewuenscht': true,
+}
+const IDENTITY_BOUND_REQUEST =
+  /\b(?:leads?|versprochen|zugesagt|bank(?:wechsel|verbindung)|freischalt\w*)\b/iu
 
 export class MessageProcessor {
   constructor(
@@ -12,6 +27,7 @@ export class MessageProcessor {
       knowledge: KnowledgeRepository
       claude: ClaudePort
       chatwoot: ChatwootPort
+      context: ChatwootConversationContextStore
       state: AgentState
       minRetrievalScore: number
       maxSources: number
@@ -23,9 +39,41 @@ export class MessageProcessor {
     payload: ChatwootWebhookPayload
     isFinalAttempt?: boolean
   }): Promise<void> {
-    const { tenant, payload } = input
+    const { tenant, payload, isFinalAttempt = true } = input
     const conversationId = payload.conversation.id
-    if (await this.dependencies.state.isHandedOff(tenant.key, conversationId)) return
+    const conversationContext = await this.dependencies.context.loadContext({
+      accountId: tenant.accountId,
+      conversationDisplayId: conversationId,
+      currentMessageId: payload.id,
+      identity: payload.identity,
+    })
+    const wasHandedOff = await this.dependencies.state.isHandedOff(
+      tenant.key,
+      conversationId,
+    )
+    if (hasHumanOnlyLabel(conversationContext.labels)) {
+      console.log(
+        JSON.stringify({
+          event: 'agent_context_blocked_by_label',
+          tenant: tenant.key,
+          conversationId,
+        }),
+      )
+      return
+    }
+    if (wasHandedOff) {
+      if (!conversationContext.humanRepliedAfterBot) {
+        console.log(
+          JSON.stringify({
+            event: 'agent_handoff_waiting_for_human',
+            tenant: tenant.key,
+            conversationId,
+          }),
+        )
+        return
+      }
+      await this.dependencies.state.activateConversation(tenant.key, conversationId)
+    }
 
     const delivery = await this.dependencies.state.beginDelivery(
       tenant.key,
@@ -70,7 +118,7 @@ export class MessageProcessor {
         outcome,
         reason,
         detail,
-        isFinalAttempt: input.isFinalAttempt ?? true,
+        isFinalAttempt,
       })
       await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
     }
@@ -84,28 +132,60 @@ export class MessageProcessor {
       return
     }
 
-    let sources: KnowledgeHit[]
-    try {
-      sources = await this.dependencies.knowledge.search(
-        tenant.key,
-        question,
-        this.dependencies.maxSources,
-        this.dependencies.minRetrievalScore,
+    const directReply = directSupportReply(question)
+    if (directReply) {
+      await this.dependencies.state.markSending(tenant.key, payload.id)
+      await this.dependencies.chatwoot.sendMessage(
+        tenant,
+        conversationId,
+        directReply,
+        payload.id,
+        'answer',
       )
-    } catch (error) {
-      await handoff('retrieval_error', error instanceof Error ? error.message : undefined)
+      await this.dependencies.state.completeReply(tenant.key, payload.id)
+      console.log(
+        JSON.stringify({
+          event: 'agent_direct_reply',
+          tenant: tenant.key,
+          conversationId,
+        }),
+      )
       return
     }
 
-    if (!sources[0] || sources[0].score < this.dependencies.minRetrievalScore) {
-      // Frage mitschreiben (gekuerzt): die Retrieval-Miss-Reports bauen daraus
-      // die Liste fehlender Wissensartikel.
-      const excerpt = question.slice(0, 120).replace(/\s+/g, ' ')
-      await handoff(
-        'retrieval_miss',
-        `top_score=${sources[0]?.score ?? 'none'} question=${JSON.stringify(excerpt)}`,
-      )
-      return
+    const searchQuery = contextualSearchQuery(question, conversationContext)
+    let sources: KnowledgeHit[] = []
+    const forceIdentityClarification =
+      conversationContext.needsIdentityClarification &&
+      IDENTITY_BOUND_REQUEST.test(searchQuery)
+    if (!forceIdentityClarification) {
+      try {
+        sources = await this.dependencies.knowledge.search(
+          tenant.key,
+          searchQuery,
+          this.dependencies.maxSources,
+          this.dependencies.minRetrievalScore,
+        )
+      } catch (error) {
+        await handoff('retrieval_error', error instanceof Error ? error.message : undefined)
+        return
+      }
+    }
+
+    // Unter der Schwelle gibt es kein belastbares Wissen: ohne Verlauf uebernimmt
+    // ein Mensch, mit Verlauf entscheidet das Modell quellenlos (clarify).
+    const retrievalMissed =
+      !sources[0] || sources[0].score < this.dependencies.minRetrievalScore
+    if (retrievalMissed) {
+      if (conversationContext.turns.length === 0) {
+        const excerpt = question.slice(0, 120).replace(/\s+/g, ' ')
+        await handoff(
+          'retrieval_miss',
+          `top_score=${sources[0]?.score ?? 'none'} question=${JSON.stringify(excerpt)}`,
+        )
+        return
+      }
+      sources = []
     }
 
     let answer: ClaudeAnswer
@@ -114,6 +194,7 @@ export class MessageProcessor {
         tenantKey: tenant.key,
         question,
         sources,
+        conversationContext,
       })
     } catch (error) {
       console.error(
@@ -128,25 +209,57 @@ export class MessageProcessor {
       return
     }
 
-    const sourceList = citedSources(sources, answer.sourceIds)
-    await this.dependencies.state.markSending(tenant.key, payload.id)
-    // Beide Nachrichten sind ueber deliveryId + kind idempotent. Scheitert
-    // danach der Ledger, kann BullMQ neu versuchen, ohne doppelt zu senden.
-    await this.dependencies.chatwoot.sendMessage(
-      tenant,
-      conversationId,
-      answer.text,
-      payload.id,
-      'answer',
-    )
+    try {
+      await this.prepareDraft({
+        tenant,
+        conversationId,
+        deliveryId: payload.id,
+        answer,
+        sources,
+      })
+    } catch (error) {
+      if (!(input.isFinalAttempt ?? true)) throw error
+      await handoff('draft_error', error instanceof Error ? error.message : undefined)
+      return
+    }
+    await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
+  }
+
+  private async prepareDraft(input: {
+    tenant: TenantConfig
+    conversationId: number
+    deliveryId: number
+    answer: ClaudeAnswer
+    sources: readonly KnowledgeHit[]
+  }): Promise<void> {
+    const { tenant, conversationId, deliveryId, answer, sources } = input
+    await this.dependencies.chatwoot.saveDraft(tenant, conversationId, answer.text)
+    await this.dependencies.chatwoot.addLabels(tenant, conversationId, ['ki-entwurf'])
+    const sourceNote =
+      answer.sourceIds.length > 0
+        ? `\nQuellen: ${citedSources(sources, answer.sourceIds)}`
+        : '\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.'
     await this.dependencies.chatwoot.sendPrivateNote(
       tenant,
       conversationId,
-      `KI-Antwort gesendet.\nQuellen: ${sourceList}`,
-      payload.id,
-      'answer_sources',
+      `KI-Antwortentwurf wartet auf menschliche Freigabe.\n\nAntwortvorschlag:\n${answer.text}${sourceNote}`,
+      deliveryId,
+      answer.action === 'clarify' ? 'clarify_draft_note' : 'draft_note',
     )
-    await this.dependencies.state.completeReply(tenant.key, payload.id)
+    await this.dependencies.chatwoot.assign(
+      tenant,
+      conversationId,
+      tenant.handoffAssigneeId,
+    )
+    await this.dependencies.chatwoot.handoff(tenant, conversationId)
+    console.log(
+      JSON.stringify({
+        event: 'agent_draft_ready',
+        action: answer.action,
+        tenant: tenant.key,
+        conversationId,
+      }),
+    )
   }
 
   /**
@@ -237,6 +350,18 @@ export class MessageProcessor {
       )
     }
   }
+}
+
+function hasHumanOnlyLabel(labels: readonly string[]): boolean {
+  return labels.some((label) => HUMAN_ONLY_LABELS[label.trim().toLowerCase()] === true)
+}
+
+function contextualSearchQuery(question: string, context: ConversationContext): string {
+  const customerTurns = context.turns
+    .filter((turn) => turn.role === 'customer')
+    .slice(-3)
+    .map((turn) => turn.text)
+  return [...customerTurns, question].join('\n')
 }
 
 function citedSources(

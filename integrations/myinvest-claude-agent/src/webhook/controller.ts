@@ -1,5 +1,9 @@
 import type { TenantRegistry } from '../config.js'
-import { chatwootWebhookSchema, type ChatwootWebhookPayload } from '../domain.js'
+import {
+  chatwootWebhookAccountSchema,
+  chatwootWebhookSchema,
+  type ChatwootWebhookPayload,
+} from '../domain.js'
 import { verifyChatwootSignature } from './signature.js'
 
 export type WebhookHeaders = Record<string, string | string[] | undefined>
@@ -31,7 +35,7 @@ export class WebhookController {
 
   async handle(rawBody: string, headers: WebhookHeaders) {
     const parsedUnknown: unknown = JSON.parse(rawBody)
-    const accountShape = chatwootWebhookSchema.pick({ account: true }).parse(parsedUnknown)
+    const accountShape = chatwootWebhookAccountSchema.parse(parsedUnknown)
     const tenant = this.dependencies.tenants.requireByAccountId(accountShape.account.id)
     const timestamp = requiredHeader(headers, 'x-chatwoot-timestamp')
     const signature = requiredHeader(headers, 'x-chatwoot-signature')
