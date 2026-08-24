@@ -94,8 +94,12 @@ export class PostgresChatwootDeliveryStore
             AND conversation.account_id = $1
           WHERE message.account_id = $1
             AND conversation.display_id = $2
-            AND message.content_attributes ->> 'myinvest_agent_delivery_id' = $3
-            AND message.content_attributes ->> 'myinvest_agent_message_kind' = $4
+            AND CASE WHEN json_typeof(message.content_attributes) = 'string'
+                     THEN (message.content_attributes #>> '{}')::json ->> 'myinvest_agent_delivery_id'
+                     ELSE message.content_attributes ->> 'myinvest_agent_delivery_id' END = $3
+            AND CASE WHEN json_typeof(message.content_attributes) = 'string'
+                     THEN (message.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
+                     ELSE message.content_attributes ->> 'myinvest_agent_message_kind' END = $4
        ) AS exists`,
       [input.accountId, input.conversationDisplayId, String(input.deliveryId), input.kind],
     )
@@ -112,7 +116,9 @@ export class PostgresChatwootDeliveryStore
                  WHERE marker.account_id = $1
                    AND marker.conversation_id = conversation.id
                    AND marker.sender_type = 'AgentBot'
-                   AND marker.content_attributes ->> 'myinvest_agent_message_kind'
+                   AND CASE WHEN json_typeof(marker.content_attributes) = 'string'
+                            THEN (marker.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
+                            ELSE marker.content_attributes ->> 'myinvest_agent_message_kind' END
                        IN ('handoff_ack', 'handoff_note', 'draft_note', 'clarify_draft_note')
               ) AS last_agent_handoff_id
          FROM conversations AS conversation
@@ -130,9 +136,15 @@ export class PostgresChatwootDeliveryStore
          FROM (
            SELECT message.id::text AS message_id, message.message_type,
                   message.sender_type, message.content, message.created_at,
-                  message.content_attributes ->> 'myinvest_agent_message_kind' AS agent_kind,
-                  (message.content_attributes ->> 'external_echo') IS NOT NULL AS external_echo,
-                  (message.content_attributes ->> 'automation_rule_id') IS NOT NULL AS from_automation,
+                  CASE WHEN json_typeof(message.content_attributes) = 'string'
+                       THEN (message.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
+                       ELSE message.content_attributes ->> 'myinvest_agent_message_kind' END AS agent_kind,
+                  (CASE WHEN json_typeof(message.content_attributes) = 'string'
+                        THEN (message.content_attributes #>> '{}')::json ->> 'external_echo'
+                        ELSE message.content_attributes ->> 'external_echo' END) IS NOT NULL AS external_echo,
+                  (CASE WHEN json_typeof(message.content_attributes) = 'string'
+                        THEN (message.content_attributes #>> '{}')::json ->> 'automation_rule_id'
+                        ELSE message.content_attributes ->> 'automation_rule_id' END) IS NOT NULL AS from_automation,
                   (message.additional_attributes ? 'campaign_id') AS from_campaign
              FROM messages AS message
             WHERE message.account_id = $1

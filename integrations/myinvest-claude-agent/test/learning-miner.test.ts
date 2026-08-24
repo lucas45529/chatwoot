@@ -48,6 +48,7 @@ describe('live mining SQL', () => {
     expect(LIVE_MESSAGES_SQL).toContain('message.conversation_id = conversation.id')
     expect(LIVE_MESSAGES_SQL).toContain('conversation.account_id = $1')
     expect(LIVE_MESSAGES_SQL).toContain('conversation.display_id = ANY($2::bigint[])')
+    expect(LIVE_MESSAGES_SQL).toContain('json_typeof(message.content_attributes)')
     expect(LIVE_MESSAGES_SQL).not.toContain('message.conversation_id = ANY')
   })
 })

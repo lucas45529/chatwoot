@@ -11,9 +11,15 @@ export const HANDED_OFF_DELIVERIES_SQL = `SELECT DISTINCT tenant_key, conversati
 export const LIVE_MESSAGES_SQL = `SELECT conversation.display_id::text AS conversation_display_id,
               message.id::text AS message_id, message.message_type,
               message.sender_type, message.private, message.content, message.created_at,
-              message.content_attributes ->> 'myinvest_agent_message_kind' AS agent_kind,
-              (message.content_attributes ->> 'external_echo') IS NOT NULL AS external_echo,
-              (message.content_attributes ->> 'automation_rule_id') IS NOT NULL AS from_automation,
+              CASE WHEN json_typeof(message.content_attributes) = 'string'
+                   THEN (message.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
+                   ELSE message.content_attributes ->> 'myinvest_agent_message_kind' END AS agent_kind,
+              (CASE WHEN json_typeof(message.content_attributes) = 'string'
+                    THEN (message.content_attributes #>> '{}')::json ->> 'external_echo'
+                    ELSE message.content_attributes ->> 'external_echo' END) IS NOT NULL AS external_echo,
+              (CASE WHEN json_typeof(message.content_attributes) = 'string'
+                    THEN (message.content_attributes #>> '{}')::json ->> 'automation_rule_id'
+                    ELSE message.content_attributes ->> 'automation_rule_id' END) IS NOT NULL AS from_automation,
               (message.additional_attributes ? 'campaign_id') AS from_campaign
          FROM conversations AS conversation
          JOIN messages AS message

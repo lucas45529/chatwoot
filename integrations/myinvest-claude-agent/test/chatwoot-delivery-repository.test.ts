@@ -20,6 +20,7 @@ describe('PostgresChatwootDeliveryStore', () => {
     expect(sql).toContain('conversation.display_id = $2')
     expect(sql).toContain("myinvest_agent_delivery_id")
     expect(sql).toContain("myinvest_agent_message_kind")
+    expect(sql).toContain('json_typeof(message.content_attributes)')
     expect(query.mock.calls[0]![1]).toEqual([101, 77, '55', 'handoff_ack'])
   })
 
@@ -115,6 +116,7 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
       }),
     )
     expect(query.mock.calls[1]![0]).toContain('message.id <> $3')
+    expect(query.mock.calls[1]![0]).toContain('json_typeof(message.content_attributes)')
     expect(query.mock.calls[1]![0]).toContain('message.private = false')
     expect(query.mock.calls[1]![0]).toContain("content_attributes ->> 'external_echo'")
     expect(query.mock.calls[1]![1]).toEqual([101, '900', 4])
