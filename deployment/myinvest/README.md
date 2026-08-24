@@ -140,6 +140,18 @@ The `claude-agent` service builds from `../../integrations/myinvest-claude-agent
 
 Keep the knowledge sources scoped by account/tenant in the agent. Retrieved content must never cross the three account boundaries.
 
+Every handoff is visible on both sides. Before the conversation is reopened the agent sets a Chatwoot priority, adds the triage labels, writes an internal note with trigger and next step, and assigns the conversation (per-tenant `handoffAssigneeId` in `runtime/tenants.json`, otherwise the global `HANDOFF_ASSIGNEE_ID`); afterwards the customer receives one short German reply that a colleague takes over. Security, data-protection, complaint, payment, appointment, explicit-human and individual-advice messages never reach the model at all — `src/triage.ts` decides that deterministically so the escalation also works when the LLM call fails. Source references are no longer appended to the customer message; they go into the internal note.
+
+Dashboard theme, greeting suppression on bot inboxes, and the triage labels are one idempotent configuration step. Preview with `./scripts/apply-support-experience.sh`, apply with `./scripts/apply-support-experience.sh --apply`. It sets `DASHBOARD_SCRIPTS` so the agent dashboard defaults to the light theme (Chatwoot keeps the theme in `localStorage.color_scheme`; a manual choice is never overwritten), turns `greeting_enabled` off on every inbox that has an AgentBot attached, and upserts the eight handoff labels in all accounts.
+
+Knowledge files under `integrations/myinvest-claude-agent/knowledge/<tenant>` are not part of the image. Copy and re-ingest a namespace explicitly, which retires exactly that namespace and nothing else:
+
+```bash
+docker cp ../../integrations/myinvest-claude-agent/knowledge/saas myinvest-chatwoot-claude-agent-1:/tmp/saas-app-help
+docker exec myinvest-chatwoot-claude-agent-1 node dist/ingest.js saas saas-app-help /tmp/saas-app-help
+docker exec myinvest-chatwoot-claude-agent-1 node scripts/eval-retrieval.mjs
+```
+
 Retrieval quality is guarded by two loops: `docker exec myinvest-chatwoot-claude-agent-1 node scripts/eval-retrieval.mjs` runs a fixed battery of typical customer questions and fails when any top hit falls below `KNOWLEDGE_MIN_SCORE` (run it after every knowledge or agent deploy), and `scripts/support-report.sh` (host cron, Mondays 07:12) writes the weekly support analytics to `~/support-reports/` — volume per inbox, bot deflection, top customer topics and most-asked questions, `retrieval_miss` questions (the next knowledge articles to write), and pending learning candidates. The search first AND-matches (`websearch_to_tsquery`), then falls back to OR-matching with ae/oe/ue/ss transliteration on both sides (migration `005_umlaut_transliteration.sql`). The self-learning loop (`node dist/learning/mine-cli.js`, host cron Tuesdays 06:47) turns handed-off conversations with a human answer into reviewable knowledge candidates; review via `node dist/learning/review-cli.js list|approve|publish|reject` in the agent container.
 
 ## Backups and restore

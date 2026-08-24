@@ -26,6 +26,7 @@ const processor = new MessageProcessor({
   state: new PostgresAgentState(pool),
   minRetrievalScore: config.KNOWLEDGE_MIN_SCORE,
   maxSources: config.KNOWLEDGE_MAX_SOURCES,
+  handoffAssigneeId: config.HANDOFF_ASSIGNEE_ID,
 })
 const controller = new WebhookController({
   tenants: config.tenants,

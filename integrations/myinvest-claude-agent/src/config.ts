@@ -6,6 +6,9 @@ const tenantSchema = z.object({
   accountId: z.number().int().positive(),
   webhookSecret: z.string().min(24),
   agentBotToken: z.string().min(24),
+  // Optional: Chatwoot-User dieses Accounts, der uebergebene Gespraeche
+  // bekommt. Ohne Eintrag greift HANDOFF_ASSIGNEE_ID, sonst keine Zuweisung.
+  handoffAssigneeId: z.number().int().positive().optional(),
 })
 
 export type TenantConfig = z.infer<typeof tenantSchema>
@@ -78,6 +81,9 @@ const envSchema = z.object({
   MAX_BODY_BYTES: z.coerce.number().int().min(1024).max(1048576).default(262144),
   KNOWLEDGE_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.05),
   KNOWLEDGE_MAX_SOURCES: z.coerce.number().int().min(1).max(10).default(4),
+  // Chatwoot-User, dem uebergebene Gespraeche zugewiesen werden. Leer =
+  // Zuweisung ueberspringen (Gespraech bleibt in "Nicht zugewiesen").
+  HANDOFF_ASSIGNEE_ID: emptyStringAsUndefined(z.coerce.number().int().positive()),
   ANTHROPIC_PROVIDER: z.enum(['direct', 'bedrock', 'local', 'gemini']).default('direct'),
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-5'),

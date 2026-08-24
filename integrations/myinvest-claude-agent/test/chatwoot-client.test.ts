@@ -28,4 +28,48 @@ describe('ChatwootClient', () => {
     await expect(call).rejects.toEqual(expect.objectContaining<Partial<ChatwootApiError>>({ status: 500 }))
     await expect(call).rejects.not.toThrow(/secret upstream|saas-agent-bot-token/)
   })
+
+  it('sends a private note, a priority and merges labels without dropping existing ones', async () => {
+    const request = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(
+        new Response(url.endsWith('/labels') ? '{"payload":["support"]}' : '{}', { status: 200 }),
+      ),
+    )
+    const client = new ChatwootClient('https://chat.example.test', request)
+
+    await client.sendPrivateNote(tenants[0]!, 77, 'Interner Hinweis')
+    expect(request).toHaveBeenLastCalledWith(
+      'https://chat.example.test/api/v1/accounts/101/conversations/77/messages',
+      expect.objectContaining({
+        body: JSON.stringify({ content: 'Interner Hinweis', message_type: 'outgoing', private: true }),
+      }),
+    )
+
+    await client.setPriority(tenants[0]!, 77, 'urgent')
+    expect(request).toHaveBeenLastCalledWith(
+      'https://chat.example.test/api/v1/accounts/101/conversations/77/toggle_priority',
+      expect.objectContaining({ body: JSON.stringify({ priority: 'urgent' }) }),
+    )
+
+    await client.assign(tenants[0]!, 77, 9)
+    expect(request).toHaveBeenLastCalledWith(
+      'https://chat.example.test/api/v1/accounts/101/conversations/77/assignments',
+      expect.objectContaining({ body: JSON.stringify({ assignee_id: 9 }) }),
+    )
+
+    await client.addLabels(tenants[0]!, 77, ['ki-uebergabe', 'zugang'])
+    expect(request).toHaveBeenLastCalledWith(
+      'https://chat.example.test/api/v1/accounts/101/conversations/77/labels',
+      expect.objectContaining({ body: JSON.stringify({ labels: ['support', 'ki-uebergabe', 'zugang'] }) }),
+    )
+  })
+
+  it('skips the label write when nothing would change', async () => {
+    const request = vi.fn().mockResolvedValue(new Response('{"payload":["ki-uebergabe"]}', { status: 200 }))
+    const client = new ChatwootClient('https://chat.example.test', request)
+    await client.addLabels(tenants[0]!, 77, ['ki-uebergabe'])
+    expect(request).toHaveBeenCalledOnce()
+    await client.addLabels(tenants[0]!, 77, [])
+    expect(request).toHaveBeenCalledOnce()
+  })
 })

@@ -38,6 +38,9 @@ const tenantNames: Record<TenantKey, string> = {
   legacy_academy: 'alte MyInvest Academy',
 }
 
+/** Unter dieser Selbsteinschaetzung wird nicht geantwortet, sondern uebergeben. */
+const MIN_CONFIDENCE = 0.65
+
 const decisionSchema = z.object({
   action: z.enum(['answer', 'handoff']),
   answer: z.string().max(8_000),
@@ -80,13 +83,15 @@ function validatedDecision(text: string, input: ClaudeAnswerInput): ClaudeAnswer
   const sourcesAreValid =
     decision.source_ids.length > 0 &&
     decision.source_ids.every((sourceId) => allowedSourceIds.has(sourceId))
-  if (
-    decision.action !== 'answer' ||
-    decision.confidence < 0.65 ||
-    !decision.answer.trim() ||
-    !sourcesAreValid
-  ) {
-    throw new Error('Model requested human handoff')
+  // Grund mitgeben: ohne ihn ist im Log nicht unterscheidbar, ob das Modell
+  // selbst uebergeben wollte, unsicher war oder fremde Quellen erfunden hat.
+  const blockers: string[] = []
+  if (decision.action !== 'answer') blockers.push('action=handoff')
+  if (decision.confidence < MIN_CONFIDENCE) blockers.push(`confidence=${decision.confidence}`)
+  if (!decision.answer.trim()) blockers.push('empty_answer')
+  if (!sourcesAreValid) blockers.push('invalid_source_ids')
+  if (blockers.length > 0) {
+    throw new Error(`Model requested human handoff (${blockers.join(', ')})`)
   }
   return {
     text: decision.answer.trim(),

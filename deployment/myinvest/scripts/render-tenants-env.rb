@@ -16,6 +16,10 @@ tenants.each do |tenant|
   %w[webhookSecret agentBotToken].each do |key|
     abort "Invalid tenant credential: #{key}" unless tenant.fetch(key).is_a?(String) && tenant.fetch(key).length >= 24
   end
+  next unless tenant.key?('handoffAssigneeId')
+
+  assignee = tenant.fetch('handoffAssigneeId')
+  abort 'Invalid tenant handoffAssigneeId' unless assignee.is_a?(Integer) && assignee.positive?
 end
 
 json = JSON.generate(tenants)

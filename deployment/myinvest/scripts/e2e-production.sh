@@ -309,6 +309,31 @@ until "${compose[@]}" exec -T -e E2E_CONVERSATION_ID="$conversation_id" rails bu
   sleep 2
 done
 
+# Die Uebergabe muss fuer den Kunden sichtbar sein: genau eine Bot-Nachricht mit
+# der Lieferkennung der Kundennachricht. Ein stiller Statuswechsel gilt als Fehler.
+handoff_auth_token="$(<"$e2e_runtime/handoff-auth-token")"
+handoff_ack_deadline=$((SECONDS + ${E2E_ACK_TIMEOUT_SECONDS:-60}))
+handoff_ack_visible=false
+while (( SECONDS < handoff_ack_deadline )); do
+  curl --fail --silent --show-error --max-time 20 --get \
+    --header "X-Auth-Token: $handoff_auth_token" \
+    --data-urlencode "website_token=$website_token" \
+    "$external_base_url/messages" > "$e2e_runtime/handoff-messages.json"
+  if jq -e --arg marker "$message_id" \
+    '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker) and (.content | type == "string") and (.content | length > 0))] | length == 1' \
+    "$e2e_runtime/handoff-messages.json" >/dev/null; then
+    handoff_ack_visible=true
+    break
+  fi
+  sleep 2
+done
+[[ "$handoff_ack_visible" == true ]] || {
+  printf 'The AgentBot handoff stayed silent: no acknowledgement was visible through the external widget API.\n' >&2
+  exit 1
+}
+# Der Ack-Beweis ist Fortschritt: das Zeitbudget fuer die belegte Antwort neu setzen.
+deadline=$((SECONDS + ${E2E_TIMEOUT_SECONDS:-120}))
+
 answer_auth_token="$(<"$e2e_runtime/answer-auth-token")"
 public_answer_visible=false
 while (( SECONDS < deadline )); do
@@ -321,8 +346,8 @@ while (( SECONDS < deadline )); do
     printf 'External widget messages response does not match the expected schema.\n' >&2
     exit 1
   }
-  if jq -e --arg source_id "$test_source_id" \
-    '[.payload[] | select(.message_type == 1 and (.content | type == "string") and (.content | contains("Quellen:")) and (.content | contains($source_id)))] | length == 1' \
+  if jq -e --arg marker "$answer_message_id" \
+    '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker) and (.content | type == "string") and ((.content | contains("Quellen:")) | not))] | length == 1' \
     "$e2e_runtime/answer-messages.json" >/dev/null; then
     public_answer_visible=true
     break
@@ -347,10 +372,11 @@ until "${compose[@]}" exec -T \
     conversation = Conversation.find(Integer(ENV.fetch("E2E_CONVERSATION_ID")))
     marker = ENV.fetch("E2E_MESSAGE_ID")
     source_id = ENV.fetch("E2E_SOURCE_ID")
-    replies = conversation.messages.outgoing.select do |message|
-      message.content_attributes["myinvest_agent_delivery_id"] == marker
-    end
-    exit(replies.one? && replies.first.content.include?("Quellen:") && replies.first.content.include?(source_id) ? 0 : 1)
+    outgoing = conversation.messages.outgoing.to_a
+    replies = outgoing.select { |message| !message.private? && message.content_attributes["myinvest_agent_delivery_id"] == marker }
+    # Der Quellenbeleg gehoert in die interne Notiz, nicht in den Kundenchat.
+    notes = outgoing.select { |message| message.private? && message.content.to_s.include?("Quellen:") && message.content.to_s.include?(source_id) }
+    exit(replies.one? && !replies.first.content.include?("Quellen:") && notes.one? ? 0 : 1)
   ' >/dev/null 2>&1; do
   (( SECONDS < deadline )) || {
     printf 'Timed out waiting for the production Claude answer.\n' >&2

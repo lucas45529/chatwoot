@@ -4,11 +4,8 @@ import type { TenantConfig } from './config.js'
 import type { ChatwootWebhookPayload, KnowledgeHit } from './domain.js'
 import type { KnowledgeRepository } from './knowledge/repository.js'
 import type { AgentState } from './state.js'
+import { handoffNote, triage, type TriageOutcome } from './triage.js'
 
-const explicitHuman =
-  /\b(menschen?|mitarbeiter(?:in)?|support[- ]?team|echte person|berater(?:in)?)\b/i
-const sensitiveAdvice =
-  /\b(rechnung|bezahlen|zahlung|abbuchung|lastschrift|kreditkarte|refund|erstattung|preis|kosten|recht(?:lich|e|er)?|anwalt|vertrag|klausel|haftung|widerruf|kündigung|steuer(?:n|lich|beratung)?|rendite|anlageberatung|kaufempfehlung|verkaufsempfehlung|investmentberatung)\b/i
 export class MessageProcessor {
   constructor(
     private readonly dependencies: {
@@ -18,6 +15,8 @@ export class MessageProcessor {
       state: AgentState
       minRetrievalScore: number
       maxSources: number
+      /** Chatwoot-User, dem übergebene Gespräche zugewiesen werden. */
+      handoffAssigneeId?: number
     },
   ) {}
 
@@ -37,6 +36,8 @@ export class MessageProcessor {
     )
     if (!delivery.acquired) {
       if (delivery.status === 'processing' || delivery.status === 'sending') {
+        // Parallele Lieferung derselben Nachricht: die andere antwortet bereits,
+        // deshalb hier nur öffnen und keine zweite Nachricht an den Kunden.
         await this.dependencies.chatwoot.handoff(tenant, conversationId)
         await this.dependencies.state.markHandedOff(tenant.key, conversationId)
         await this.dependencies.state.completeDelivery(tenant.key, payload.id, 'handed_off')
@@ -44,28 +45,28 @@ export class MessageProcessor {
       return
     }
 
-    const logHandoff = (reason: string, detail?: string) => {
+    const question = payload.content.trim()
+    const outcome = triage(question)
+
+    const handoff = async (reason: string, detail?: string) => {
       console.log(
         JSON.stringify({
           event: 'agent_handoff',
           reason,
+          category: outcome.category,
+          priority: outcome.priority,
           tenant: tenant.key,
           conversationId,
           ...(detail ? { detail } : {}),
         }),
       )
-    }
-
-    const handoff = async (reason: string, detail?: string) => {
-      logHandoff(reason, detail)
-      await this.dependencies.chatwoot.handoff(tenant, conversationId)
+      await this.escalate({ tenant, conversationId, deliveryId: payload.id, outcome, reason, detail })
       await this.dependencies.state.markHandedOff(tenant.key, conversationId)
       await this.dependencies.state.completeDelivery(tenant.key, payload.id, 'handed_off')
     }
 
-    const question = payload.content.trim()
-    if (!question || explicitHuman.test(question) || sensitiveAdvice.test(question)) {
-      await handoff('guard_rule')
+    if (!question || outcome.humanOnly) {
+      await handoff(question ? `triage_${outcome.category}` : 'empty_message')
       return
     }
 
@@ -91,17 +92,22 @@ export class MessageProcessor {
         question,
         sources,
       })
-      const sourceList = sources
-        .filter((source) => answer.sourceIds.includes(source.sourceId))
-        .map((source) => sourceReference(source))
-        .filter((value, index, all) => all.indexOf(value) === index)
-        .join(', ')
+      const sourceList = citedSources(sources, answer.sourceIds)
       await this.dependencies.state.markSending(tenant.key, payload.id)
+      // Der Kunde bekommt die Antwort ohne technische Quellenliste; der Beleg
+      // geht als interne Notiz an das Team (nachvollziehbar, aber nicht im Chat).
       await this.dependencies.chatwoot.sendMessage(
         tenant,
         conversationId,
-        `${answer.text}\n\nQuellen: ${sourceList}`,
+        answer.text,
         payload.id,
+      )
+      await this.step({ tenant, conversationId, step: 'answer_note' }, () =>
+        this.dependencies.chatwoot.sendPrivateNote(
+          tenant,
+          conversationId,
+          `KI-Antwort gesendet.\nQuellen: ${sourceList}`,
+        ),
       )
       await this.dependencies.state.completeDelivery(tenant.key, payload.id, 'replied')
     } catch (error) {
@@ -113,9 +119,87 @@ export class MessageProcessor {
           error: error instanceof Error ? error.message : String(error),
         }),
       )
-      await handoff('answer_error')
+      await handoff('answer_error', error instanceof Error ? error.message : undefined)
     }
   }
+
+  /**
+   * Sichtbare Übergabe an einen Menschen: Priorität, Labels, interne Notiz,
+   * Zuweisung, Status offen — und eine Antwort an den Kunden, damit er nicht
+   * im Leeren wartet. Jeder Schritt ist einzeln fehlertolerant, weil ein
+   * fehlgeschlagener Nebenschritt (z. B. HTTP 404 auf toggle_status) den
+   * Kunden-Hinweis nicht verhindern darf.
+   */
+  private async escalate(input: {
+    tenant: TenantConfig
+    conversationId: number
+    deliveryId: number
+    outcome: TriageOutcome
+    reason: string
+    detail?: string
+  }): Promise<void> {
+    const { tenant, conversationId, outcome } = input
+    const context = { tenant, conversationId }
+    const { chatwoot } = this.dependencies
+
+    await this.step({ ...context, step: 'priority' }, () =>
+      chatwoot.setPriority(tenant, conversationId, outcome.priority),
+    )
+    await this.step({ ...context, step: 'labels' }, () =>
+      chatwoot.addLabels(tenant, conversationId, outcome.labels),
+    )
+    await this.step({ ...context, step: 'note' }, () =>
+      chatwoot.sendPrivateNote(
+        tenant,
+        conversationId,
+        handoffNote({ outcome, reason: input.reason, detail: input.detail }),
+      ),
+    )
+    // Account-eigener Bearbeiter schlaegt den globalen Default: ein User ist nur
+    // in seinen eigenen Chatwoot-Accounts zuweisbar.
+    const assigneeId = tenant.handoffAssigneeId ?? this.dependencies.handoffAssigneeId
+    if (assigneeId !== undefined) {
+      await this.step({ ...context, step: 'assign' }, () =>
+        chatwoot.assign(tenant, conversationId, assigneeId),
+      )
+    }
+    await this.step({ ...context, step: 'open' }, () => chatwoot.handoff(tenant, conversationId))
+    await this.step({ ...context, step: 'customer_ack' }, () =>
+      chatwoot.sendMessage(tenant, conversationId, outcome.customerAck, input.deliveryId),
+    )
+  }
+
+  private async step(
+    context: { tenant: TenantConfig; conversationId: number; step: string },
+    action: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await action()
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: 'agent_handoff_step_failed',
+          step: context.step,
+          tenant: context.tenant.key,
+          conversationId: context.conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    }
+  }
+}
+
+function citedSources(
+  sources: readonly KnowledgeHit[],
+  sourceIds: readonly string[],
+): string {
+  const references: string[] = []
+  for (const source of sources) {
+    if (!sourceIds.includes(source.sourceId)) continue
+    const reference = sourceReference(source)
+    if (!references.includes(reference)) references.push(reference)
+  }
+  return references.join(', ')
 }
 
 function sourceReference(source: KnowledgeHit): string {

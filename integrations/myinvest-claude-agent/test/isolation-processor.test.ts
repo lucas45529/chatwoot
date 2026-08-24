@@ -21,13 +21,20 @@ describe('knowledge isolation', () => {
   })
 })
 
-function setup(hits: unknown[] = [{ sourceId: 'source-1', title: 'Onboarding', content: 'Kontoeinrichtung', metadata: {}, score: 0.4 }]) {
+function setup(
+  hits: unknown[] = [{ sourceId: 'source-1', title: 'Onboarding', content: 'Kontoeinrichtung', metadata: {}, score: 0.4 }],
+  options: { handoffAssigneeId?: number } = { handoffAssigneeId: 9 },
+) {
   const search = vi.fn().mockResolvedValue(hits)
   const answer = vi.fn().mockResolvedValue({
     text: 'Du startest mit der Kontoeinrichtung.',
     sourceIds: ['source-1'],
   })
   const sendMessage = vi.fn().mockResolvedValue(undefined)
+  const sendPrivateNote = vi.fn().mockResolvedValue(undefined)
+  const setPriority = vi.fn().mockResolvedValue(undefined)
+  const addLabels = vi.fn().mockResolvedValue(undefined)
+  const assign = vi.fn().mockResolvedValue(undefined)
   const handoff = vi.fn().mockResolvedValue(undefined)
   const state = {
     isHandedOff: vi.fn().mockResolvedValue(false),
@@ -39,12 +46,13 @@ function setup(hits: unknown[] = [{ sourceId: 'source-1', title: 'Onboarding', c
   const processor = new MessageProcessor({
     knowledge: { search },
     claude: { answer },
-    chatwoot: { sendMessage, handoff },
+    chatwoot: { sendMessage, sendPrivateNote, setPriority, addLabels, assign, handoff },
     state,
     minRetrievalScore: 0.1,
     maxSources: 4,
+    handoffAssigneeId: options.handoffAssigneeId,
   })
-  return { processor, search, answer, sendMessage, handoff, state }
+  return { processor, search, answer, sendMessage, sendPrivateNote, setPriority, addLabels, assign, handoff, state }
 }
 
 describe('MessageProcessor', () => {
@@ -90,25 +98,77 @@ describe('MessageProcessor', () => {
       const ambiguous = setup()
       ambiguous.state.beginDelivery.mockResolvedValueOnce({ status, acquired: false })
       await ambiguous.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+      // Parallele Lieferung: keine zweite Kundennachricht, nur oeffnen.
       expect(ambiguous.sendMessage).not.toHaveBeenCalled()
+      expect(ambiguous.setPriority).not.toHaveBeenCalled()
       expect(ambiguous.handoff).toHaveBeenCalledOnce()
       expect(ambiguous.state.completeDelivery).toHaveBeenCalledWith('saas', 55, 'handed_off')
     }
   })
 
-  it('cites only sources selected by the model', async () => {
+  it('keeps source references internal and out of the customer reply', async () => {
     const selected = setup([
       { sourceId: 'source-1', title: 'Quelle Eins', content: 'A', metadata: {}, score: 0.4 },
       { sourceId: 'source-2', title: 'Quelle Zwei', content: 'B', metadata: {}, score: 0.3 },
     ])
     selected.answer.mockResolvedValueOnce({ text: 'Antwort', sourceIds: ['source-2'] })
     await selected.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
-    expect(selected.sendMessage).toHaveBeenCalledWith(
+    expect(selected.sendMessage).toHaveBeenCalledWith(tenants[0], 77, 'Antwort', 55)
+    expect(selected.sendPrivateNote).toHaveBeenCalledWith(
       tenants[0],
       77,
       expect.stringContaining('Quelle Zwei [source-2]'),
+    )
+    expect(selected.sendPrivateNote.mock.calls[0]![2]).not.toContain('Quelle Eins')
+  })
+
+  it('escalates a critical report with priority, labels, note, assignment and a visible reply', async () => {
+    const critical = setup()
+    const content =
+      'Mein Kunde wurde von einem fremden Finanzierer angeschrieben, der einen KI Avatar verwendet und keinen Datenschutzlink hat.'
+    await critical.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
+
+    expect(critical.answer).not.toHaveBeenCalled()
+    expect(critical.setPriority).toHaveBeenCalledWith(tenants[0], 77, 'urgent')
+    expect(critical.addLabels).toHaveBeenCalledWith(tenants[0], 77, ['ki-uebergabe', 'sicherheitsverdacht'])
+    expect(critical.sendPrivateNote).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      expect.stringContaining('triage_sicherheit'),
+    )
+    expect(critical.assign).toHaveBeenCalledWith(tenants[0], 77, 9)
+    expect(critical.handoff).toHaveBeenCalledOnce()
+    expect(critical.sendMessage).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      expect.stringContaining('als dringend markiert'),
       55,
     )
-    expect(selected.sendMessage.mock.calls[0]![2]).not.toContain('Quelle Eins')
+    expect(critical.state.markHandedOff).toHaveBeenCalledWith('saas', 77)
+  })
+
+  it('still answers the customer when escalation side steps fail', async () => {
+    const flaky = setup()
+    flaky.state.beginDelivery.mockResolvedValue({ status: 'processing', acquired: true })
+    flaky.setPriority.mockRejectedValueOnce(new Error('Chatwoot request toggle_priority returned 404'))
+    flaky.addLabels.mockRejectedValueOnce(new Error('Chatwoot request labels returned 403'))
+    flaky.handoff.mockRejectedValueOnce(new Error('Chatwoot request toggle_status returned 404'))
+    await flaky.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Ich will mit einem Menschen sprechen.' }),
+    })
+    expect(flaky.sendMessage).toHaveBeenCalledOnce()
+    expect(flaky.state.completeDelivery).toHaveBeenCalledWith('saas', 55, 'handed_off')
+  })
+
+  it('skips assignment when no assignee is configured', async () => {
+    const unassigned = setup(undefined, {})
+    await unassigned.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Ich hätte gern einen Rückruf.' }),
+    })
+    expect(unassigned.assign).not.toHaveBeenCalled()
+    expect(unassigned.setPriority).toHaveBeenCalledWith(tenants[0], 77, 'medium')
+    expect(unassigned.sendMessage).toHaveBeenCalledOnce()
   })
 })
