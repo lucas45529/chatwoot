@@ -39,9 +39,8 @@ export interface ConversationContextRequest {
     hasIdentifier: boolean
   }
 }
-
 export interface ChatwootConversationContextStore {
-  loadContext(input: ConversationContextRequest): Promise<ConversationContext>
+  loadContext(input: ConversationContextRequest): Promise<ConversationContext | undefined>
 }
 
 interface ContextMetadataRow extends Record<string, unknown> {
@@ -106,7 +105,9 @@ export class PostgresChatwootDeliveryStore
     return result.rows[0]?.exists === true
   }
 
-  async loadContext(input: ConversationContextRequest): Promise<ConversationContext> {
+  async loadContext(
+    input: ConversationContextRequest,
+  ): Promise<ConversationContext | undefined> {
     const metadata = await this.database.query<ContextMetadataRow>(
       `SELECT conversation.id::text AS conversation_id,
               conversation.cached_label_list,
@@ -114,7 +115,6 @@ export class PostgresChatwootDeliveryStore
                 SELECT max(marker.id)::text
                   FROM messages AS marker
                  WHERE marker.account_id = $1
-                   AND marker.conversation_id = conversation.id
                    AND marker.sender_type = 'AgentBot'
                    AND CASE WHEN json_typeof(marker.content_attributes) = 'string'
                             THEN (marker.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
@@ -127,7 +127,7 @@ export class PostgresChatwootDeliveryStore
       [input.accountId, input.conversationDisplayId],
     )
     const conversation = metadata.rows[0]
-    if (!conversation) throw new Error('Chatwoot conversation context was not found')
+    if (!conversation) return undefined
 
     const messages = await this.database.query<ContextMessageRow>(
       `SELECT recent.message_id, recent.message_type, recent.sender_type,

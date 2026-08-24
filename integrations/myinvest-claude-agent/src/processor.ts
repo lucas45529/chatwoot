@@ -47,6 +47,16 @@ export class MessageProcessor {
       currentMessageId: payload.id,
       identity: payload.identity,
     })
+    if (!conversationContext) {
+      console.log(
+        JSON.stringify({
+          event: 'agent_context_missing',
+          tenant: tenant.key,
+          conversationId,
+        }),
+      )
+      return
+    }
     const wasHandedOff = await this.dependencies.state.isHandedOff(
       tenant.key,
       conversationId,

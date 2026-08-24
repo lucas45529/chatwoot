@@ -41,6 +41,20 @@ describe('PostgresChatwootDeliveryStore health', () => {
     await store.healthCheck()
     expect(query.mock.calls[0]![0]).toContain('FROM messages CROSS JOIN conversations')
   })
+
+  it('returns no context for a signed webhook whose conversation no longer exists', async () => {
+    const store = new PostgresChatwootDeliveryStore({
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+    })
+    await expect(
+      store.loadContext({
+        accountId: 101,
+        conversationDisplayId: 999_999,
+        currentMessageId: 55,
+        identity: { hasEmail: false, hasPhone: false, hasIdentifier: false },
+      }),
+    ).resolves.toBeUndefined()
+  })
 })
 
 describe('PostgresChatwootDeliveryStore conversation context', () => {
