@@ -167,7 +167,7 @@ const RULES: readonly TriageRule[] = [
   {
     category: 'beratung',
     pattern:
-      /\bsteuer\w*|\bversteuer\w*|\brecht(?:lich|e|er)?\b|\bvertrag\w*|\bklausel\w*|\bhaftung\w*|\banlageberat\w*|\bempfehl\w*|\binvestmentberat\w*|\bfoerder\w* pruef\w*|\bpreis\w*|\bkosten\b|\bwas kostet\b|\bwelche (?:anlage|immobilie)\b|\bbeste rendite\b|\bsoll ich (?:kaufen|investieren|unterschreiben)\b|\brendite\w* (?:fuer mich|meines)|\bobjekt\w* pruef\w*/,
+      /\bsteuer\w*|\bversteuer\w*|\brecht(?:lich|e|er)?\b|\bvertrag\w*|\bklausel\w*|\bhaftung\w*|\banlageberat\w*|\bempfehl\w*|\binvestmentberat\w*|\bfinanzier\w*|\beigenkapital\w*|\bkfw\b|\bafa\b|\bhaltefrist\w*|\bfoerder\w*|\bpreis\w*|\bkosten\b|\bwas kostet\b|\bwelche (?:anlage|immobilie)\b|\bbeste rendite\b|\bsoll ich (?:kaufen|investieren|unterschreiben)\b|\brendite\w* (?:fuer mich|meines)|\bobjekt\w* pruef\w*/,
     priority: 'medium',
     labels: [HANDOFF_LABEL, 'beratung'],
     internalHint:

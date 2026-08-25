@@ -74,27 +74,12 @@ export class MessageProcessor {
       tenant.key,
       conversationId,
     )
-    if (hasHumanOnlyLabel(conversationContext.labels)) {
-      console.log(
-        JSON.stringify({
-          event: 'agent_context_blocked_by_label',
-          tenant: tenant.key,
-          conversationId,
-        }),
-      )
-      return
-    }
-    if (wasHandedOff) {
-      if (!conversationContext.humanRepliedAfterBot) {
-        console.log(
-          JSON.stringify({
-            event: 'agent_handoff_waiting_for_human',
-            tenant: tenant.key,
-            conversationId,
-          }),
-        )
-        return
-      }
+    const humanOnlyLabel = hasHumanOnlyLabel(conversationContext.labels)
+    if (
+      wasHandedOff &&
+      conversationContext.humanRepliedAfterBot &&
+      !humanOnlyLabel
+    ) {
       await this.dependencies.state.activateConversation(tenant.key, conversationId)
     }
 
@@ -150,27 +135,37 @@ export class MessageProcessor {
       await handoff('empty_message')
       return
     }
-    // Jede automatische Antwort — auch die deterministische Begruessung —
-    // respektiert den Human-Lock. Der persistierte Vermerk ueberlebt das
-    // 12-Nachrichten-Fenster des Verlaufs.
+    // Human-Lock, bestehende Uebergabe und sensible Labels sperren nur den
+    // oeffentlichen Auto-Send. Interne Composer-Entwuerfe laufen weiter.
     const humanInConversation =
       conversationContext.humanEverReplied ||
       conversationContext.turns.some((turn) => turn.role === 'human')
-    if (humanInConversation) {
+    const humanOwned = humanInConversation || wasHandedOff || humanOnlyLabel
+    if (humanInConversation || humanOnlyLabel) {
       await this.dependencies.autoSend.blockConversation({
         tenantKey: tenant.key,
         conversationId,
-        reason: 'human_reply',
+        reason: humanInConversation ? 'human_reply' : 'human_only_label',
       })
     }
-    if (outcome.humanOnly) {
+    if (outcome.humanOnly && !humanOwned) {
       await handoff(`triage_${outcome.category}`)
       return
     }
 
-    const directReply = humanInConversation ? undefined : directSupportReply(question)
+    const reviewOnlyReply = outcome.humanOnly ? outcome.customerAck : undefined
+    const directReply = humanOwned ? undefined : directSupportReply(question)
     let answer: SupportBrainAnswer
-    if (directReply) {
+    if (reviewOnlyReply) {
+      answer = {
+        action: 'answer',
+        text: reviewOnlyReply,
+        confidence: 1,
+        sources: [],
+        safeToAutoSend: false,
+        reason: 'human_review_only',
+      }
+    } else if (directReply) {
       answer = {
         action: 'answer',
         text: directReply,
@@ -208,14 +203,25 @@ export class MessageProcessor {
             error: error instanceof Error ? error.message : String(error),
           }),
         )
-        // Ausfall des Gehirns endet nie in Stille: der Kunde bekommt den
-        // sichtbaren Uebergabe-Hinweis, das Team die Notiz.
-        await handoff('brain_error', error instanceof Error ? error.message : undefined)
-        return
+        // In einem bereits menschlich gefuehrten Chat darf ein Gehirnausfall
+        // den Composer nicht wieder leeren. Der neutrale Ack bleibt intern.
+        if (humanOwned) {
+          answer = {
+            action: 'answer',
+            text: outcome.customerAck,
+            confidence: 0,
+            sources: [],
+            safeToAutoSend: false,
+            reason: 'brain_error_review',
+          }
+        } else {
+          await handoff('brain_error', error instanceof Error ? error.message : undefined)
+          return
+        }
       }
     }
 
-    if (answer.action === 'handoff') {
+    if (answer.action === 'handoff' && !humanOwned) {
       await handoff('brain_handoff', answer.reason)
       return
     }
@@ -228,7 +234,7 @@ export class MessageProcessor {
     })
     const verdict = autoSendDecision({
       enabled: this.dependencies.autoSendEnabled,
-      humanInConversation,
+      humanInConversation: humanOwned,
       answer,
       usage,
       limits: this.dependencies.autoSendLimits,
@@ -256,6 +262,7 @@ export class MessageProcessor {
         deliveryId: payload.id,
         answer,
         verdict,
+        labels: reviewOnlyReply ? outcome.labels : undefined,
       })
     } catch (error) {
       if (!(input.isFinalAttempt ?? true)) throw error
@@ -340,10 +347,14 @@ export class MessageProcessor {
     deliveryId: number
     answer: SupportBrainAnswer
     verdict: AutoSendVerdict
+    labels?: readonly string[]
   }): Promise<void> {
     const { tenant, conversationId, deliveryId, answer, verdict } = input
     await this.dependencies.chatwoot.saveDraft(tenant, conversationId, answer.text)
-    await this.dependencies.chatwoot.addLabels(tenant, conversationId, ['ki-entwurf'])
+    await this.dependencies.chatwoot.addLabels(tenant, conversationId, [
+      'ki-entwurf',
+      ...(input.labels ?? []),
+    ])
     const sourceNote =
       answer.sources.length > 0
         ? `\nQuellen: ${brainSources(answer)}`

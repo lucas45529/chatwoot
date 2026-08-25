@@ -288,19 +288,53 @@ describe('MessageProcessor', () => {
         payload: incomingPayload({ content: 'Gibt es schon etwas Neues?' }),
       })
       expect(blocked.state.activateConversation).not.toHaveBeenCalled()
-      expect(blocked.answer).not.toHaveBeenCalled()
-      expect(blocked.saveDraft).not.toHaveBeenCalled()
+      expect(blocked.answer).toHaveBeenCalled()
+      expect(blocked.saveDraft).toHaveBeenCalledWith(
+        tenants[0],
+        77,
+        BRAIN_ANSWER.text,
+      )
       expect(blocked.sendMessage).not.toHaveBeenCalled()
     }
   })
 
-  it('suppresses terminal and concurrently owned deliveries without side effects', async () => {
+  it('keeps drafting handed-off conversations while suppressing public replies', async () => {
     const handedOff = setup()
     handedOff.state.isHandedOff.mockResolvedValueOnce(true)
     await handedOff.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
-    expect(handedOff.answer).not.toHaveBeenCalled()
+    expect(handedOff.answer).toHaveBeenCalled()
+    expect(handedOff.saveDraft).toHaveBeenCalledWith(tenants[0], 77, BRAIN_ANSWER.text)
     expect(handedOff.sendMessage).not.toHaveBeenCalled()
+    expect(handedOff.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
+  })
 
+  it('legt fuer eine Finanzierungsfrage im bereits uebergebenen Chat einen internen Vorschlag an', async () => {
+    const handedOff = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
+    handedOff.state.isHandedOff.mockResolvedValueOnce(true)
+
+    await handedOff.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({
+        content: 'Finanzierung, wie es sich verhält mit Eigenkapital.',
+      }),
+    })
+
+    expect(handedOff.answer).not.toHaveBeenCalled()
+    expect(handedOff.saveDraft).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      expect.stringContaining('von deiner Situation abhängt'),
+    )
+    expect(handedOff.addLabels).toHaveBeenCalledWith(tenants[0], 77, [
+      'ki-entwurf',
+      'ki-uebergabe',
+      'beratung',
+    ])
+    expect(handedOff.sendMessage).not.toHaveBeenCalled()
+    expect(handedOff.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
+  })
+
+  it('suppresses terminal and concurrently owned deliveries without side effects', async () => {
     for (const status of ['replied', 'handed_off', 'processing', 'sending'] as const) {
       const duplicate = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
       duplicate.state.beginDelivery.mockResolvedValueOnce({ status, acquired: false })

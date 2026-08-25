@@ -150,6 +150,9 @@ Allgemeine Antworten werden nur automatisch gesendet, wenn das Gehirn
 Konversations-/Kontakt-Limits, Längenlimit und Audit greifen. Sonst entsteht
 ein Entwurf oder eine sichtbare Übergabe. Deterministische Begrüßungen laufen
 durch denselben Kill-Switch-, Limit-, Human-Lock- und Audit-Pfad.
+Nach einer Übergabe und bei Human-only-Labels erzeugt jede neue
+Kundennachricht weiterhin einen kategorisierten Composer-Entwurf; nur der
+öffentliche Versand bleibt dauerhaft gesperrt.
 
 `AGENT_LEARNING_CHATWOOT_DATABASE_URL` ist eine verpflichtende Read-only-Rolle.
 Sie braucht `SELECT` auf `messages`, `conversations` und `contacts`; der
