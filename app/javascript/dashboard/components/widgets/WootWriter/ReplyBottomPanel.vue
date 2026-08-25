@@ -350,7 +350,7 @@ export default {
         @click="$emit('toggleQuotedReply')"
       />
       <NextButton
-        v-if="enableWhatsAppTemplates"
+        v-if="enableWhatsAppTemplates && !isEditorDisabled"
         v-tooltip.top-end="$t('CONVERSATION.FOOTER.WHATSAPP_TEMPLATES')"
         icon="i-ph-whatsapp-logo"
         slate
@@ -398,6 +398,16 @@ export default {
     </div>
     <div class="right-wrap">
       <NextButton
+        v-if="enableWhatsAppTemplates && isEditorDisabled"
+        :label="$t('CONVERSATION.FOOTER.WHATSAPP_TEMPLATES')"
+        icon="i-ph-whatsapp-logo"
+        color="blue"
+        sm
+        class="flex-shrink-0"
+        @click="$emit('selectWhatsappTemplate')"
+      />
+      <NextButton
+        v-else
         :label="sendButtonText"
         type="submit"
         sm
