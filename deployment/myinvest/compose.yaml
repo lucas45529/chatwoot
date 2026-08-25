@@ -243,7 +243,7 @@ services:
       # und lokale LLM-Konfiguration sind deshalb entfallen.
       SUPPORT_ANSWER_URL: ${SUPPORT_ANSWER_URL:?SUPPORT_ANSWER_URL is required}
       SUPPORT_ANSWER_SECRET: ${SUPPORT_ANSWER_SECRET:?SUPPORT_ANSWER_SECRET is required}
-      SUPPORT_ANSWER_TIMEOUT_MS: ${SUPPORT_ANSWER_TIMEOUT_MS:-25000}
+      SUPPORT_ANSWER_TIMEOUT_MS: ${SUPPORT_ANSWER_TIMEOUT_MS:-65000}
       # Kill-Switch. Standard AUS: Auto-Send wird bewusst eingeschaltet,
       # nie versehentlich durch ein fehlendes Env geerbt.
       AUTO_SEND_ENABLED: ${AUTO_SEND_ENABLED:-false}

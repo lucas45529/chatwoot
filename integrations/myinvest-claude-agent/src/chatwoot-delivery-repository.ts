@@ -142,7 +142,8 @@ export class PostgresChatwootDeliveryStore
                    AND CASE WHEN json_typeof(draft_note.content_attributes) = 'string'
                             THEN (draft_note.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
                             ELSE draft_note.content_attributes ->> 'myinvest_agent_message_kind' END
-                       IN ('draft_note', 'clarify_draft_note')
+                       IN ('handoff_note', 'draft_note', 'clarify_draft_note')
+                   AND draft_note.content LIKE '%Antwortvorschlag:%'
                  ORDER BY draft_note.id DESC
                  LIMIT 1
               ) AS last_agent_draft_note

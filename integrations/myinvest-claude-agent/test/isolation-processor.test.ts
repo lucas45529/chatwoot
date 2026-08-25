@@ -172,6 +172,13 @@ describe('MessageProcessor', () => {
       expect.arrayContaining(['ki-entwurf']),
     )
     expect(declined.handoff).toHaveBeenCalledOnce()
+    expect(declined.sendPrivateNote).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      expect.stringContaining(`Antwortvorschlag:\n${BRAIN_ANSWER.text}`),
+      55,
+      'handoff_note',
+    )
     expect(declined.sendMessage).toHaveBeenCalledWith(
       tenants[0],
       77,
@@ -179,6 +186,38 @@ describe('MessageProcessor', () => {
       55,
       'handoff_ack',
     )
+  })
+
+  it('legt fuer einen Anhang ohne Text einen internen Klaerungsentwurf an', async () => {
+    const attachment = setup()
+
+    await attachment.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: '' }),
+    })
+
+    expect(attachment.answer).not.toHaveBeenCalled()
+    expect(attachment.saveDraft).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      expect.stringContaining('Was genau sollen wir darin prüfen'),
+    )
+    expect(attachment.handoff).toHaveBeenCalledOnce()
+  })
+
+  it('laesst einen kurzfristig fehlenden Chatwoot-Kontext in den Job-Retry laufen', async () => {
+    const missing = setup()
+    missing.loadContext.mockResolvedValueOnce(undefined)
+
+    await expect(
+      missing.processor.process({
+        tenant: tenants[0]!,
+        payload: incomingPayload(),
+        isFinalAttempt: false,
+      }),
+    ).rejects.toThrow(/context/i)
+    expect(missing.answer).not.toHaveBeenCalled()
+    expect(missing.sendMessage).not.toHaveBeenCalled()
   })
 
   it('answers a presence check naturally through the guarded auto-send path', async () => {

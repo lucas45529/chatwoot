@@ -11,7 +11,10 @@ const rawChatwootWebhookSchema = z.object({
   event: z.string(),
   id: z.number().int().positive(),
   created_at: z.string().datetime(),
-  content: z.string().default(''),
+  content: z
+    .string()
+    .nullish()
+    .transform((value) => value ?? ''),
   message_type: z.string(),
   private: z.boolean().optional().default(false),
   account: chatwootWebhookAccountSchema.shape.account,

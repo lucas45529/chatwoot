@@ -80,7 +80,7 @@ const envSchema = z.object({
   /** Herkunft der Antworten: die Gehirn-API der Website. */
   SUPPORT_ANSWER_URL: z.string().url().max(2_048),
   SUPPORT_ANSWER_SECRET: z.string().min(32).max(512),
-  SUPPORT_ANSWER_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(25_000),
+  SUPPORT_ANSWER_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(65_000),
   // Scharfschalten ist eine bewusste Entscheidung, kein Nebeneffekt eines
   // Deployments: ohne dieses Flag entsteht weiterhin nur ein Entwurf.
   AUTO_SEND_ENABLED: z.enum(['true', 'false']).default('false')

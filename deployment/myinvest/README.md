@@ -142,6 +142,9 @@ Antwortwissen lebt ausschließlich im Website-Gehirn
 `https://www.myinvest-pro.de/api/support/answer`. Der Agent signiert
 `${timestamp}.${rawBody}` mit `SUPPORT_ANSWER_SECRET`; eigenes Modell und
 Runtime-Retrieval sind entfernt. Der Tenant steht in jedem signierten Request.
+Das Transportbudget beträgt 65 Sekunden und liegt damit bewusst oberhalb der
+60-Sekunden-Grenze des Website-Endpunkts; ein gültiger Review-Retry wird nicht
+vorzeitig vom Agenten abgebrochen.
 
 Sicherheits-, Datenschutz-, Beschwerde-, Zahlungs-, Vertrags-, Rechts-,
 Steuer- und explizite Menschenanliegen gehen deterministisch zum Team.
@@ -161,6 +164,10 @@ Klärungsentwurf, dessen `safeToAutoSend` serverseitig immer `false` bleibt.
 Ein neuer KI-Entwurf ersetzt den alten nur per Compare-and-swap: Der aktuelle
 Composer muss exakt dem zuletzt auditierten KI-Text entsprechen. Sobald ein
 Mensch editiert hat, fasst der Agent den Draft nicht mehr an.
+Der erste Handoff auditiert denselben Drafttext in der privaten Note, damit
+spätere Updates ihn sicher erkennen. Anhangsnachrichten mit `content: null`
+werden zu einem internen Klärungsentwurf normalisiert; ein kurzfristig
+fehlender Chatwoot-Kontext läuft in BullMQ-Retry statt still zu verschwinden.
 
 `AGENT_LEARNING_CHATWOOT_DATABASE_URL` ist eine verpflichtende Read-only-Rolle.
 Sie braucht `SELECT` auf `messages`, `conversations` und `contacts`; der

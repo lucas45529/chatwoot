@@ -139,6 +139,12 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     expect(query.mock.calls[0]![0]).toContain('JOIN contacts')
     expect(query.mock.calls[0]![0]).toContain('AS last_human_message_id')
     expect(query.mock.calls[0]![0]).toContain('AS last_agent_draft_note')
+    expect(query.mock.calls[0]![0]).toContain(
+      "IN ('handoff_note', 'draft_note', 'clarify_draft_note')",
+    )
+    expect(query.mock.calls[0]![0]).toContain(
+      "draft_note.content LIKE '%Antwortvorschlag:%'",
+    )
     expect(query.mock.calls[1]![0]).toContain('message.id <> $3')
     expect(query.mock.calls[1]![0]).toContain('json_typeof(message.content_attributes)')
     expect(query.mock.calls[1]![0]).toContain('message.private = false')

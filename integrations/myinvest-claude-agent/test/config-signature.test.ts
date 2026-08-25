@@ -70,7 +70,7 @@ describe('tenant configuration', () => {
     expect(config.AUTO_SEND_ENABLED).toBe(false)
     expect(config.AUTO_SEND_MAX_PER_CONVERSATION).toBe(3)
     expect(config.AUTO_SEND_MAX_PER_CONTACT_PER_HOUR).toBe(10)
-    expect(config.SUPPORT_ANSWER_TIMEOUT_MS).toBe(25_000)
+    expect(config.SUPPORT_ANSWER_TIMEOUT_MS).toBe(65_000)
 
     expect(() => loadConfig({ ...baseEnvironment, SUPPORT_ANSWER_URL: undefined })).toThrow(
       /SUPPORT_ANSWER_URL/,

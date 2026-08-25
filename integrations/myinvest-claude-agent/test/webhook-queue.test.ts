@@ -27,6 +27,28 @@ describe('WebhookController', () => {
     ).rejects.toThrow()
   })
 
+  it('normalisiert Chatwoot-Anhaenge mit content null statt den Webhook abzulehnen', async () => {
+    const enqueue = vi.fn().mockResolvedValue(undefined)
+    const controller = new WebhookController({
+      tenants: buildTenantRegistry(tenants),
+      queue: { enqueue },
+      replayWindowSeconds: 300,
+      now: () => nowMs,
+    })
+    const rawPayload = { ...incomingPayload(), content: null }
+    const raw = JSON.stringify(rawPayload)
+
+    await expect(
+      controller.handle(
+        raw,
+        signedHeaders(raw, tenants[0]!.webhookSecret, nowMs),
+      ),
+    ).resolves.toEqual({ status: 202, body: { accepted: true } })
+    expect(enqueue.mock.calls[0]![2]).toEqual(
+      expect.objectContaining({ content: '' }),
+    )
+  })
+
   it('never queues raw contact PII and forwards only the declared projection', async () => {
     const enqueue = vi.fn().mockResolvedValue(undefined)
     const controller = new WebhookController({

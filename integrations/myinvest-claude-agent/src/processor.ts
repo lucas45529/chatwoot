@@ -34,6 +34,9 @@ const HUMAN_ONLY_LABELS: Record<string, true> = {
   'mensch-gewuenscht': true,
 }
 
+const ATTACHMENT_REVIEW_DRAFT =
+  'Danke für den Anhang. Was genau sollen wir darin prüfen, und an welcher Stelle tritt das Problem auf?'
+
 export class MessageProcessor {
   constructor(
     private readonly dependencies: {
@@ -61,14 +64,14 @@ export class MessageProcessor {
       currentMessageId: payload.id,
     })
     if (!conversationContext) {
-      console.log(
+      console.error(
         JSON.stringify({
           event: 'agent_context_missing',
           tenant: tenant.key,
           conversationId,
         }),
       )
-      return
+      throw new Error('Chatwoot conversation context is unavailable')
     }
     const wasHandedOff = await this.dependencies.state.isHandedOff(
       tenant.key,
@@ -134,7 +137,7 @@ export class MessageProcessor {
     }
 
     if (!question) {
-      await handoff('empty_message')
+      await handoff('empty_message', undefined, ATTACHMENT_REVIEW_DRAFT)
       return
     }
     // Human-Lock, bestehende Uebergabe und sensible Labels sperren nur den
@@ -449,6 +452,14 @@ export class MessageProcessor {
     const labels = draft
       ? [...new Set([...outcome.labels, 'ki-entwurf'])]
       : outcome.labels
+    const handoffContent = handoffNote({
+      outcome,
+      reason: input.reason,
+      detail: input.detail,
+    })
+    const noteContent = draft
+      ? `${handoffContent}\n\nAntwortvorschlag:\n${draft}\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.`
+      : handoffContent
     if (draft) {
       await run('draft', true, () =>
         chatwoot.saveDraft(tenant, conversationId, draft),
@@ -465,7 +476,7 @@ export class MessageProcessor {
       chatwoot.sendPrivateNote(
         tenant,
         conversationId,
-        handoffNote({ outcome, reason: input.reason, detail: input.detail }),
+        noteContent,
         deliveryId,
         'handoff_note',
       ),
