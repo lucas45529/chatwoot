@@ -107,7 +107,7 @@ export class MessageProcessor {
 
     const question = payload.content.trim()
     const outcome = triage(question)
-    const handoff = async (reason: string, detail?: string) => {
+    const handoff = async (reason: string, detail?: string, draft?: string) => {
       console.log(
         JSON.stringify({
           event: 'agent_handoff',
@@ -127,6 +127,8 @@ export class MessageProcessor {
         reason,
         detail,
         isFinalAttempt,
+        draft,
+        notifyCustomer: !wasHandedOff,
       })
       await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
     }
@@ -222,7 +224,7 @@ export class MessageProcessor {
     }
 
     if (answer.action === 'handoff' && !humanOwned) {
-      await handoff('brain_handoff', answer.reason)
+      await handoff('brain_handoff', answer.reason, answer.text)
       return
     }
 
@@ -384,10 +386,10 @@ export class MessageProcessor {
   }
 
   /**
-   * Alle Schritte werden versucht, damit ein einzelner 4xx den Kunden-Hinweis
-   * nicht blockiert. Sichtbare Kernschritte (Notiz, Oeffnen, Kunden-Ack) sind
-   * immer terminal-kritisch. Prioritaet/Labels/Zuweisung werden wiederholt; erst
-   * im letzten Versuch darf der sichtbare Handoff ohne sie terminal werden.
+   * Alle Schritte werden versucht, damit ein einzelner 4xx die Uebergabe
+   * nicht blockiert. Ein Gehirn-Handoff legt zusaetzlich einen editierbaren
+   * Entwurf ab; nach der ersten Uebergabe wird der Kunde nicht erneut mit
+   * demselben Hinweis angeschrieben.
    */
   private async escalate(input: {
     tenant: TenantConfig
@@ -397,6 +399,8 @@ export class MessageProcessor {
     reason: string
     detail?: string
     isFinalAttempt: boolean
+    draft?: string
+    notifyCustomer?: boolean
   }): Promise<void> {
     const { tenant, conversationId, deliveryId, outcome } = input
     const { chatwoot } = this.dependencies
@@ -423,12 +427,21 @@ export class MessageProcessor {
         )
       }
     }
+    const draft = input.draft
+    const labels = draft
+      ? [...new Set([...outcome.labels, 'ki-entwurf'])]
+      : outcome.labels
+    if (draft) {
+      await run('draft', true, () =>
+        chatwoot.saveDraft(tenant, conversationId, draft),
+      )
+    }
 
     await run('priority', false, () =>
       chatwoot.setPriority(tenant, conversationId, outcome.priority),
     )
     await run('labels', false, () =>
-      chatwoot.addLabels(tenant, conversationId, outcome.labels),
+      chatwoot.addLabels(tenant, conversationId, labels),
     )
     await run('note', true, () =>
       chatwoot.sendPrivateNote(
@@ -443,15 +456,17 @@ export class MessageProcessor {
       chatwoot.assign(tenant, conversationId, tenant.handoffAssigneeId),
     )
     await run('open', true, () => chatwoot.handoff(tenant, conversationId))
-    await run('customer_ack', true, () =>
-      chatwoot.sendMessage(
-        tenant,
-        conversationId,
-        outcome.customerAck,
-        deliveryId,
-        'handoff_ack',
-      ),
-    )
+    if (input.notifyCustomer !== false) {
+      await run('customer_ack', true, () =>
+        chatwoot.sendMessage(
+          tenant,
+          conversationId,
+          outcome.customerAck,
+          deliveryId,
+          'handoff_ack',
+        ),
+      )
+    }
 
     const essentialFailures = failures.filter(({ essential }) => essential)
     if (essentialFailures.length > 0 || (failures.length > 0 && !input.isFinalAttempt)) {

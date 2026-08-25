@@ -153,13 +153,18 @@ describe('MessageProcessor', () => {
       expect(unsafe.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
     }
 
-    // Die Gehirn-API darf selbst uebergeben. Dann geht der Fall sichtbar an
-    // einen Menschen, nicht in einen stillen Entwurf.
+    // Die Gehirn-API darf selbst uebergeben. Der Fall geht sichtbar an einen
+    // Menschen und dessen Composer bekommt denselben Text als Entwurf.
     const declined = setup({
       answer: { ...BRAIN_ANSWER, action: 'handoff', reason: 'kein Beleg im Wissen' },
     })
     await declined.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
-    expect(declined.saveDraft).not.toHaveBeenCalled()
+    expect(declined.saveDraft).toHaveBeenCalledWith(tenants[0], 77, BRAIN_ANSWER.text)
+    expect(declined.addLabels).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      expect.arrayContaining(['ki-entwurf']),
+    )
     expect(declined.handoff).toHaveBeenCalledOnce()
     expect(declined.sendMessage).toHaveBeenCalledWith(
       tenants[0],
@@ -308,6 +313,25 @@ describe('MessageProcessor', () => {
     expect(handedOff.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
 
+
+  it('laesst auch eine sichere Antwort nach einer Uebergabe nur im Composer', async () => {
+    const handedOff = setup({ answer: SAFE_ANSWER, autoSendEnabled: true })
+    handedOff.state.isHandedOff.mockResolvedValueOnce(true)
+
+    await handedOff.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload(),
+    })
+
+    expect(handedOff.answer).toHaveBeenCalledOnce()
+    expect(handedOff.saveDraft).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      SAFE_ANSWER.text,
+    )
+    expect(handedOff.sendMessage).not.toHaveBeenCalled()
+    expect(handedOff.autoSend.record).not.toHaveBeenCalled()
+  })
   it('legt fuer eine Finanzierungsfrage im bereits uebergebenen Chat einen internen Vorschlag an', async () => {
     const handedOff = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
     handedOff.state.isHandedOff.mockResolvedValueOnce(true)
