@@ -295,7 +295,7 @@ if command -v jq >/dev/null 2>&1; then
       exit 1
     }
   done <<'IMAGES'
-rails|chatwoot/chatwoot:v4.16.2@sha256:f9b071ffe678031ee6d51bf591ddd4336b80c3edfb3105e38e46afd32b8211b2
+rails|myinvest-chatwoot:4.16.2-72da1b2
 channel-readiness|chatwoot/chatwoot:v4.16.2@sha256:f9b071ffe678031ee6d51bf591ddd4336b80c3edfb3105e38e46afd32b8211b2
 postgres|pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
 redis|redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2

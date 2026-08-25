@@ -1,7 +1,10 @@
 name: myinvest-chatwoot
 
 x-chatwoot: &chatwoot
-  image: chatwoot/chatwoot:v4.16.2@sha256:f9b071ffe678031ee6d51bf591ddd4336b80c3edfb3105e38e46afd32b8211b2
+  image: myinvest-chatwoot:4.16.2-72da1b2
+  build:
+    context: ../..
+    dockerfile: docker/Dockerfile
   environment: &chatwoot-environment
     NODE_ENV: production
     RAILS_ENV: production

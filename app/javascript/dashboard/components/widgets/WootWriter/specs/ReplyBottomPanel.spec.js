@@ -84,6 +84,9 @@ describe('ReplyBottomPanel', () => {
     expect(action.attributes('data-color')).toBe('blue');
     expect(action.text()).toBe('CONVERSATION.FOOTER.WHATSAPP_TEMPLATES');
     expect(action.attributes('disabled')).toBeUndefined();
+    expect(
+      wrapper.find('.left-wrap [data-icon="i-ph-whatsapp-logo"]').exists()
+    ).toBe(false);
 
     await action.trigger('click');
     expect(wrapper.emitted('selectWhatsappTemplate')).toHaveLength(1);
