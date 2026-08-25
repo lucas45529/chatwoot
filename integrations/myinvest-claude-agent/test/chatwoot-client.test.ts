@@ -52,6 +52,41 @@ describe('ChatwootClient', () => {
     expect(request.mock.calls[0]![1]).toEqual(expect.objectContaining({ method: 'GET' }))
   })
 
+  it('replaces an unchanged prior AI draft but preserves human edits', async () => {
+    const deliveryStore = { exists: vi.fn().mockResolvedValue(false) }
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ has_draft: true, message: 'Alter KI-Entwurf' }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+    const client = new ChatwootClient(
+      'https://chat.example.test',
+      deliveryStore,
+      request,
+    )
+
+    await client.saveDraft(
+      tenants[0]!,
+      77,
+      'Neuer KI-Entwurf',
+      'Alter KI-Entwurf',
+    )
+
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(request.mock.calls[1]![1]).toEqual(
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          draft_message: { message: 'Neuer KI-Entwurf' },
+        }),
+      }),
+    )
+  })
+
   it('does not leak an upstream response or token in errors', async () => {
     const deliveryStore = { exists: vi.fn().mockResolvedValue(false) }
     const request = vi.fn().mockResolvedValue(new Response('secret upstream response', { status: 500 }))

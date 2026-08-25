@@ -46,6 +46,7 @@ interface ContextMetadataRow extends Record<string, unknown> {
   cached_label_list: string | null
   last_human_message_id: string | null
   last_agent_handoff_id: string | null
+  last_agent_draft_note: string | null
 }
 
 interface ContextMessageRow extends Record<string, unknown> {
@@ -130,7 +131,21 @@ export class PostgresChatwootDeliveryStore
                             THEN (marker.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
                             ELSE marker.content_attributes ->> 'myinvest_agent_message_kind' END
                        IN ('handoff_ack', 'handoff_note', 'draft_note', 'clarify_draft_note')
-              ) AS last_agent_handoff_id
+              ) AS last_agent_handoff_id,
+              (
+                SELECT draft_note.content
+                  FROM messages AS draft_note
+                 WHERE draft_note.account_id = $1
+                   AND draft_note.sender_type = 'AgentBot'
+                   AND draft_note.conversation_id = conversation.id
+                   AND draft_note.private = true
+                   AND CASE WHEN json_typeof(draft_note.content_attributes) = 'string'
+                            THEN (draft_note.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
+                            ELSE draft_note.content_attributes ->> 'myinvest_agent_message_kind' END
+                       IN ('draft_note', 'clarify_draft_note')
+                 ORDER BY draft_note.id DESC
+                 LIMIT 1
+              ) AS last_agent_draft_note
          FROM conversations AS conversation
          LEFT JOIN contacts AS contact
            ON contact.account_id = conversation.account_id
@@ -195,6 +210,7 @@ export class PostgresChatwootDeliveryStore
         .filter(Boolean),
       humanRepliedAfterBot: lastBotHandoffId > 0 && lastHumanMessageId > lastBotHandoffId,
       humanEverReplied: lastHumanMessageId > 0,
+      previousAgentDraft: extractAgentDraft(conversation.last_agent_draft_note),
       // Pseudonym statt Kontakt-ID: die Ratengrenze braucht nur Gleichheit.
       contactHash: conversation.contact_id
         ? createHash('sha256')
@@ -209,6 +225,21 @@ export class PostgresChatwootDeliveryStore
           : undefined,
     }
   }
+}
+
+function extractAgentDraft(note: string | null): string | undefined {
+  if (!note) return undefined
+  const marker = '\n\nAntwortvorschlag:\n'
+  const start = note.indexOf(marker)
+  if (start < 0) return undefined
+  const body = note.slice(start + marker.length)
+  const sourceStart = Math.max(
+    body.lastIndexOf('\nQuellen:'),
+    body.lastIndexOf('\nGrundlage:'),
+  )
+  if (sourceStart < 0) return undefined
+  const draft = body.slice(0, sourceStart).trim()
+  return draft || undefined
 }
 
 function conversationRole(message: ContextMessageRow): ConversationTurnRole | undefined {

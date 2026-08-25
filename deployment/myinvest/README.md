@@ -158,6 +158,9 @@ Composer, bevor der sichtbare Übergabehinweis an den Kunden geht.
 Für diese Human-in-the-loop-Fälle signiert der Agent `reviewOnly: true`; das
 Website-Gehirn erzeugt dadurch auch ohne Korpus-Treffer einen konkreten
 Klärungsentwurf, dessen `safeToAutoSend` serverseitig immer `false` bleibt.
+Ein neuer KI-Entwurf ersetzt den alten nur per Compare-and-swap: Der aktuelle
+Composer muss exakt dem zuletzt auditierten KI-Text entsprechen. Sobald ein
+Mensch editiert hat, fasst der Agent den Draft nicht mehr an.
 
 `AGENT_LEARNING_CHATWOOT_DATABASE_URL` ist eine verpflichtende Read-only-Rolle.
 Sie braucht `SELECT` auf `messages`, `conversations` und `contacts`; der

@@ -38,7 +38,12 @@ export interface ChatwootPort {
     deliveryId: number,
     kind: PrivateMessageKind,
   ): Promise<void>
-  saveDraft(tenant: TenantConfig, conversationId: number, content: string): Promise<void>
+  saveDraft(
+    tenant: TenantConfig,
+    conversationId: number,
+    content: string,
+    previousAgentDraft?: string,
+  ): Promise<void>
   setPriority(tenant: TenantConfig, conversationId: number, priority: ConversationPriority): Promise<void>
   /** Ergaenzt Labels, ohne bestehende zu verlieren. */
   addLabels(tenant: TenantConfig, conversationId: number, labels: readonly string[]): Promise<void>
@@ -94,6 +99,7 @@ export class ChatwootClient implements ChatwootPort {
     tenant: TenantConfig,
     conversationId: number,
     content: string,
+    previousAgentDraft?: string,
   ): Promise<void> {
     const path = `/api/v1/accounts/${tenant.accountId}/conversations/${conversationId}/draft_messages`
     const current = asObject(
@@ -102,7 +108,12 @@ export class ChatwootClient implements ChatwootPort {
         'draft',
       ),
     )
-    if (current?.has_draft === true && typeof current.message === 'string' && current.message) {
+    if (
+      current?.has_draft === true &&
+      typeof current.message === 'string' &&
+      current.message &&
+      current.message !== previousAgentDraft
+    ) {
       return
     }
     await this.fetchResponse(tenant, path, {

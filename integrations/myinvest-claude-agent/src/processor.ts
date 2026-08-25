@@ -268,6 +268,7 @@ export class MessageProcessor {
           reviewOnly && outcome.category === 'beratung'
             ? outcome.labels
             : undefined,
+        previousAgentDraft: conversationContext.previousAgentDraft,
       })
     } catch (error) {
       if (!(input.isFinalAttempt ?? true)) throw error
@@ -353,9 +354,23 @@ export class MessageProcessor {
     answer: SupportBrainAnswer
     verdict: AutoSendVerdict
     labels?: readonly string[]
+    previousAgentDraft?: string
   }): Promise<void> {
     const { tenant, conversationId, deliveryId, answer, verdict } = input
-    await this.dependencies.chatwoot.saveDraft(tenant, conversationId, answer.text)
+    if (input.previousAgentDraft) {
+      await this.dependencies.chatwoot.saveDraft(
+        tenant,
+        conversationId,
+        answer.text,
+        input.previousAgentDraft,
+      )
+    } else {
+      await this.dependencies.chatwoot.saveDraft(
+        tenant,
+        conversationId,
+        answer.text,
+      )
+    }
     await this.dependencies.chatwoot.addLabels(tenant, conversationId, [
       'ki-entwurf',
       ...(input.labels ?? []),

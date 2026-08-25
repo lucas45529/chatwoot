@@ -71,6 +71,8 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
             cached_label_list: 'ki-uebergabe',
             last_human_message_id: '3',
             last_agent_handoff_id: '1',
+            last_agent_draft_note:
+              'KI-Antwortentwurf wartet auf menschliche Freigabe (brain_declined).\n\nAntwortvorschlag:\nAlter KI-Entwurf\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.',
           },
         ],
       })
@@ -121,6 +123,7 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
       humanRepliedAfterBot: true,
       labels: ['ki-uebergabe'],
       humanEverReplied: true,
+      previousAgentDraft: 'Alter KI-Entwurf',
       turns: [
         { role: 'assistant', text: 'Übergabe' },
         { role: 'human', text: 'Hallo, wie können wir helfen?' },
@@ -135,6 +138,7 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     expect(query.mock.calls[0]![1]).toEqual([101, 71])
     expect(query.mock.calls[0]![0]).toContain('JOIN contacts')
     expect(query.mock.calls[0]![0]).toContain('AS last_human_message_id')
+    expect(query.mock.calls[0]![0]).toContain('AS last_agent_draft_note')
     expect(query.mock.calls[1]![0]).toContain('message.id <> $3')
     expect(query.mock.calls[1]![0]).toContain('json_typeof(message.content_attributes)')
     expect(query.mock.calls[1]![0]).toContain('message.private = false')

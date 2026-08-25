@@ -347,7 +347,11 @@ describe('MessageProcessor', () => {
       safeToAutoSend: false,
       reason: 'interner Review-Entwurf',
     }
-    const handedOff = setup({ autoSendEnabled: true, answer: reviewDraft })
+    const handedOff = setup({
+      autoSendEnabled: true,
+      answer: reviewDraft,
+      context: { previousAgentDraft: 'Alter KI-Entwurf' },
+    })
     handedOff.state.isHandedOff.mockResolvedValueOnce(true)
 
     await handedOff.processor.process({
@@ -367,6 +371,7 @@ describe('MessageProcessor', () => {
       tenants[0],
       77,
       reviewDraft.text,
+      'Alter KI-Entwurf',
     )
     expect(handedOff.addLabels).toHaveBeenCalledWith(tenants[0], 77, [
       'ki-entwurf',

@@ -56,6 +56,8 @@ export interface ConversationContext {
   contactHash?: string
   /** Nur im signierten Gehirn-Body; nie in Logs oder Verlauf. */
   contactEmail?: string
+  /** Letzter unveraenderter KI-Composertext; nur als Compare-and-swap-Wert. */
+  previousAgentDraft?: string
 }
 
 export interface KnowledgeHit {
