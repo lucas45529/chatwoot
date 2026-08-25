@@ -25,6 +25,7 @@ const sentBodySchema = z.object({
   tenant: z.string(),
   channel: z.string(),
   contact: z.object({ email: z.string() }).optional(),
+  reviewOnly: z.boolean().optional(),
 })
 
 function brainRequest(overrides: Partial<SupportBrainRequest> = {}): SupportBrainRequest {
@@ -191,6 +192,25 @@ describe('SupportBrainClient · Contract-Grenzen der Anfrage', () => {
     const raw = sentRawBody(fetchImplementation)
     const sent = sentBodySchema.parse(JSON.parse(raw))
     expect(sent.contact).toEqual({ email: 'kunde@example.de' })
+    const headers = new Headers(requestInit(fetchImplementation).headers)
+    expect(headers.get('x-support-signature')).toBe(
+      supportAnswerSignature({
+        rawBody: raw,
+        timestamp: FIXED_TIMESTAMP,
+        secret: TEST_SECRET,
+      }),
+    )
+  })
+
+  it('transportiert den internen Review-Modus im signierten Body', async () => {
+    const fetchImplementation = respondingFetch(jsonResponse(brainPayload()))
+    await clientWith(fetchImplementation).answer(
+      brainRequest({ reviewOnly: true }),
+    )
+
+    const raw = sentRawBody(fetchImplementation)
+    const sent = sentBodySchema.parse(JSON.parse(raw))
+    expect(sent.reviewOnly).toBe(true)
     const headers = new Headers(requestInit(fetchImplementation).headers)
     expect(headers.get('x-support-signature')).toBe(
       supportAnswerSignature({

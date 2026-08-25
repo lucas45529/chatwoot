@@ -8,6 +8,7 @@ import type { ConversationContext } from '../src/domain.js'
 import { PostgresKnowledgeRepository } from '../src/knowledge/repository.js'
 import { MessageProcessor } from '../src/processor.js'
 import type { SupportBrainAnswer } from '../src/support-brain.js'
+import { triage } from '../src/triage.js'
 import { incomingPayload, tenants } from './fixtures.js'
 
 describe('knowledge isolation', () => {
@@ -149,6 +150,11 @@ describe('MessageProcessor', () => {
       const unsafe = setup()
       await unsafe.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
       expect(unsafe.answer).not.toHaveBeenCalled()
+      expect(unsafe.saveDraft).toHaveBeenCalledWith(
+        tenants[0],
+        77,
+        triage(content).customerAck,
+      )
       expect(unsafe.handoff).toHaveBeenCalledOnce()
       expect(unsafe.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
     }
@@ -262,6 +268,7 @@ describe('MessageProcessor', () => {
       ],
       tenant: 'saas',
       channel: 'web',
+      reviewOnly: true,
     })
     expect(thread.saveDraft).toHaveBeenCalledWith(tenants[0], 77, clarification)
     expect(thread.sendMessage).not.toHaveBeenCalled()
@@ -333,7 +340,14 @@ describe('MessageProcessor', () => {
     expect(handedOff.autoSend.record).not.toHaveBeenCalled()
   })
   it('legt fuer eine Finanzierungsfrage im bereits uebergebenen Chat einen internen Vorschlag an', async () => {
-    const handedOff = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
+    const reviewDraft: SupportBrainAnswer = {
+      ...BRAIN_ANSWER,
+      action: 'handoff',
+      text: 'Danke für die Ergänzung. Geht es um die Eigenkapitalquote, die Nebenkosten oder die Auswirkung auf die Konditionen?',
+      safeToAutoSend: false,
+      reason: 'interner Review-Entwurf',
+    }
+    const handedOff = setup({ autoSendEnabled: true, answer: reviewDraft })
     handedOff.state.isHandedOff.mockResolvedValueOnce(true)
 
     await handedOff.processor.process({
@@ -343,11 +357,16 @@ describe('MessageProcessor', () => {
       }),
     })
 
-    expect(handedOff.answer).not.toHaveBeenCalled()
+    expect(handedOff.answer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: 'Finanzierung, wie es sich verhält mit Eigenkapital.',
+        reviewOnly: true,
+      }),
+    )
     expect(handedOff.saveDraft).toHaveBeenCalledWith(
       tenants[0],
       77,
-      expect.stringContaining('von deiner Situation abhängt'),
+      reviewDraft.text,
     )
     expect(handedOff.addLabels).toHaveBeenCalledWith(tenants[0], 77, [
       'ki-entwurf',
@@ -403,7 +422,11 @@ describe('MessageProcessor', () => {
 
     expect(critical.answer).not.toHaveBeenCalled()
     expect(critical.setPriority).toHaveBeenCalledWith(tenants[0], 77, 'urgent')
-    expect(critical.addLabels).toHaveBeenCalledWith(tenants[0], 77, ['ki-uebergabe', 'sicherheitsverdacht'])
+    expect(critical.addLabels).toHaveBeenCalledWith(tenants[0], 77, [
+      'ki-uebergabe',
+      'sicherheitsverdacht',
+      'ki-entwurf',
+    ])
     expect(critical.sendPrivateNote).toHaveBeenCalledWith(
       tenants[0],
       77,

@@ -23,6 +23,8 @@ export interface SupportBrainRequest {
   tenant: TenantKey
   channel: SupportChannel
   contact?: { email: string }
+  /** Erzwingt einen internen Composer-Entwurf; niemals Auto-Send. */
+  reviewOnly?: boolean
 }
 
 const brainAnswerSchema = z.object({
@@ -129,6 +131,7 @@ export class SupportBrainClient implements SupportBrainPort {
       ...(request.contact
         ? { contact: { email: request.contact.email.slice(0, 320) } }
         : {}),
+      ...(request.reviewOnly ? { reviewOnly: true } : {}),
     })
     try {
       return await this.send(rawBody)

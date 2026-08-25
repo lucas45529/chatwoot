@@ -155,6 +155,9 @@ Kundennachricht weiterhin einen kategorisierten Composer-Entwurf; nur der
 öffentliche Versand bleibt dauerhaft gesperrt.
 Auch der erste Gehirn-Handoff schreibt den geprüften Antworttext in den
 Composer, bevor der sichtbare Übergabehinweis an den Kunden geht.
+Für diese Human-in-the-loop-Fälle signiert der Agent `reviewOnly: true`; das
+Website-Gehirn erzeugt dadurch auch ohne Korpus-Treffer einen konkreten
+Klärungsentwurf, dessen `safeToAutoSend` serverseitig immer `false` bleibt.
 
 `AGENT_LEARNING_CHATWOOT_DATABASE_URL` ist eine verpflichtende Read-only-Rolle.
 Sie braucht `SELECT` auf `messages`, `conversations` und `contacts`; der

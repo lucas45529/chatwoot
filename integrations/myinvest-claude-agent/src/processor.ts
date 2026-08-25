@@ -151,23 +151,17 @@ export class MessageProcessor {
       })
     }
     if (outcome.humanOnly && !humanOwned) {
-      await handoff(`triage_${outcome.category}`)
+      await handoff(
+        `triage_${outcome.category}`,
+        undefined,
+        outcome.customerAck,
+      )
       return
     }
-
-    const reviewOnlyReply = outcome.humanOnly ? outcome.customerAck : undefined
-    const directReply = humanOwned ? undefined : directSupportReply(question)
+    const reviewOnly = humanOwned
+    const directReply = reviewOnly ? undefined : directSupportReply(question)
     let answer: SupportBrainAnswer
-    if (reviewOnlyReply) {
-      answer = {
-        action: 'answer',
-        text: reviewOnlyReply,
-        confidence: 1,
-        sources: [],
-        safeToAutoSend: false,
-        reason: 'human_review_only',
-      }
-    } else if (directReply) {
+    if (directReply) {
       answer = {
         action: 'answer',
         text: directReply,
@@ -195,6 +189,7 @@ export class MessageProcessor {
           contact: conversationContext.contactEmail
             ? { email: conversationContext.contactEmail }
             : undefined,
+          reviewOnly: reviewOnly || undefined,
         })
       } catch (error) {
         console.error(
@@ -217,11 +212,16 @@ export class MessageProcessor {
             reason: 'brain_error_review',
           }
         } else {
-          await handoff('brain_error', error instanceof Error ? error.message : undefined)
+          await handoff(
+            'brain_error',
+            error instanceof Error ? error.message : undefined,
+            outcome.humanOnly ? outcome.customerAck : undefined,
+          )
           return
         }
       }
     }
+
 
     if (answer.action === 'handoff' && !humanOwned) {
       await handoff('brain_handoff', answer.reason, answer.text)
@@ -264,7 +264,7 @@ export class MessageProcessor {
         deliveryId: payload.id,
         answer,
         verdict,
-        labels: reviewOnlyReply ? outcome.labels : undefined,
+        labels: reviewOnly && outcome.humanOnly ? outcome.labels : undefined,
       })
     } catch (error) {
       if (!(input.isFinalAttempt ?? true)) throw error
