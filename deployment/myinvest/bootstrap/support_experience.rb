@@ -40,6 +40,13 @@ class Myinvest::SupportExperience
             return {};
           }
         };
+        const writeDraftToStore = async (key, message) => {
+          const app = document.querySelector('#app')?.__vue_app__;
+          const store = app?.config?.globalProperties?.$store;
+          if (typeof store?.dispatch !== 'function') return false;
+          await store.dispatch('draftMessages/set', { key, message });
+          return true;
+        };
         const syncDraft = async () => {
           if (syncing || !window.axios) return;
           const route = window.location.pathname.match(routePattern);
@@ -72,12 +79,27 @@ class Myinvest::SupportExperience
               return;
             }
             if (localDraft) {
-              if (syncedDraft && localDraft !== syncedDraft) {
+              // Local text that differs from the last synchronized value is a
+              // human edit and therefore wins. An untouched synchronized draft
+              // may be replaced when the server publishes a fresher AI draft.
+              if (!syncedDraft) return;
+              if (localDraft !== syncedDraft) {
                 await request(endpoint, {
                   method: 'PATCH',
                   data: { draft_message: { message: localDraft } },
                 });
                 window.localStorage.setItem(syncKey, localDraft);
+                return;
+              }
+              if (serverDraft !== syncedDraft) {
+                const updatedStore = await writeDraftToStore(draftKey, serverDraft);
+                if (!updatedStore) {
+                  drafts[draftKey] = serverDraft;
+                  window.localStorage.setItem(draftsKey, JSON.stringify(drafts));
+                  window.localStorage.setItem(`${draftsKey}:ts`, String(Date.now()));
+                }
+                window.localStorage.setItem(syncKey, serverDraft);
+                window.location.reload();
               }
               return;
             }
@@ -88,9 +110,12 @@ class Myinvest::SupportExperience
               typeof freshDrafts[draftKey] === 'string' ? freshDrafts[draftKey] : '';
             const freshNote = freshDrafts[`draft-${conversationId}-NOTE`] || '';
             if (freshReply || freshNote) return;
-            freshDrafts[draftKey] = serverDraft;
-            window.localStorage.setItem(draftsKey, JSON.stringify(freshDrafts));
-            window.localStorage.setItem(`${draftsKey}:ts`, String(Date.now()));
+            const updatedStore = await writeDraftToStore(draftKey, serverDraft);
+            if (!updatedStore) {
+              freshDrafts[draftKey] = serverDraft;
+              window.localStorage.setItem(draftsKey, JSON.stringify(freshDrafts));
+              window.localStorage.setItem(`${draftsKey}:ts`, String(Date.now()));
+            }
             window.localStorage.setItem(syncKey, serverDraft);
             window.location.reload();
           } catch (error) {
@@ -161,8 +186,9 @@ class Myinvest::SupportExperience
 
   def dashboard_theme_state
     current = InstallationConfig.find_by(name: 'DASHBOARD_SCRIPTS')&.value.to_s
-    return 'present' if current.include?(DASHBOARD_SCRIPT_MARKER)
-    return 'owned_legacy' if current.include?(LEGACY_DASHBOARD_SCRIPT_MARKER)
+    return 'present' if current == DASHBOARD_SCRIPT
+    return 'owned_legacy' if current.include?(DASHBOARD_SCRIPT_MARKER) ||
+                             current.include?(LEGACY_DASHBOARD_SCRIPT_MARKER)
 
     current.strip.empty? ? 'missing' : 'foreign_value'
   end

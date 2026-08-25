@@ -377,6 +377,10 @@ export default {
     editorStateId() {
       return `draft-${this.conversationIdByRoute}-${this.replyType}`;
     },
+    storedDraftMessage() {
+      if (!this.conversationIdByRoute) return '';
+      return this.$store.getters['draftMessages/get'](this.getDraftKey()) || '';
+    },
     audioRecordFormat() {
       if (this.isAWhatsAppCloudChannel) {
         return AUDIO_FORMATS.OGG;
@@ -495,6 +499,20 @@ export default {
         this.setToDraft(oldConversationId, this.replyType);
         this.getFromDraft();
         this.resetRecorderAndClearAttachments();
+      }
+    },
+    storedDraftMessage(updatedDraft, previousDraft) {
+      // External draft synchronization may publish a fresher AI proposal.
+      // Replace only the untouched previous draft; human edits always win.
+      const previousEditorDraft = this.toggleSignatureForDraft(
+        previousDraft || ''
+      );
+      if (this.message !== previousEditorDraft) return;
+      const updatedEditorDraft = this.toggleSignatureForDraft(
+        updatedDraft || ''
+      );
+      if (updatedEditorDraft !== this.message) {
+        this.message = updatedEditorDraft;
       }
     },
     message() {
