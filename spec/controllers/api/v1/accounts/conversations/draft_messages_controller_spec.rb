@@ -35,6 +35,77 @@ RSpec.describe 'Conversation Draft Messages API', type: :request do
         expect(Redis::Alfred.get(cache_key)).to eq(params[:draft_message][:message])
       end
 
+      it 'updates only when the existing draft still matches' do
+        Redis::Alfred.set(cache_key, 'Alter KI-Entwurf')
+        params = {
+          draft_message: {
+            message: 'Neuer KI-Entwurf',
+            expected_message: 'Alter KI-Entwurf'
+          }
+        }
+
+        patch api_v1_account_conversation_draft_messages_url(account_id: account.id, conversation_id: conversation.display_id),
+              params: params,
+              headers: agent.create_new_auth_token,
+              as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(Redis::Alfred.get(cache_key)).to eq('Neuer KI-Entwurf')
+      end
+
+      it 'returns conflict instead of overwriting a concurrently edited draft' do
+        Redis::Alfred.set(cache_key, 'Menschlich bearbeitet')
+        params = {
+          draft_message: {
+            message: 'Neuer KI-Entwurf',
+            expected_message: 'Alter KI-Entwurf'
+          }
+        }
+
+        patch api_v1_account_conversation_draft_messages_url(account_id: account.id, conversation_id: conversation.display_id),
+              params: params,
+              headers: agent.create_new_auth_token,
+              as: :json
+
+        expect(response).to have_http_status(:conflict)
+        expect(Redis::Alfred.get(cache_key)).to eq('Menschlich bearbeitet')
+      end
+
+      it 'creates an expected-absent draft atomically' do
+        params = {
+          draft_message: {
+            message: 'Erster KI-Entwurf',
+            expected_absent: true
+          }
+        }
+
+        patch api_v1_account_conversation_draft_messages_url(account_id: account.id, conversation_id: conversation.display_id),
+              params: params,
+              headers: agent.create_new_auth_token,
+              as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(Redis::Alfred.get(cache_key)).to eq('Erster KI-Entwurf')
+      end
+
+      it 'returns conflict when expected-absent races with a human draft' do
+        Redis::Alfred.set(cache_key, 'Menschlich bearbeitet')
+        params = {
+          draft_message: {
+            message: 'Erster KI-Entwurf',
+            expected_absent: true
+          }
+        }
+
+        patch api_v1_account_conversation_draft_messages_url(account_id: account.id, conversation_id: conversation.display_id),
+              params: params,
+              headers: agent.create_new_auth_token,
+              as: :json
+
+        expect(response).to have_http_status(:conflict)
+        expect(Redis::Alfred.get(cache_key)).to eq('Menschlich bearbeitet')
+      end
+
       it 'gets the draft message for the conversation' do
         Redis::Alfred.set(cache_key, message)
 

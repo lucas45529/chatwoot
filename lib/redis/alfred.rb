@@ -41,6 +41,24 @@ module Redis::Alfred
       end
     end
 
+    # Atomic compare-and-set for shared drafts: a concurrent human edit wins.
+    def set_if_equals(key, expected_value, new_value)
+      script = <<~LUA
+        if redis.call('GET', KEYS[1]) == ARGV[1] then
+          redis.call('SET', KEYS[1], ARGV[2])
+          return 1
+        end
+        return 0
+      LUA
+      $alfred.with do |conn|
+        conn.eval(
+          script,
+          keys: [key],
+          argv: [expected_value, new_value]
+        ) == 1
+      end
+    end
+
     # increment a key by 1. throws error if key value is incompatible
     # sets key to 0 before operation if key doesn't exist
     def incr(key)

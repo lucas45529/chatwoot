@@ -113,19 +113,47 @@ export class ChatwootClient implements ChatwootPort {
         'draft',
       ),
     )
+    const currentMessage =
+      current?.has_draft === true && typeof current.message === 'string'
+        ? current.message
+        : undefined
+    const hasCurrentDraft = currentMessage !== undefined
     if (
-      current?.has_draft === true &&
-      typeof current.message === 'string' &&
-      current.message &&
-      current.message !== previousAgentDraft
+      currentMessage &&
+      currentMessage !== previousAgentDraft
     ) {
-      return { written: false, message: current.message }
+      return { written: false, message: currentMessage }
     }
-    await this.fetchResponse(tenant, path, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ draft_message: { message: content } }),
-    })
+    const draftMessage = {
+      message: content,
+      ...(hasCurrentDraft
+        ? { expected_message: currentMessage }
+        : { expected_absent: true }),
+    }
+    try {
+      await this.fetchResponse(tenant, path, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ draft_message: draftMessage }),
+      })
+    } catch (error) {
+      if (!(error instanceof ChatwootApiError) || error.status !== 409) {
+        throw error
+      }
+      const latest = asObject(
+        await this.json(
+          await this.fetchResponse(tenant, path, { method: 'GET' }),
+          'draft after conflict',
+        ),
+      )
+      if (
+        latest?.has_draft === true &&
+        typeof latest.message === 'string'
+      ) {
+        return { written: false, message: latest.message }
+      }
+      throw error
+    }
     return { written: true, message: content }
   }
 

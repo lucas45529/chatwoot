@@ -7,7 +7,22 @@ class Api::V1::Accounts::Conversations::DraftMessagesController < Api::V1::Accou
   end
 
   def update
-    Redis::Alfred.set(draft_redis_key, draft_message_params)
+    payload = params.fetch(:draft_message, {})
+    written =
+      if payload[:expected_absent]
+        Redis::Alfred.set(draft_redis_key, draft_message_params, nx: true)
+      elsif payload.key?(:expected_message)
+        Redis::Alfred.set_if_equals(
+          draft_redis_key,
+          payload[:expected_message],
+          draft_message_params
+        )
+      else
+        Redis::Alfred.set(draft_redis_key, draft_message_params)
+      end
+
+    return head :conflict unless written
+
     head :ok
   end
 

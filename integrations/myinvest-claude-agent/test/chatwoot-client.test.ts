@@ -34,7 +34,12 @@ describe('ChatwootClient', () => {
       'https://chat.example.test/api/v1/accounts/101/conversations/77/draft_messages',
       expect.objectContaining({
         method: 'PATCH',
-        body: JSON.stringify({ draft_message: { message: 'Antwortvorschlag' } }),
+        body: JSON.stringify({
+          draft_message: {
+            message: 'Antwortvorschlag',
+            expected_absent: true,
+          },
+        }),
       }),
     )
   })
@@ -90,10 +95,50 @@ describe('ChatwootClient', () => {
       expect.objectContaining({
         method: 'PATCH',
         body: JSON.stringify({
-          draft_message: { message: 'Neuer KI-Entwurf' },
+          draft_message: {
+            message: 'Neuer KI-Entwurf',
+            expected_message: 'Alter KI-Entwurf',
+          },
         }),
       }),
     )
+  })
+
+  it('preserves a human edit that races between draft GET and PATCH', async () => {
+    const deliveryStore = { exists: vi.fn().mockResolvedValue(false) }
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ has_draft: true, message: 'Alter KI-Entwurf' }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 409 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ has_draft: true, message: 'Menschlich bearbeitet' }),
+          { status: 200 },
+        ),
+      )
+    const client = new ChatwootClient(
+      'https://chat.example.test',
+      deliveryStore,
+      request,
+    )
+
+    await expect(
+      client.saveDraft(
+        tenants[0]!,
+        77,
+        'Neuer KI-Entwurf',
+        'Alter KI-Entwurf',
+      ),
+    ).resolves.toEqual({
+      written: false,
+      message: 'Menschlich bearbeitet',
+    })
+    expect(request).toHaveBeenCalledTimes(3)
   })
 
   it('does not leak an upstream response or token in errors', async () => {

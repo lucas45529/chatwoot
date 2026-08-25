@@ -167,6 +167,9 @@ Mensch editiert hat, fasst der Agent den Draft nicht mehr an.
 Nur ein tatsächlich geschriebener KI-Text erhält den CAS-Marker in der
 privaten Note; ein bewahrter menschlicher Draft wird lediglich als
 nicht-übernommener Referenzvorschlag protokolliert.
+Der Agent sendet zusätzlich `expected_message` beziehungsweise
+`expected_absent`; Chatwoot entscheidet den Vergleich atomar in Redis. Ein
+Mensch, der zwischen GET und PATCH tippt, gewinnt deshalb ebenfalls sicher.
 Der erste Handoff auditiert denselben Drafttext in der privaten Note, damit
 spätere Updates ihn sicher erkennen. Anhangsnachrichten mit `content: null`
 werden zu einem internen Klärungsentwurf normalisiert; ein kurzfristig
