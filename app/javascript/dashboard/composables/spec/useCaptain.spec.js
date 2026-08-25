@@ -76,6 +76,20 @@ describe('useCaptain', () => {
     expect(mockStore.dispatch).not.toHaveBeenCalledWith('accounts/limits');
   });
 
+  it('fetches account limits on Chatwoot Cloud enterprise installations', () => {
+    useAccount.mockReturnValue({
+      isCloudFeatureEnabled: vi.fn().mockReturnValue(true),
+      currentAccount: { value: { limits: { captain: {} } } },
+      isOnChatwootCloud: { value: true },
+    });
+    useConfig.mockReturnValue({ isEnterprise: true });
+
+    const { fetchLimits } = useCaptain();
+    fetchLimits();
+
+    expect(mockStore.dispatch).toHaveBeenCalledWith('accounts/limits');
+  });
+
   it('rewrites content', async () => {
     TasksAPI.rewrite.mockResolvedValue({
       data: { message: 'Rewritten content', follow_up_context: { id: 'ctx1' } },
