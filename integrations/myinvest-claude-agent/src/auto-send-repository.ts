@@ -29,6 +29,7 @@ export class PostgresAutoSendLog implements AutoSendLog {
   async usage(input: {
     tenantKey: TenantKey
     conversationId: number
+    messageId: number
     contactHash?: string
   }): Promise<AutoSendUsage> {
     const result = await this.database.query<UsageRow>(
@@ -37,11 +38,13 @@ export class PostgresAutoSendLog implements AutoSendLog {
                  WHERE tenant_key = $1 AND conversation_id = $2
               ) AS blocked,
               (SELECT count(*) FROM agent_auto_send_log
-                WHERE tenant_key = $1 AND conversation_id = $2) AS conversation_count,
+                WHERE tenant_key = $1 AND conversation_id = $2
+                  AND message_id <> $4) AS conversation_count,
               (SELECT count(*) FROM agent_auto_send_log
                 WHERE tenant_key = $1 AND contact_hash IS NOT NULL AND contact_hash = $3
+                  AND message_id <> $4
                   AND created_at >= now() - interval '1 hour') AS contact_count`,
-      [input.tenantKey, input.conversationId, input.contactHash ?? null],
+      [input.tenantKey, input.conversationId, input.contactHash ?? null, input.messageId],
     )
     const row = result.rows[0]
     if (!row) throw new Error('Auto-send usage could not be read')
@@ -88,5 +91,16 @@ export class PostgresAutoSendLog implements AutoSendLog {
         entry.sentText,
       ],
     )
+  }
+
+  async markSent(tenantKey: TenantKey, messageId: number): Promise<void> {
+    const result = await this.database.query<{ updated: number }>(
+      `UPDATE agent_auto_send_log
+          SET sent_at = COALESCE(sent_at, now())
+        WHERE tenant_key = $1 AND message_id = $2
+        RETURNING 1 AS updated`,
+      [tenantKey, messageId],
+    )
+    if (!result.rows[0]) throw new Error('Auto-send audit row could not be marked sent')
   }
 }

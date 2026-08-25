@@ -25,7 +25,7 @@ interface PendingRow extends Record<string, unknown> {
   tenant_key: string
   conversation_id: string
   message_id: string
-  created_at: Date
+  sent_at: Date
 }
 
 interface OutcomeRow extends Record<string, unknown> {
@@ -59,12 +59,13 @@ export async function runAutoSendFeedbackSweep(input: {
 }): Promise<AutoSendFeedbackSweepResult> {
   const pending = await input.agentPool.query<PendingRow>(
     `SELECT id, tenant_key, conversation_id::text AS conversation_id,
-            message_id::text AS message_id, created_at
+            message_id::text AS message_id, sent_at AS sent_at
        FROM agent_auto_send_log
       WHERE feedback_recorded_at IS NULL
-        AND created_at < now() - ($1 || ' minutes')::interval
-        AND created_at > now() - interval '7 days'
-      ORDER BY created_at
+        AND sent_at IS NOT NULL
+        AND sent_at < now() - ($1 || ' minutes')::interval
+        AND sent_at > now() - interval '7 days'
+      ORDER BY sent_at
       LIMIT $2`,
     [GRACE_MINUTES, MAX_ROWS_PER_SWEEP],
   )
@@ -80,7 +81,7 @@ export async function runAutoSendFeedbackSweep(input: {
     if (!tenantKey.success) continue
     const tenant = input.tenants.requireByKey(tenantKey.data)
     const conversationId = Number(row.conversation_id)
-    const sentAt = new Date(row.created_at)
+    const sentAt = new Date(row.sent_at)
     const outcome = await input.chatwootPool.query<OutcomeRow>(
       `SELECT conversation.status,
               (

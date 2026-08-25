@@ -24,6 +24,7 @@ const sentBodySchema = z.object({
   history: z.array(z.object({ role: z.enum(['user', 'agent']), text: z.string() })),
   tenant: z.string(),
   channel: z.string(),
+  contact: z.object({ email: z.string() }).optional(),
 })
 
 function brainRequest(overrides: Partial<SupportBrainRequest> = {}): SupportBrainRequest {
@@ -179,6 +180,25 @@ describe('SupportBrainClient · Contract-Grenzen der Anfrage', () => {
     for (const turn of sent.history) {
       expect(turn.text).toHaveLength(MAX_HISTORY_TURN_CHARS)
     }
+  })
+
+  it('transportiert die Kontakt-E-Mail nur im signierten Body', async () => {
+    const fetchImplementation = respondingFetch(jsonResponse(brainPayload()))
+    await clientWith(fetchImplementation).answer(
+      brainRequest({ contact: { email: 'kunde@example.de' } }),
+    )
+
+    const raw = sentRawBody(fetchImplementation)
+    const sent = sentBodySchema.parse(JSON.parse(raw))
+    expect(sent.contact).toEqual({ email: 'kunde@example.de' })
+    const headers = new Headers(requestInit(fetchImplementation).headers)
+    expect(headers.get('x-support-signature')).toBe(
+      supportAnswerSignature({
+        rawBody: raw,
+        timestamp: FIXED_TIMESTAMP,
+        secret: TEST_SECRET,
+      }),
+    )
   })
 })
 

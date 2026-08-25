@@ -70,6 +70,7 @@ function setup(
     turns: [],
     labels: [],
     humanRepliedAfterBot: false,
+    humanEverReplied: false,
     contactHash: CONTACT_HASH,
     ...options.context,
   })
@@ -82,6 +83,9 @@ function setup(
   const blockConversation = vi.fn().mockResolvedValue(undefined)
   const record = vi.fn(async () => {
     sequence.push('record')
+  })
+  const markSent = vi.fn(async () => {
+    sequence.push('mark-sent')
   })
   const state = {
     isHandedOff: vi.fn().mockResolvedValue(false),
@@ -97,7 +101,7 @@ function setup(
     chatwoot: { sendMessage, sendPrivateNote, saveDraft, setPriority, addLabels, assign, handoff },
     context: { loadContext },
     state,
-    autoSend: { usage, blockConversation, record },
+    autoSend: { usage, blockConversation, record, markSent },
     autoSendEnabled: options.autoSendEnabled ?? false,
     autoSendLimits: options.limits ?? LIMITS,
     whatsappInboxIds: new Set([6]),
@@ -114,7 +118,7 @@ function setup(
     handoff,
     loadContext,
     state,
-    autoSend: { usage, blockConversation, record },
+    autoSend: { usage, blockConversation, record, markSent },
     sequence,
   }
 }
@@ -130,7 +134,7 @@ describe('MessageProcessor', () => {
       expect.objectContaining({ tenant: 'new_academy', channel: 'web' }),
     )
     expect(supported.autoSend.usage).toHaveBeenCalledWith(
-      expect.objectContaining({ tenantKey: 'new_academy' }),
+      expect.objectContaining({ tenantKey: 'new_academy', messageId: 55 }),
     )
     expect(supported.saveDraft).toHaveBeenCalledWith(tenants[1], 77, BRAIN_ANSWER.text)
     expect(supported.sendMessage).not.toHaveBeenCalled()
@@ -166,15 +170,16 @@ describe('MessageProcessor', () => {
     )
   })
 
-  it('answers a presence check naturally without the brain or a human handoff', async () => {
-    const presence = setup()
+  it('answers a presence check naturally through the guarded auto-send path', async () => {
+    const presence = setup({ autoSendEnabled: true })
     await presence.processor.process({
       tenant: tenants[0]!,
       payload: incomingPayload({ content: 'Ist jemand hier ?' }),
     })
 
     expect(presence.answer).not.toHaveBeenCalled()
-    expect(presence.autoSend.record).not.toHaveBeenCalled()
+    expect(presence.autoSend.record).toHaveBeenCalledOnce()
+    expect(presence.sequence).toEqual(['record', 'send', 'mark-sent'])
     expect(presence.setPriority).not.toHaveBeenCalled()
     expect(presence.handoff).not.toHaveBeenCalled()
     expect(presence.sendMessage).toHaveBeenCalledWith(
@@ -185,6 +190,25 @@ describe('MessageProcessor', () => {
       'answer',
     )
     expect(presence.state.completeReply).toHaveBeenCalledWith('saas', 55)
+  })
+
+  it('laesst auch die deterministische Begruessung bei ausgeschaltetem Kill-Switch nur als Entwurf zu', async () => {
+    const presence = setup()
+
+    await presence.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Ist jemand hier?' }),
+    })
+
+    expect(presence.answer).not.toHaveBeenCalled()
+    expect(presence.sendMessage).not.toHaveBeenCalled()
+    expect(presence.autoSend.record).not.toHaveBeenCalled()
+    expect(presence.saveDraft).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      'Hey, ja — wir sind da. Wie können wir dir helfen?',
+    )
+    expect(presence.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
 
   it('resumes after a human reply and drafts the brain clarification', async () => {
@@ -471,6 +495,22 @@ describe('MessageProcessor auto-send', () => {
     }
   })
 
+  it('bindet Werkzeuge an die signierte Chatwoot-Kontaktadresse', async () => {
+    const withContact = setup({
+      answer: SAFE_ANSWER,
+      context: { contactEmail: 'kunde@example.de' },
+    })
+
+    await withContact.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Ist mein App-Zugang aktiv?' }),
+    })
+
+    expect(withContact.answer).toHaveBeenCalledWith(
+      expect.objectContaining({ contact: { email: 'kunde@example.de' } }),
+    )
+  })
+
   it('drafts instead of sending while the kill switch is off', async () => {
     const off = setup({ autoSendEnabled: false, answer: SAFE_ANSWER })
     await off.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
@@ -544,6 +584,51 @@ describe('MessageProcessor auto-send', () => {
     )
   })
 
+  it('wendet den Human-Lock auch auf deterministische Begruessungen an', async () => {
+    const afterHuman = setup({
+      autoSendEnabled: true,
+      answer: SAFE_ANSWER,
+      context: {
+        turns: [{ role: 'human', text: 'Ich uebernehme das hier.' }],
+      },
+    })
+
+
+    await afterHuman.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Ist jemand hier?' }),
+    })
+
+    expect(afterHuman.autoSend.blockConversation).toHaveBeenCalledWith({
+      tenantKey: 'saas',
+      conversationId: 77,
+      reason: 'human_reply',
+    })
+    expect(afterHuman.sendMessage).not.toHaveBeenCalled()
+    expect(afterHuman.answer).toHaveBeenCalled()
+    expect(afterHuman.saveDraft).toHaveBeenCalled()
+  })
+  it('blockiert auch eine Menschenantwort ausserhalb des Verlaufsfensters', async () => {
+    const historicHuman = setup({
+      autoSendEnabled: true,
+      answer: SAFE_ANSWER,
+      context: { turns: [], humanEverReplied: true },
+    })
+
+    await historicHuman.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Wie erstelle ich einen Kontakt?' }),
+    })
+
+    expect(historicHuman.autoSend.blockConversation).toHaveBeenCalledWith({
+      tenantKey: 'saas',
+      conversationId: 77,
+      reason: 'human_reply',
+    })
+    expect(historicHuman.sendMessage).not.toHaveBeenCalled()
+    expect(historicHuman.saveDraft).toHaveBeenCalled()
+  })
+
   it('stops at the conversation limit, the contact rate limit, and the length guard', async () => {
     const cases = [
       { verdict: 'conversation_limit', options: { usage: { conversationCount: 3 } } },
@@ -598,9 +683,9 @@ describe('MessageProcessor auto-send', () => {
     expect(JSON.stringify(audited.autoSend.record.mock.calls[0])).not.toContain(
       'Wie funktioniert das Onboarding',
     )
-    // Buchfuehrung vor dem Senden: ein Abbruch danach darf die Obergrenze
-    // lieber zu streng als zu weit machen.
-    expect(audited.sequence).toEqual(['record', 'send'])
+    // Audit-Versuch vor dem Send; `sent_at` erst NACH bestaetigtem Send.
+    expect(audited.sequence).toEqual(['record', 'send', 'mark-sent'])
+    expect(audited.autoSend.markSent).toHaveBeenCalledWith('saas', 55)
 
     // Ohne Audit-Zeile geht nichts raus.
     const auditFailure = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
@@ -610,5 +695,16 @@ describe('MessageProcessor auto-send', () => {
     ).rejects.toThrow(/audit log unavailable/)
     expect(auditFailure.sendMessage).not.toHaveBeenCalled()
     expect(auditFailure.state.completeReply).not.toHaveBeenCalled()
+  })
+
+  it('markiert einen fehlgeschlagenen Send nie als tatsaechlich gesendet', async () => {
+    const failed = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
+    failed.sendMessage.mockRejectedValueOnce(new Error('chatwoot timeout'))
+
+    await expect(
+      failed.processor.process({ tenant: tenants[0]!, payload: incomingPayload() }),
+    ).rejects.toThrow(/chatwoot timeout/)
+    expect(failed.autoSend.record).toHaveBeenCalledOnce()
+    expect(failed.autoSend.markSent).not.toHaveBeenCalled()
   })
 })

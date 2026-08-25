@@ -47,6 +47,8 @@ export interface AutoSendLog {
   usage(input: {
     tenantKey: TenantKey
     conversationId: number
+    /** Aktuelle Delivery; ihr voriger Fehlversuch zaehlt beim Retry nicht doppelt. */
+    messageId: number
     contactHash?: string
   }): Promise<AutoSendUsage>
   blockConversation(input: {
@@ -55,6 +57,8 @@ export interface AutoSendLog {
     reason: string
   }): Promise<void>
   record(entry: AutoSendRecord): Promise<void>
+  /** Erst nach bestaetigter Chatwoot-Nachricht; trennt Audit-Versuch von Versand. */
+  markSent(tenantKey: TenantKey, messageId: number): Promise<void>
 }
 
 /** Der Fragetext selbst wird nie auditiert, nur sein Hash. */

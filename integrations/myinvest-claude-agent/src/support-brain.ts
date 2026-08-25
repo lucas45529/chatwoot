@@ -22,6 +22,7 @@ export interface SupportBrainRequest {
   history: readonly SupportBrainHistoryTurn[]
   tenant: TenantKey
   channel: SupportChannel
+  contact?: { email: string }
 }
 
 const brainAnswerSchema = z.object({
@@ -125,6 +126,9 @@ export class SupportBrainClient implements SupportBrainPort {
       })),
       tenant: request.tenant,
       channel: request.channel,
+      ...(request.contact
+        ? { contact: { email: request.contact.email.slice(0, 320) } }
+        : {}),
     })
     try {
       return await this.send(rawBody)

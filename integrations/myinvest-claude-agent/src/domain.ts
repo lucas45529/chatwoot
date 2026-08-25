@@ -50,8 +50,12 @@ export interface ConversationContext {
   turns: ConversationTurn[]
   labels: string[]
   humanRepliedAfterBot: boolean
+  /** Historischer Menschenkontakt ausserhalb des kurzen Verlaufsfensters. */
+  humanEverReplied: boolean
   /** Pseudonym des Kontakts fuer Ratengrenzen; nie eine Kontaktangabe. */
   contactHash?: string
+  /** Nur im signierten Gehirn-Body; nie in Logs oder Verlauf. */
+  contactEmail?: string
 }
 
 export interface KnowledgeHit {

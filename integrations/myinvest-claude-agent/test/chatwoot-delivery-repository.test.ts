@@ -41,6 +41,7 @@ describe('PostgresChatwootDeliveryStore health', () => {
     const store = new PostgresChatwootDeliveryStore({ query })
     await store.healthCheck()
     expect(query.mock.calls[0]![0]).toContain('FROM messages CROSS JOIN conversations')
+    expect(query.mock.calls[0]![0]).toContain('CROSS JOIN contacts')
   })
 
   it('returns no context for a signed webhook whose conversation no longer exists', async () => {
@@ -66,7 +67,9 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
           {
             conversation_id: '900',
             contact_id: '4242',
+            contact_email: 'kunde@example.de',
             cached_label_list: 'ki-uebergabe',
+            last_human_message_id: '3',
             last_agent_handoff_id: '1',
           },
         ],
@@ -117,6 +120,7 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     expect(context).toEqual({
       humanRepliedAfterBot: true,
       labels: ['ki-uebergabe'],
+      humanEverReplied: true,
       turns: [
         { role: 'assistant', text: 'Übergabe' },
         { role: 'human', text: 'Hallo, wie können wir helfen?' },
@@ -125,13 +129,49 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
       // Ratengrenzen brauchen nur Gleichheit: der Kontakt verlaesst Chatwoot
       // als accountgebundenes Pseudonym, nie als ID oder Kontaktangabe.
       contactHash: createHash('sha256').update('101\u00004242').digest('hex'),
+      contactEmail: 'kunde@example.de',
     })
     expect(context!.contactHash).not.toContain('4242')
     expect(query.mock.calls[0]![1]).toEqual([101, 71])
+    expect(query.mock.calls[0]![0]).toContain('JOIN contacts')
+    expect(query.mock.calls[0]![0]).toContain('AS last_human_message_id')
     expect(query.mock.calls[1]![0]).toContain('message.id <> $3')
     expect(query.mock.calls[1]![0]).toContain('json_typeof(message.content_attributes)')
     expect(query.mock.calls[1]![0]).toContain('message.private = false')
+
     expect(query.mock.calls[1]![0]).toContain("content_attributes ->> 'external_echo'")
     expect(query.mock.calls[1]![1]).toEqual([101, '900', 4])
+  })
+  it('erkennt eine historische Menschenantwort auch ausserhalb des Verlaufsfensters', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            conversation_id: '501',
+            contact_id: '9',
+            contact_email: null,
+            cached_label_list: 'ki-uebergabe',
+            last_human_message_id: '50',
+            last_agent_handoff_id: '40',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+    const store = new PostgresChatwootDeliveryStore({ query })
+
+    await expect(
+      store.loadContext({
+        accountId: 101,
+        conversationDisplayId: 71,
+        currentMessageId: 55,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        turns: [],
+        humanEverReplied: true,
+        humanRepliedAfterBot: true,
+      }),
+    )
   })
 })

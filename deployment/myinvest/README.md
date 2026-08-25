@@ -138,27 +138,37 @@ The `claude-agent` service builds from `../../integrations/myinvest-claude-agent
 3. After a provider-setting change, recreate only the agent: `docker compose up -d --build --force-recreate claude-agent`.
 4. Test signature rejection, tenant isolation, escalation, opt-out, and an unknown-answer case before enabling auto-replies.
 
-Keep the knowledge sources scoped by account/tenant in the agent. Retrieved content must never cross the three account boundaries.
+Antwortwissen lebt ausschließlich im Website-Gehirn
+`https://www.myinvest-pro.de/api/support/answer`. Der Agent signiert
+`${timestamp}.${rawBody}` mit `SUPPORT_ANSWER_SECRET`; eigenes Modell und
+Runtime-Retrieval sind entfernt. Der Tenant steht in jedem signierten Request.
 
-Every handoff is visible on both sides. Before the conversation is reopened the agent sets a Chatwoot priority, adds the triage labels, writes an internal note with trigger and next step, and assigns the conversation to the required per-tenant `handoffAssigneeId` in `runtime/tenants.json`; afterwards the customer receives one short German reply that a colleague takes over. Security, data-protection, complaint, payment, appointment, explicit-human and individual-advice messages never reach the model at all — `src/triage.ts` decides that deterministically so the escalation also works when the LLM call fails. Source references are no longer appended to the customer message; they go into the internal note. Delivery messages carry a delivery ID and kind, so retries cannot duplicate an answer, acknowledgement, or private note.
+Sicherheits-, Datenschutz-, Beschwerde-, Zahlungs-, Vertrags-, Rechts-,
+Steuer- und explizite Menschenanliegen gehen deterministisch zum Team.
+Allgemeine Antworten werden nur automatisch gesendet, wenn das Gehirn
+`safeToAutoSend=true` liefert und zusätzlich Kill-Switch, Human-Lock,
+Konversations-/Kontakt-Limits, Längenlimit und Audit greifen. Sonst entsteht
+ein Entwurf oder eine sichtbare Übergabe. Deterministische Begrüßungen laufen
+durch denselben Kill-Switch-, Limit-, Human-Lock- und Audit-Pfad.
 
-Standalone greetings and presence checks such as `Hallo` or `Ist jemand hier?` bypass retrieval and receive the natural direct reply `Hey, ja — wir sind da. Wie können wir dir helfen?`. Longer messages never match this shortcut and continue through safety triage plus tenant-scoped knowledge retrieval.
+`AGENT_LEARNING_CHATWOOT_DATABASE_URL` ist eine verpflichtende Read-only-Rolle.
+Sie braucht `SELECT` auf `messages`, `conversations` und `contacts`; der
+Container-Healthcheck prüft alle drei Tabellen. Minimaler Grant:
 
-All substantive Gemini outputs are review-first: the agent loads up to twelve recent, non-private, PII-redacted turns and writes its answer or one fact-free clarification into Chatwoot's shared composer draft. The conversation is labelled `ki-entwurf`, assigned to the configured human, and opened; nothing reaches the customer until that human reviews/edits the text and presses Send. Sensitive labels remain human-only. The human send reactivates ordinary handed-off threads for the next customer turn.
-
-`AGENT_LEARNING_CHATWOOT_DATABASE_URL` is a required read-only Chatwoot database role. It powers delivery-marker deduplication, recent conversation context, and the reviewed learning miner; Agent Bots still cannot call `messages#index`.
-
-Dashboard theme, greeting suppression on bot inboxes, AgentBot branding, and the triage/draft labels are one idempotent configuration step. Preview with `./scripts/apply-support-experience.sh`, apply with `./scripts/apply-support-experience.sh --apply`. It defaults the dashboard to light, disables inbox greetings on managed AgentBot inboxes, renames the user-visible bot to `MyInvest Support`, and upserts all ten support labels in the three canonical tenant accounts.
-
-Knowledge files under `integrations/myinvest-claude-agent/knowledge/<tenant>` are not part of the image. Copy and re-ingest a namespace explicitly, which retires exactly that namespace and nothing else:
-
-```bash
-docker cp ../../integrations/myinvest-claude-agent/knowledge/saas myinvest-chatwoot-claude-agent-1:/tmp/saas-app-help
-docker exec myinvest-chatwoot-claude-agent-1 node dist/ingest.js saas saas-app-help /tmp/saas-app-help
-docker exec myinvest-chatwoot-claude-agent-1 node scripts/eval-retrieval.mjs
+```sql
+GRANT SELECT ON TABLE public.messages, public.conversations, public.contacts
+TO agent_learning_ro;
 ```
 
-Retrieval quality is gated by `node scripts/eval-retrieval.mjs`. Install the reviewed learning schedule with `./scripts/install-learning-loop.sh --apply`: every morning the miner resolves account-scoped display IDs correctly, extracts every safe customer-to-human pair, and treats the human Send click as the approval signal; PII, secrets, sensitive/account-specific cases, greetings and clarification questions are rejected. Approval and publication remain separate audited DB transitions under actor `chatwoot-human-send`, producing tenant-scoped `reviewed-live-support` documents. The Monday report still summarizes volume, retrieval misses and the review queue.
+Der Kontaktwert verlässt Chatwoot nur als E-Mail im HMAC-signierten
+Gehirn-Request (für identitätsgebundene Lese-Werkzeuge) und als Hash für
+Ratengrenzen; nie in Logs oder Verlauf.
+
+Dashboard-Theme, Bot-Branding und Triage-/Draft-Labels bleiben idempotent über
+`./scripts/apply-support-experience.sh --apply`. Die lokale Knowledge- und
+Learning-Pipeline ist Review-/Evidenzspeicher, kein zweites Antwort-Retrieval.
+Der tägliche Miner und Auto-Send-Feedback-Nachlauf bleiben auditiert; nur
+nachweislich gesendete Zeilen (`sent_at IS NOT NULL`) werden bewertet.
 
 ## Backups and restore
 

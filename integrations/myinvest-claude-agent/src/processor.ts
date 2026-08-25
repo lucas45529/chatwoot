@@ -150,38 +150,12 @@ export class MessageProcessor {
       await handoff('empty_message')
       return
     }
-    if (outcome.humanOnly) {
-      await handoff(`triage_${outcome.category}`)
-      return
-    }
-
-    const directReply = directSupportReply(question)
-    if (directReply) {
-      await this.dependencies.state.markSending(tenant.key, payload.id)
-      await this.dependencies.chatwoot.sendMessage(
-        tenant,
-        conversationId,
-        directReply,
-        payload.id,
-        'answer',
-      )
-      await this.dependencies.state.completeReply(tenant.key, payload.id)
-      console.log(
-        JSON.stringify({
-          event: 'agent_direct_reply',
-          tenant: tenant.key,
-          conversationId,
-        }),
-      )
-      return
-    }
-
-    // Sobald ein Mensch in dieser Konversation geschrieben hat, ist Auto-Send
-    // hier dauerhaft aus. Der Vermerk ueberlebt das 12-Nachrichten-Fenster des
-    // Verlaufs, der Verlauf allein waere kein dauerhaftes Gedaechtnis.
-    const humanInConversation = conversationContext.turns.some(
-      (turn) => turn.role === 'human',
-    )
+    // Jede automatische Antwort — auch die deterministische Begruessung —
+    // respektiert den Human-Lock. Der persistierte Vermerk ueberlebt das
+    // 12-Nachrichten-Fenster des Verlaufs.
+    const humanInConversation =
+      conversationContext.humanEverReplied ||
+      conversationContext.turns.some((turn) => turn.role === 'human')
     if (humanInConversation) {
       await this.dependencies.autoSend.blockConversation({
         tenantKey: tenant.key,
@@ -189,37 +163,56 @@ export class MessageProcessor {
         reason: 'human_reply',
       })
     }
-
-    let answer: SupportBrainAnswer
-    try {
-      answer = await this.dependencies.brain.answer({
-        question,
-        history: conversationContext.turns.map(
-          (turn): SupportBrainHistoryTurn => ({
-            role: turn.role === 'customer' ? 'user' : 'agent',
-            text: turn.text,
-          }),
-        ),
-        tenant: tenant.key,
-        channel:
-          payload.inboxId !== undefined &&
-          this.dependencies.whatsappInboxIds.has(payload.inboxId)
-            ? 'whatsapp'
-            : 'web',
-      })
-    } catch (error) {
-      console.error(
-        JSON.stringify({
-          event: 'agent_brain_failed',
-          tenant: tenant.key,
-          conversationId,
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      )
-      // Ausfall des Gehirns endet nie in Stille: der Kunde bekommt den
-      // sichtbaren Uebergabe-Hinweis, das Team die Notiz.
-      await handoff('brain_error', error instanceof Error ? error.message : undefined)
+    if (outcome.humanOnly) {
+      await handoff(`triage_${outcome.category}`)
       return
+    }
+
+    const directReply = humanInConversation ? undefined : directSupportReply(question)
+    let answer: SupportBrainAnswer
+    if (directReply) {
+      answer = {
+        action: 'answer',
+        text: directReply,
+        confidence: 1,
+        sources: [],
+        safeToAutoSend: true,
+        reason: 'deterministic_presence',
+      }
+    } else {
+      try {
+        answer = await this.dependencies.brain.answer({
+          question,
+          history: conversationContext.turns.map(
+            (turn): SupportBrainHistoryTurn => ({
+              role: turn.role === 'customer' ? 'user' : 'agent',
+              text: turn.text,
+            }),
+          ),
+          tenant: tenant.key,
+          channel:
+            payload.inboxId !== undefined &&
+            this.dependencies.whatsappInboxIds.has(payload.inboxId)
+              ? 'whatsapp'
+              : 'web',
+          contact: conversationContext.contactEmail
+            ? { email: conversationContext.contactEmail }
+            : undefined,
+        })
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            event: 'agent_brain_failed',
+            tenant: tenant.key,
+            conversationId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        )
+        // Ausfall des Gehirns endet nie in Stille: der Kunde bekommt den
+        // sichtbaren Uebergabe-Hinweis, das Team die Notiz.
+        await handoff('brain_error', error instanceof Error ? error.message : undefined)
+        return
+      }
     }
 
     if (answer.action === 'handoff') {
@@ -230,6 +223,7 @@ export class MessageProcessor {
     const usage = await this.dependencies.autoSend.usage({
       tenantKey: tenant.key,
       conversationId,
+      messageId: payload.id,
       contactHash: conversationContext.contactHash,
     })
     const verdict = autoSendDecision({
@@ -304,14 +298,22 @@ export class MessageProcessor {
       deliveryId,
       'answer',
     )
+    await this.dependencies.autoSend.markSent(tenant.key, deliveryId)
     const limits = this.dependencies.autoSendLimits
+    const deterministic = answer.reason === 'deterministic_presence'
+    const sourceLine = deterministic
+      ? 'Quellen: nicht erforderlich (deterministische Präsenzantwort)'
+      : `Quellen: ${brainSources(answer)}`
+    const approval = deterministic
+      ? 'Freigabe: deterministische Präsenzantwort'
+      : `Freigabe: Gehirn safeToAutoSend${answer.reason ? ` (${answer.reason})` : ''}`
     await this.dependencies.chatwoot.sendPrivateNote(
       tenant,
       conversationId,
       [
         `KI-Antwort automatisch gesendet · Confidence ${answer.confidence.toFixed(2)}`,
-        `Quellen: ${brainSources(answer)}`,
-        `Freigabe: Gehirn safeToAutoSend${answer.reason ? ` (${answer.reason})` : ''}` +
+        sourceLine,
+        approval +
           ` · Konversation ${usage.conversationCount + 1}/${limits.maxPerConversation}` +
           ` · Kontakt ${usage.contactCountLastHour + 1}/${limits.maxPerContactPerHour} pro Stunde`,
         'Antworte einfach selbst, wenn etwas fehlt — danach sendet die KI in diesem Gespräch nichts mehr automatisch.',

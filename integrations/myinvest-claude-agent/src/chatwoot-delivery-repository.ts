@@ -42,7 +42,9 @@ export interface ChatwootConversationContextStore {
 interface ContextMetadataRow extends Record<string, unknown> {
   conversation_id: string
   contact_id: string | null
+  contact_email: string | null
   cached_label_list: string | null
+  last_human_message_id: string | null
   last_agent_handoff_id: string | null
 }
 
@@ -60,8 +62,9 @@ interface ContextMessageRow extends Record<string, unknown> {
 
 /**
  * Account-gebundener Read-only-Blick in Chatwoot. Er dedupliziert AgentBot-
- * Nachrichten und liefert einen kurzen, PII-redigierten Verlauf; Rohdaten oder
- * Kontaktwerte werden weder geloggt noch an das Modell weitergereicht.
+ * Nachrichten und liefert einen kurzen, PII-redigierten Verlauf. Die E-Mail
+ * verlaesst ihn nur im signierten Gehirn-Body fuer kontaktgebundene Werkzeuge;
+ * sie landet weder im Verlauf noch in Logs.
  */
 export class PostgresChatwootDeliveryStore
   implements ChatwootDeliveryStore, ChatwootConversationContextStore
@@ -69,9 +72,8 @@ export class PostgresChatwootDeliveryStore
   constructor(private readonly database: Queryable) {}
 
   async healthCheck(): Promise<void> {
-    // Erzwingt echte SELECT-Rechte auf den genutzten Tabellen.
     await this.database.query(
-      'SELECT 1 FROM messages CROSS JOIN conversations WHERE false LIMIT 1',
+      'SELECT 1 FROM messages CROSS JOIN conversations CROSS JOIN contacts WHERE false LIMIT 1',
     )
   }
 
@@ -108,18 +110,31 @@ export class PostgresChatwootDeliveryStore
     const metadata = await this.database.query<ContextMetadataRow>(
       `SELECT conversation.id::text AS conversation_id,
               conversation.contact_id::text AS contact_id,
+              contact.email AS contact_email,
               conversation.cached_label_list,
+              (
+                SELECT max(human_message.id)::text
+                  FROM messages AS human_message
+                 WHERE human_message.account_id = $1
+                   AND human_message.conversation_id = conversation.id
+                   AND human_message.sender_type = 'User'
+                   AND human_message.private = false
+              ) AS last_human_message_id,
               (
                 SELECT max(marker.id)::text
                   FROM messages AS marker
                  WHERE marker.account_id = $1
                    AND marker.sender_type = 'AgentBot'
+                   AND marker.conversation_id = conversation.id
                    AND CASE WHEN json_typeof(marker.content_attributes) = 'string'
                             THEN (marker.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
                             ELSE marker.content_attributes ->> 'myinvest_agent_message_kind' END
                        IN ('handoff_ack', 'handoff_note', 'draft_note', 'clarify_draft_note')
               ) AS last_agent_handoff_id
          FROM conversations AS conversation
+         LEFT JOIN contacts AS contact
+           ON contact.account_id = conversation.account_id
+          AND contact.id = conversation.contact_id
         WHERE conversation.account_id = $1
           AND conversation.display_id = $2`,
       [input.accountId, input.conversationDisplayId],
@@ -162,19 +177,14 @@ export class PostgresChatwootDeliveryStore
     )
 
     const turns: ConversationTurn[] = []
-    let lastHumanMessageId = 0
     for (const message of messages.rows) {
       const role = conversationRole(message)
       if (!role) continue
-      // Der Resume-Marker haengt am menschlichen Absender, nicht am Text: er
-      // zaehlt auch dann, wenn die Redaction den Turn danach verwirft.
-      if (role === 'human') {
-        lastHumanMessageId = Math.max(lastHumanMessageId, Number(message.message_id))
-      }
       const redacted = redactSupportText(message.content).text.trim()
       if (!redacted || containsResidualPersonalData(redacted)) continue
       turns.push({ role, text: redacted.slice(0, 1_500) })
     }
+    const lastHumanMessageId = Number(conversation.last_human_message_id ?? 0)
     const lastBotHandoffId = Number(conversation.last_agent_handoff_id ?? 0)
 
     return {
@@ -184,12 +194,19 @@ export class PostgresChatwootDeliveryStore
         .map((label) => label.trim())
         .filter(Boolean),
       humanRepliedAfterBot: lastBotHandoffId > 0 && lastHumanMessageId > lastBotHandoffId,
+      humanEverReplied: lastHumanMessageId > 0,
       // Pseudonym statt Kontakt-ID: die Ratengrenze braucht nur Gleichheit.
       contactHash: conversation.contact_id
         ? createHash('sha256')
             .update(`${input.accountId}\0${conversation.contact_id}`)
             .digest('hex')
         : undefined,
+      contactEmail:
+        typeof conversation.contact_email === 'string' &&
+        conversation.contact_email.length <= 320 &&
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(conversation.contact_email.trim())
+          ? conversation.contact_email.trim().toLowerCase()
+          : undefined,
     }
   }
 }
