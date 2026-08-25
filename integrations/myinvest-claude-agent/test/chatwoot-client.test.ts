@@ -47,7 +47,12 @@ describe('ChatwootClient', () => {
       }),
     )
     const client = new ChatwootClient('https://chat.example.test', deliveryStore, request)
-    await client.saveDraft(tenants[0]!, 77, 'Neuer KI-Text')
+    await expect(
+      client.saveDraft(tenants[0]!, 77, 'Neuer KI-Text'),
+    ).resolves.toEqual({
+      written: false,
+      message: 'Menschlich bearbeitet',
+    })
     expect(request).toHaveBeenCalledOnce()
     expect(request.mock.calls[0]![1]).toEqual(expect.objectContaining({ method: 'GET' }))
   })
@@ -68,13 +73,17 @@ describe('ChatwootClient', () => {
       deliveryStore,
       request,
     )
-
-    await client.saveDraft(
-      tenants[0]!,
-      77,
-      'Neuer KI-Entwurf',
-      'Alter KI-Entwurf',
-    )
+    await expect(
+      client.saveDraft(
+        tenants[0]!,
+        77,
+        'Neuer KI-Entwurf',
+        'Alter KI-Entwurf',
+      ),
+    ).resolves.toEqual({
+      written: true,
+      message: 'Neuer KI-Entwurf',
+    })
 
     expect(request).toHaveBeenCalledTimes(2)
     expect(request.mock.calls[1]![1]).toEqual(

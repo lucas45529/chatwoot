@@ -61,7 +61,12 @@ function setup(
   const sendMessage = vi.fn(async () => {
     sequence.push('send')
   })
-  const saveDraft = vi.fn().mockResolvedValue(undefined)
+  const saveDraft = vi.fn(
+    async (_tenant: unknown, _conversationId: number, content: string) => ({
+      written: true,
+      message: content,
+    }),
+  )
   const sendPrivateNote = vi.fn().mockResolvedValue(undefined)
   const setPriority = vi.fn().mockResolvedValue(undefined)
   const addLabels = vi.fn().mockResolvedValue(undefined)
@@ -373,10 +378,33 @@ describe('MessageProcessor', () => {
     expect(handedOff.saveDraft).toHaveBeenCalledWith(
       tenants[0],
       77,
+
       SAFE_ANSWER.text,
     )
     expect(handedOff.sendMessage).not.toHaveBeenCalled()
     expect(handedOff.autoSend.record).not.toHaveBeenCalled()
+  })
+  it('markiert einen bewahrten menschlichen Composertext nie als KI-Draft', async () => {
+    const humanDraft = setup({
+      answer: SAFE_ANSWER,
+      autoSendEnabled: true,
+      context: { previousAgentDraft: 'Alter KI-Entwurf' },
+    })
+    humanDraft.state.isHandedOff.mockResolvedValueOnce(true)
+    humanDraft.saveDraft.mockResolvedValueOnce({
+      written: false,
+      message: 'Menschlich bearbeitet',
+    })
+
+    await humanDraft.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload(),
+    })
+
+    const note = String(humanDraft.sendPrivateNote.mock.calls[0]?.[2])
+    expect(note).toContain('menschlich bearbeiteter Entwurf')
+    expect(note).not.toContain('Antwortvorschlag:')
+    expect(humanDraft.sendMessage).not.toHaveBeenCalled()
   })
   it('legt fuer eine Finanzierungsfrage im bereits uebergebenen Chat einen internen Vorschlag an', async () => {
     const reviewDraft: SupportBrainAnswer = {

@@ -22,6 +22,11 @@ export class ChatwootApiError extends Error {
   }
 }
 
+export interface DraftWriteResult {
+  written: boolean
+  message: string
+}
+
 export interface ChatwootPort {
   sendMessage(
     tenant: TenantConfig,
@@ -43,7 +48,7 @@ export interface ChatwootPort {
     conversationId: number,
     content: string,
     previousAgentDraft?: string,
-  ): Promise<void>
+  ): Promise<DraftWriteResult>
   setPriority(tenant: TenantConfig, conversationId: number, priority: ConversationPriority): Promise<void>
   /** Ergaenzt Labels, ohne bestehende zu verlieren. */
   addLabels(tenant: TenantConfig, conversationId: number, labels: readonly string[]): Promise<void>
@@ -100,7 +105,7 @@ export class ChatwootClient implements ChatwootPort {
     conversationId: number,
     content: string,
     previousAgentDraft?: string,
-  ): Promise<void> {
+  ): Promise<DraftWriteResult> {
     const path = `/api/v1/accounts/${tenant.accountId}/conversations/${conversationId}/draft_messages`
     const current = asObject(
       await this.json(
@@ -114,13 +119,14 @@ export class ChatwootClient implements ChatwootPort {
       current.message &&
       current.message !== previousAgentDraft
     ) {
-      return
+      return { written: false, message: current.message }
     }
     await this.fetchResponse(tenant, path, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ draft_message: { message: content } }),
     })
+    return { written: true, message: content }
   }
 
   async setPriority(

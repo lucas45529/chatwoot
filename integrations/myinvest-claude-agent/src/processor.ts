@@ -360,20 +360,18 @@ export class MessageProcessor {
     previousAgentDraft?: string
   }): Promise<void> {
     const { tenant, conversationId, deliveryId, answer, verdict } = input
-    if (input.previousAgentDraft) {
-      await this.dependencies.chatwoot.saveDraft(
-        tenant,
-        conversationId,
-        answer.text,
-        input.previousAgentDraft,
-      )
-    } else {
-      await this.dependencies.chatwoot.saveDraft(
-        tenant,
-        conversationId,
-        answer.text,
-      )
-    }
+    const draftWrite = input.previousAgentDraft
+      ? await this.dependencies.chatwoot.saveDraft(
+          tenant,
+          conversationId,
+          answer.text,
+          input.previousAgentDraft,
+        )
+      : await this.dependencies.chatwoot.saveDraft(
+          tenant,
+          conversationId,
+          answer.text,
+        )
     await this.dependencies.chatwoot.addLabels(tenant, conversationId, [
       'ki-entwurf',
       ...(input.labels ?? []),
@@ -382,10 +380,13 @@ export class MessageProcessor {
       answer.sources.length > 0
         ? `\nQuellen: ${brainSources(answer)}`
         : '\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.'
+    const noteContent = draftWrite.written
+      ? `KI-Antwortentwurf wartet auf menschliche Freigabe (${verdict}).\n\nAntwortvorschlag:\n${draftWrite.message}${sourceNote}`
+      : `KI-Vorschlag wurde nicht in den Composer übernommen, weil dort ein menschlich bearbeiteter Entwurf liegt.\n\nVorschlag zur Referenz:\n${answer.text}${sourceNote}`
     await this.dependencies.chatwoot.sendPrivateNote(
       tenant,
       conversationId,
-      `KI-Antwortentwurf wartet auf menschliche Freigabe (${verdict}).\n\nAntwortvorschlag:\n${answer.text}${sourceNote}`,
+      noteContent,
       deliveryId,
       answer.action === 'clarify' ? 'clarify_draft_note' : 'draft_note',
     )
@@ -402,6 +403,7 @@ export class MessageProcessor {
         verdict,
         tenant: tenant.key,
         conversationId,
+        draftWritten: draftWrite.written,
       }),
     )
   }
@@ -449,7 +451,18 @@ export class MessageProcessor {
       }
     }
     const draft = input.draft
-    const labels = draft
+    let writtenDraft: string | undefined
+    if (draft) {
+      await run('draft', true, async () => {
+        const result = await chatwoot.saveDraft(
+          tenant,
+          conversationId,
+          draft,
+        )
+        if (result.written) writtenDraft = result.message
+      })
+    }
+    const labels = writtenDraft
       ? [...new Set([...outcome.labels, 'ki-entwurf'])]
       : outcome.labels
     const handoffContent = handoffNote({
@@ -457,14 +470,9 @@ export class MessageProcessor {
       reason: input.reason,
       detail: input.detail,
     })
-    const noteContent = draft
-      ? `${handoffContent}\n\nAntwortvorschlag:\n${draft}\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.`
+    const noteContent = writtenDraft
+      ? `${handoffContent}\n\nAntwortvorschlag:\n${writtenDraft}\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.`
       : handoffContent
-    if (draft) {
-      await run('draft', true, () =>
-        chatwoot.saveDraft(tenant, conversationId, draft),
-      )
-    }
 
     await run('priority', false, () =>
       chatwoot.setPriority(tenant, conversationId, outcome.priority),
