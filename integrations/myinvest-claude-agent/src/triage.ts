@@ -167,14 +167,26 @@ const RULES: readonly TriageRule[] = [
   {
     category: 'beratung',
     pattern:
-      /\bsteuer\w*|\bversteuer\w*|\brecht(?:lich|e|er)?\b|\bvertrag\w*|\bklausel\w*|\bhaftung\w*|\banlageberat\w*|\bempfehl\w*|\binvestmentberat\w*|\bfinanzier\w*|\beigenkapital\w*|\bkfw\b|\bafa\b|\bhaltefrist\w*|\bfoerder\w*|\bpreis\w*|\bkosten\b|\bwas kostet\b|\bwelche (?:anlage|immobilie)\b|\bbeste rendite\b|\bsoll ich (?:kaufen|investieren|unterschreiben)\b|\brendite\w* (?:fuer mich|meines)|\bobjekt\w* pruef\w*/,
+      /\brecht(?:lich|e|er)?\b|\bvertrag\w*|\bklausel\w*|\bhaftung\w*|\banlageberat\w*|\binvestmentberat\w*|\bempfehl\w*|\bwelche (?:anlage|immobilie)\b|\bbeste rendite\b|\bsoll ich\b[^.!?\n]{0,60}\b(?:kaufen|investieren|unterschreiben)\b|\brendite\w* (?:fuer mich|meines)|\bobjekt\w* pruef\w*|\bauf (?:meinen|unseren) fall\b|\bin meinem fall\b/,
     priority: 'medium',
     labels: [HANDOFF_LABEL, 'beratung'],
     internalHint:
-      'Individuelle Steuer-, Rechts-, Preis- oder Anlagefrage — keine automatische Antwort erlaubt.',
+      'Individuelle Steuer-, Rechts- oder Anlageberatung — keine automatische Antwort erlaubt.',
     customerAck:
       'Das schaut sich am besten ein Kollege persönlich mit dir an, weil es von deiner Situation abhängt. Ich habe deine Frage direkt weitergegeben.',
     humanOnly: true,
+  },
+  {
+    category: 'beratung',
+    pattern:
+      /(?:steuerlich|steuerrecht|\bsteuern?\b|\bversteuer\w*|\bfinanzier\w*|\beigenkapital\w*|\bkfw\b|\bafa\b|\bhaltefrist\w*|\bfoerder\w*|\bkapitalanlag\w*|\babschreib\w*|\brendite\w*|\binvestition\w*)/,
+    priority: 'medium',
+    labels: [HANDOFF_LABEL, 'beratung'],
+    internalHint:
+      'Allgemeine Kapitalanlagenfrage. Als internen Review-Entwurf konkret beantworten oder gezielt nach dem gemeinten Fachaspekt fragen.',
+    customerAck:
+      'Hey, gerne — was genau möchtest du zu AfA, KfW-Förderung, Haltefristen, Finanzierung oder Eigenkapital wissen?',
+    humanOnly: false,
   },
 ]
 

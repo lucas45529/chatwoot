@@ -158,7 +158,7 @@ export class MessageProcessor {
       )
       return
     }
-    const reviewOnly = humanOwned
+    const reviewOnly = humanOwned || outcome.category === 'beratung'
     const directReply = reviewOnly ? undefined : directSupportReply(question)
     let answer: SupportBrainAnswer
     if (directReply) {
@@ -200,9 +200,9 @@ export class MessageProcessor {
             error: error instanceof Error ? error.message : String(error),
           }),
         )
-        // In einem bereits menschlich gefuehrten Chat darf ein Gehirnausfall
-        // den Composer nicht wieder leeren. Der neutrale Ack bleibt intern.
-        if (humanOwned) {
+        // Ein interner Review-Pfad darf den Composer bei einem Gehirnausfall
+        // nicht wieder leeren. Der neutrale Ack bleibt ausschließlich intern.
+        if (reviewOnly) {
           answer = {
             action: 'answer',
             text: outcome.customerAck,
@@ -264,7 +264,10 @@ export class MessageProcessor {
         deliveryId: payload.id,
         answer,
         verdict,
-        labels: reviewOnly && outcome.humanOnly ? outcome.labels : undefined,
+        labels:
+          reviewOnly && outcome.category === 'beratung'
+            ? outcome.labels
+            : undefined,
       })
     } catch (error) {
       if (!(input.isFinalAttempt ?? true)) throw error

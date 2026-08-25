@@ -24,6 +24,24 @@ describe('triage', () => {
     expect(outcome.humanOnly).toBe(false)
   })
 
+  it.each([
+    'Das mit AfA, KfW-Förderung, Haltefristen und Finanzierung.',
+    'Wie funktioniert die Finanzierung mit Eigenkapital?',
+    'Welche Grundlagen gelten bei einer Kapitalanlage?',
+  ])('routes general capital knowledge to a reviewed AI draft: %s', (question) => {
+    const outcome = triage(question)
+    expect(outcome.category).toBe('beratung')
+    expect(outcome.humanOnly).toBe(false)
+    expect(outcome.customerAck).toContain('was genau möchtest du')
+  })
+
+  it('keeps individual legal and investment recommendations human-only', () => {
+    expect(triage('Soll ich genau dieses Objekt kaufen?').humanOnly).toBe(true)
+    expect(
+      triage('Ist diese Klausel in meinem Vertrag rechtlich wirksam?').humanOnly,
+    ).toBe(true)
+  })
+
   it('answers only standalone presence and greeting messages directly', () => {
     for (const message of ['Ist jemand hier ?', 'Hallo!', 'Moin', 'Könnt ihr mir helfen?']) {
       expect(directSupportReply(message)).toBe(

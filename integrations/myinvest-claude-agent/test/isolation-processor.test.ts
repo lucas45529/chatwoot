@@ -377,6 +377,44 @@ describe('MessageProcessor', () => {
     expect(handedOff.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
 
+  it('fragt auch bei der ersten vagen Kapitalanlagenfrage konkret im Composer nach', async () => {
+    const reviewDraft: SupportBrainAnswer = {
+      ...BRAIN_ANSWER,
+      action: 'clarify',
+      text: 'Hey, gerne — was genau möchtest du zu AfA, KfW-Förderung, Haltefristen oder Finanzierung wissen?',
+      safeToAutoSend: false,
+      reason: 'interner Review-Entwurf',
+    }
+    const firstQuestion = setup({ autoSendEnabled: true, answer: reviewDraft })
+
+    await firstQuestion.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({
+        content: 'Das mit AfA, KfW-Förderung, Haltefristen und Finanzierung.',
+      }),
+    })
+
+    expect(firstQuestion.answer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewOnly: true,
+        question:
+          'Das mit AfA, KfW-Förderung, Haltefristen und Finanzierung.',
+      }),
+    )
+    expect(firstQuestion.saveDraft).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      reviewDraft.text,
+    )
+    expect(firstQuestion.addLabels).toHaveBeenCalledWith(tenants[0], 77, [
+      'ki-entwurf',
+      'ki-uebergabe',
+      'beratung',
+    ])
+    expect(firstQuestion.sendMessage).not.toHaveBeenCalled()
+    expect(firstQuestion.autoSend.record).not.toHaveBeenCalled()
+  })
+
   it('suppresses terminal and concurrently owned deliveries without side effects', async () => {
     for (const status of ['replied', 'handed_off', 'processing', 'sending'] as const) {
       const duplicate = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
