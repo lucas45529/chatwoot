@@ -12,14 +12,9 @@ CREATE TABLE IF NOT EXISTS agent_auto_send_log (
   sent_text text NOT NULL,
   feedback_rating text CHECK (feedback_rating IN ('helpful', 'unhelpful', 'human_correction', 'none')),
   feedback_recorded_at timestamptz,
-  -- NULL = Audit-Versuch geschrieben, Chatwoot-Send noch nicht bestaetigt.
-  sent_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (tenant_key, message_id)
 );
-
-ALTER TABLE agent_auto_send_log
-  ADD COLUMN IF NOT EXISTS sent_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS agent_auto_send_log_conversation_idx
   ON agent_auto_send_log (tenant_key, conversation_id);
@@ -31,10 +26,6 @@ CREATE INDEX IF NOT EXISTS agent_auto_send_log_contact_window_idx
 CREATE INDEX IF NOT EXISTS agent_auto_send_log_feedback_pending_idx
   ON agent_auto_send_log (created_at)
   WHERE feedback_recorded_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS agent_auto_send_log_sent_feedback_pending_idx
-  ON agent_auto_send_log (sent_at)
-  WHERE sent_at IS NOT NULL AND feedback_recorded_at IS NULL;
 
 -- Sobald ein Mensch in einer Konversation geschrieben hat, ist Auto-Send dort
 -- dauerhaft aus. Der Verlaufsblick reicht nur 12 Nachrichten und 30 Tage weit;

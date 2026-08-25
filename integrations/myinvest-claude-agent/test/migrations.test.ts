@@ -1,4 +1,5 @@
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -33,5 +34,15 @@ describe('versioned migrations', () => {
     await expect(runMigrations(pool, root)).resolves.toEqual([])
     await writeFile(join(root, '001_first.sql'), 'SELECT 99;', 'utf8')
     await expect(runMigrations(pool, root)).rejects.toThrow(/checksum mismatch/)
+  })
+
+  it('haelt die bereits produktiv angewandte Migration 006 byte-identisch', async () => {
+    const migration = await readFile(
+      new URL('../migrations/006_auto_send.sql', import.meta.url),
+    )
+
+    expect(createHash('sha256').update(migration).digest('hex')).toBe(
+      '3508c99ae336a243b13ce28c3d85e84d69c6ab9dbcea40d74cac77e864703243',
+    )
   })
 })
