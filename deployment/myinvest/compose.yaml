@@ -1,7 +1,7 @@
 name: myinvest-chatwoot
 
 x-chatwoot: &chatwoot
-  image: myinvest-chatwoot:4.16.2-b2af17a
+  image: myinvest-chatwoot:4.16.2-e1df253
   build:
     context: ../..
     dockerfile: docker/Dockerfile
