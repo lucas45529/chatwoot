@@ -27,7 +27,7 @@ describe('WebhookController', () => {
     ).rejects.toThrow()
   })
 
-  it('projects contact identity to booleans and never queues raw PII', async () => {
+  it('never queues raw contact PII and forwards only the declared projection', async () => {
     const enqueue = vi.fn().mockResolvedValue(undefined)
     const controller = new WebhookController({
       tenants: buildTenantRegistry(tenants),
@@ -47,11 +47,19 @@ describe('WebhookController', () => {
     const raw = JSON.stringify(rawPayload)
     await controller.handle(raw, signedHeaders(raw, tenants[0]!.webhookSecret, nowMs))
     const queued = enqueue.mock.calls[0]![2]
-    expect(queued.identity).toEqual({
-      hasEmail: true,
-      hasPhone: true,
-      hasIdentifier: false,
-    })
+    // Die Projektion ist die Datenschutzgrenze: was hier nicht steht, sieht
+    // weder Redis noch die Gehirn-API. Der Absender wird komplett verworfen.
+    expect(Object.keys(queued).sort()).toEqual([
+      'account',
+      'content',
+      'conversation',
+      'created_at',
+      'event',
+      'id',
+      'inboxId',
+      'message_type',
+      'private',
+    ])
     expect(JSON.stringify(queued)).not.toContain('private@example.invalid')
     expect(JSON.stringify(queued)).not.toContain('1234567')
     expect(JSON.stringify(queued)).not.toContain('Private Name')

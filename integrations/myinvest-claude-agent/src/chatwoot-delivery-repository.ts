@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { DeliveryMessageKind } from './chatwoot-client.js'
 import type {
   ConversationContext,
@@ -33,11 +34,6 @@ export interface ConversationContextRequest {
   accountId: number
   conversationDisplayId: number
   currentMessageId: number
-  identity: {
-    hasEmail: boolean
-    hasPhone: boolean
-    hasIdentifier: boolean
-  }
 }
 export interface ChatwootConversationContextStore {
   loadContext(input: ConversationContextRequest): Promise<ConversationContext | undefined>
@@ -45,6 +41,7 @@ export interface ChatwootConversationContextStore {
 
 interface ContextMetadataRow extends Record<string, unknown> {
   conversation_id: string
+  contact_id: string | null
   cached_label_list: string | null
   last_agent_handoff_id: string | null
 }
@@ -110,6 +107,7 @@ export class PostgresChatwootDeliveryStore
   ): Promise<ConversationContext | undefined> {
     const metadata = await this.database.query<ContextMetadataRow>(
       `SELECT conversation.id::text AS conversation_id,
+              conversation.contact_id::text AS contact_id,
               conversation.cached_label_list,
               (
                 SELECT max(marker.id)::text
@@ -185,10 +183,13 @@ export class PostgresChatwootDeliveryStore
         .split(',')
         .map((label) => label.trim())
         .filter(Boolean),
-      needsIdentityClarification: !input.identity.hasEmail && !input.identity.hasIdentifier,
-      hasContactChannel:
-        input.identity.hasEmail || input.identity.hasPhone || input.identity.hasIdentifier,
       humanRepliedAfterBot: lastBotHandoffId > 0 && lastHumanMessageId > lastBotHandoffId,
+      // Pseudonym statt Kontakt-ID: die Ratengrenze braucht nur Gleichheit.
+      contactHash: conversation.contact_id
+        ? createHash('sha256')
+            .update(`${input.accountId}\0${conversation.contact_id}`)
+            .digest('hex')
+        : undefined,
     }
   }
 }

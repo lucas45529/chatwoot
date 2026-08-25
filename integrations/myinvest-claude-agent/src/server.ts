@@ -2,14 +2,15 @@ import express from 'express'
 import { Queue, Worker } from 'bullmq'
 import { Redis } from 'ioredis'
 import pg from 'pg'
+import { PostgresAutoSendLog } from './auto-send-repository.js'
 import { ChatwootClient } from './chatwoot-client.js'
 import { PostgresChatwootDeliveryStore } from './chatwoot-delivery-repository.js'
-import { createClaudeClient } from './claude.js'
 import { loadConfig } from './config.js'
-import { PostgresKnowledgeRepository } from './knowledge/repository.js'
+import { runAutoSendFeedbackSweep } from './learning/auto-send-feedback.js'
 import { MessageProcessor } from './processor.js'
 import { DeliveryQueue, QUEUE_NAME, type DeliveryJob } from './queue.js'
 import { PostgresAgentState } from './state.js'
+import { SupportBrainClient, type SupportBrainPort } from './support-brain.js'
 import { WebhookController } from './webhook/controller.js'
 import { webhookHttpError } from './webhook/http-error.js'
 
@@ -24,14 +25,36 @@ const deliveryQueue = new DeliveryQueue(queue, {
   retentionSeconds: config.DELIVERY_RETENTION_SECONDS,
 })
 const state = new PostgresAgentState(pool)
+const autoSendLog = new PostgresAutoSendLog(pool)
+const brain: SupportBrainPort = config.LOCAL_FAKE_BRAIN_ANSWER
+  ? {
+      async answer() {
+        return {
+          action: 'answer',
+          text: config.LOCAL_FAKE_BRAIN_ANSWER as string,
+          confidence: 0.9,
+          sources: [{ title: 'Lokaler Smoke', url: 'https://local.invalid/smoke' }],
+          safeToAutoSend: true,
+        }
+      },
+    }
+  : new SupportBrainClient({
+      baseUrl: config.SUPPORT_ANSWER_URL,
+      secret: config.SUPPORT_ANSWER_SECRET,
+      timeoutMs: config.SUPPORT_ANSWER_TIMEOUT_MS,
+    })
 const processor = new MessageProcessor({
-  knowledge: new PostgresKnowledgeRepository(pool),
-  claude: createClaudeClient(config),
+  brain,
   chatwoot: new ChatwootClient(config.CHATWOOT_BASE_URL, deliveryStore),
   context: deliveryStore,
   state,
-  minRetrievalScore: config.KNOWLEDGE_MIN_SCORE,
-  maxSources: config.KNOWLEDGE_MAX_SOURCES,
+  autoSend: autoSendLog,
+  autoSendEnabled: config.AUTO_SEND_ENABLED,
+  autoSendLimits: {
+    maxPerConversation: config.AUTO_SEND_MAX_PER_CONVERSATION,
+    maxPerContactPerHour: config.AUTO_SEND_MAX_PER_CONTACT_PER_HOUR,
+  },
+  whatsappInboxIds: config.whatsappInboxIds,
 })
 const controller = new WebhookController({
   tenants: config.tenants,
@@ -73,6 +96,32 @@ worker?.on('failed', (job, error) =>
   console.error('Agent job failed', job?.id, error.message),
 )
 
+// Nur die Worker-Rolle wertet Auto-Antworten nach. Ueberlappende Laeufe sind
+// ausgeschlossen, damit ein langsamer Durchlauf keinen zweiten startet.
+let feedbackSweepRunning = false
+const feedbackTimer = worker
+  ? setInterval(() => {
+      if (feedbackSweepRunning) return
+      feedbackSweepRunning = true
+      void runAutoSendFeedbackSweep({ agentPool: pool, chatwootPool, tenants: config.tenants })
+        .then((result) => {
+          if (result.evaluated > 0) {
+            console.log(JSON.stringify({ event: 'agent_auto_send_feedback_sweep', ...result }))
+          }
+        })
+        .catch((error: unknown) =>
+          console.error(
+            'Auto-send feedback sweep failed',
+            error instanceof Error ? error.message : String(error),
+          ),
+        )
+        .finally(() => {
+          feedbackSweepRunning = false
+        })
+    }, config.AUTO_SEND_FEEDBACK_INTERVAL_SECONDS * 1_000)
+  : undefined
+feedbackTimer?.unref()
+
 const app = express()
 app.get('/health', async (_request, response) => {
   try {
@@ -112,6 +161,7 @@ const server =
 
 async function shutdown(signal: string) {
   console.log(`Received ${signal}; shutting down`)
+  clearInterval(feedbackTimer)
   server?.close()
   await worker?.close()
   await queue.close()

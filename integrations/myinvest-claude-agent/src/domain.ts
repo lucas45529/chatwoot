@@ -7,13 +7,6 @@ export const chatwootWebhookAccountSchema = z.object({
   account: z.object({ id: z.number().int().positive() }),
 })
 
-const contactIdentitySchema = z.object({
-  email: z.string().nullish(),
-  phone_number: z.string().nullish(),
-  identifier: z.string().nullish(),
-  name: z.string().nullish(),
-})
-
 const rawChatwootWebhookSchema = z.object({
   event: z.string(),
   id: z.number().int().positive(),
@@ -22,32 +15,27 @@ const rawChatwootWebhookSchema = z.object({
   message_type: z.string(),
   private: z.boolean().optional().default(false),
   account: chatwootWebhookAccountSchema.shape.account,
-  conversation: z.object({
-    id: z.number().int().positive(),
-    meta: z.object({ sender: contactIdentitySchema.optional() }).optional(),
-  }),
-  sender: contactIdentitySchema.optional(),
+  conversation: z.object({ id: z.number().int().positive() }),
+  // Chatwoot liefert nur id und name; die id entscheidet ueber den Kanal.
+  inbox: z.object({ id: z.number().int().positive() }).optional(),
 })
 
-/** Raw contact fields are reduced before the payload reaches Redis or a model. */
-export const chatwootWebhookSchema = rawChatwootWebhookSchema.transform((raw) => {
-  const sender = raw.sender ?? raw.conversation.meta?.sender
-  return {
-    event: raw.event,
-    id: raw.id,
-    created_at: raw.created_at,
-    content: raw.content,
-    message_type: raw.message_type,
-    private: raw.private,
-    account: raw.account,
-    conversation: { id: raw.conversation.id },
-    identity: {
-      hasEmail: Boolean(sender?.email?.trim()),
-      hasPhone: Boolean(sender?.phone_number?.trim()),
-      hasIdentifier: Boolean(sender?.identifier?.trim()),
-    },
-  }
-})
+/**
+ * Die Projektion ist die Datenschutzgrenze: alles, was Redis, die Queue oder
+ * die Gehirn-API zu sehen bekaeme, steht hier. Kontaktangaben (Name, E-Mail,
+ * Telefonnummer) werden vollstaendig verworfen, statt sie mitzuschleppen.
+ */
+export const chatwootWebhookSchema = rawChatwootWebhookSchema.transform((raw) => ({
+  event: raw.event,
+  id: raw.id,
+  created_at: raw.created_at,
+  content: raw.content,
+  message_type: raw.message_type,
+  private: raw.private,
+  account: raw.account,
+  conversation: { id: raw.conversation.id },
+  inboxId: raw.inbox?.id,
+}))
 
 export type ChatwootWebhookPayload = z.infer<typeof chatwootWebhookSchema>
 
@@ -61,9 +49,9 @@ export interface ConversationTurn {
 export interface ConversationContext {
   turns: ConversationTurn[]
   labels: string[]
-  needsIdentityClarification: boolean
-  hasContactChannel: boolean
   humanRepliedAfterBot: boolean
+  /** Pseudonym des Kontakts fuer Ratengrenzen; nie eine Kontaktangabe. */
+  contactHash?: string
 }
 
 export interface KnowledgeHit {

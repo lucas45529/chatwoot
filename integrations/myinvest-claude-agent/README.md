@@ -1,57 +1,67 @@
 # MyInvest Support Agent for Chatwoot
 
-This service connects the account-scoped `MyInvest Support` AgentBot to Gemini. It verifies signed webhooks, reads a short PII-redacted conversation context, retrieves tenant-approved knowledge, and places substantive responses into Chatwoot's shared composer draft for human approval. Only deterministic greetings and safety acknowledgements are sent automatically.
+Der Dienst verbindet die drei getrennten Chatwoot-Accounts mit **einem**
+Support-Gehirn: `POST https://www.myinvest-pro.de/api/support/answer`.
+Der Agent hat kein eigenes Modell und kein eigenes Retrieval mehr. Er prüft
+signierte Chatwoot-Webhooks, projiziert den begrenzten Gesprächsverlauf,
+transportiert die signierte Anfrage und setzt das serverseitige Urteil um.
 
-## Isolation and handoff
+## Sicherheits- und Mandantengrenzen
 
-- `saas`, `new_academy`, and `legacy_academy` have independent Chatwoot account IDs, webhook secrets, bot tokens, and knowledge rows.
-- Every retrieval query requires `tenant_key`; tests guard the negative cross-tenant path.
-- Missing identity or an under-specified follow-up can produce one source-free, fact-free clarification draft; unsupported first messages and every sensitive topic open the conversation for a human.
-- Chatwoot HMAC, timestamp freshness, and delivery IDs are verified before queuing. Redis deduplicates deliveries for 24 hours; PostgreSQL keeps the durable reply, draft, and handoff ledger across restarts.
+- `saas`, `new_academy` und `legacy_academy` haben getrennte Account-IDs,
+  Webhook-Secrets und AgentBot-Tokens. Jeder Gehirn-Aufruf trägt genau einen
+  `tenant`; Tests halten den Negativpfad.
+- Gehirn-Auth: HMAC-SHA256 über `${timestamp}.${rawBody}` mit
+  `SUPPORT_ANSWER_SECRET`, Header `x-support-signature` und
+  `x-support-timestamp`. 4xx wird nie wiederholt; Netz/5xx genau einmal.
+  Antworten werden vor dem Einlesen begrenzt und strikt mit Zod validiert.
+- Die Website entscheidet `safeToAutoSend`; der Agent kann es nie selbst
+  hochstufen. Zusätzlich gelten Kill-Switch, dauerhafte Sperre nach jeder
+  Menschenantwort, Obergrenze je Konversation und Kontakt/Stunde,
+  Längenlimit und Audit vor dem Send.
+- Sicherheits-, Geld-, Vertrags-, Rechts-, Steuer-, Datenschutz- und explizite
+  Menschenanliegen bleiben beim Team. Unsichere oder abgelehnte Antworten
+  werden Entwurf oder Übergabe, nie erfundene Kundenantwort.
+- Chatwoot-HMAC, Zeitfenster und Delivery-IDs werden vor der Queue geprüft.
+  Redis dedupliziert; PostgreSQL hält Zustell-, Handoff- und Auto-Send-Ledger
+  über Neustarts.
 
-## Provider
+## Gehirn-Konfiguration
 
-Use `ANTHROPIC_PROVIDER=bedrock` with an EU regional/Geo-EU Bedrock inference profile for EU processing. Direct Anthropic (`ANTHROPIC_PROVIDER=direct`) is supported, but its data-processing region and DPA must be reviewed separately before production use. `provider-check` performs one real, non-customer inference and prints no provider response.
+```dotenv
+SUPPORT_ANSWER_URL=https://www.myinvest-pro.de
+SUPPORT_ANSWER_SECRET=<mindestens 32 Zeichen, identisch zur Website>
+SUPPORT_ANSWER_TIMEOUT_MS=25000
+AUTO_SEND_ENABLED=false
+AUTO_SEND_MAX_PER_CONVERSATION=3
+AUTO_SEND_MAX_PER_CONTACT_PER_HOUR=10
+AUTO_SEND_FEEDBACK_INTERVAL_SECONDS=600
+WHATSAPP_INBOX_IDS=6
+```
 
-For an internal OpenAI-compatible server, use `ANTHROPIC_PROVIDER=local` together with
-`LOCAL_LLM_BASE_URL=http://<internal-host>:<port>/v1`, `LOCAL_LLM_MODEL`, and an exact
-`LOCAL_LLM_ALLOWED_HOSTS` entry. Only explicitly allowlisted private IPs, Docker service names,
-or internal hostnames are accepted; redirects, metadata/public targets, URL credentials, and
-non-`/v1` paths are rejected. `LOCAL_LLM_API_KEY` is optional for a network-isolated endpoint.
-Requests are time-bounded and send `stream:false` plus `think:false` for deterministic Ollama JSON.
-
-For Google Gemini, use `ANTHROPIC_PROVIDER=gemini` with `GEMINI_API_KEY`. The client talks to the
-OpenAI-compatible endpoint pinned to `https://generativelanguage.googleapis.com/v1beta/openai`
-(`GEMINI_BASE_URL` must match exactly; other hosts, plain HTTP, credentials, and query/fragment
-parts are rejected). `GEMINI_MODEL` defaults to `gemini-3.7-flash`, and `GEMINI_THINKING_EFFORT`
-(`low`/`medium`/`high`, default `high`) is sent as `reasoning_effort`. `GEMINI_TIMEOUT_MS` bounds
-each request like the local provider. `GEMINI_MAX_TOKENS` (default 4096) must cover both thinking
-and answer tokens, because the endpoint counts thinking against `max_tokens`. Gemini processing is
-US-based; review the processing region and DPA before production use.
+`SUPPORT_ANSWER_URL` ist in Produktion HTTPS und eine reine Origin ohne Pfad,
+Credentials, Query oder Fragment. `AUTO_SEND_ENABLED=false` ist der sichere
+Default; die übrigen Bremsen gelten auch nach dem Einschalten.
 
 ## Bootstrap
 
-1. Use the deployment stack's `.env`; `bootstrap.sh` creates all three account mappings without printing credentials.
-2. Run `pnpm migrate` once against the separate `claude_agent` database (the container entrypoint does this idempotently).
-3. Ingest approved material independently:
+1. Die Deployment-`.env` setzen; `bootstrap.sh` erstellt die drei
+   Account-Zuordnungen ohne Credential-Ausgabe.
+2. `pnpm migrate` gegen die getrennte `claude_agent`-Datenbank ausführen
+   (der Container-Entrypoint tut dies idempotent).
+3. `pnpm check && pnpm test && pnpm build`.
+4. Deployment-Gate:
 
    ```sh
-   pnpm ingest -- saas saas-help ./knowledge/saas
-   pnpm ingest -- new_academy academy-website ./knowledge/academy-neu
-   pnpm ingest -- legacy_academy legacy-public-site ./knowledge/academy-alt
+   deployment/myinvest/scripts/validate.sh
+   docker compose up -d --build claude-agent
    ```
 
-   The authoritative inputs are the SaaS `FAQ_CATEGORIES` content from
-   `App_MyInvestPro/apps/web/components/help/help-sidebar.tsx`, the new Academy's reviewed
-   `Website_Software_MyInvestPro/knowledge/*.txt` files, and the public legacy Academy
-   `https://www.myinvest24.de/llms-full.txt`. Prepare them as explicit `.md`/`.txt` source
-   directories; the ingest command rejects customer-history bundles, JSON/NDJSON, hidden
-   files, symlinks, control bytes, and files above 5 MB. Re-ingestion retires only the named
-   tenant/source namespace and cannot erase other sources or learned documents.
+Die lokale Knowledge-Ingest-/Review-Pipeline bleibt ausschließlich für
+auditierte Lernkandidaten bestehen. Sie erzeugt **keine** Runtime-Antworten;
+Antwortwissen lebt im Website-Korpus.
 
-4. Bootstrap creates one account-scoped Agent Bot per account, points it to the public signed `/_agent/webhooks/chatwoot` endpoint, and attaches it only to that account's managed website inbox.
-
-Never put customer exports, secrets, or generated `.env` files into Git.
+Nie Kundenexporte, Secrets oder generierte `.env`-Dateien committen.
 
 ## Reviewed learning loop
 
@@ -69,11 +79,15 @@ pnpm learning:review -- approve 42 legacy_academy reviewer-id
 pnpm learning:review -- publish 42 reviewer-id
 ```
 
-Historic HubSpot candidates always retain the separate approve/publish gate. New live support
-answers have a stronger approval signal: a human reviewed or edited the AI draft and actually
-pressed Send. The daily `learning:mine` loop extracts every customer-to-human pair, applies the
-same PII, secret, sensitive-topic and non-reusable-clarification guards, then records separate
-audited approve and publish transitions under actor `chatwoot-human-send`. Retrieval sees only
-`published` and `active` documents for the current tenant. Negative feedback immediately retires a
-linked learned document and leaves a review/audit trail. A redaction refresh forces reviewed rows
-back through review; unsafe legacy rows are rejected, never deleted or silently promoted.
+Historische Kandidaten behalten den getrennten Approve-/Publish-Gate. Der
+tägliche `learning:mine`-Lauf extrahiert echte Kunde-zu-Mensch-Paare mit PII-,
+Secret-, Sensitiv- und Wiederverwendungs-Schutz. Auto-Send hat einen eigenen
+Nachlauf: Antwort ohne menschliche Korrektur und danach gelöst = hilfreiches
+Signal; eine zeitnahe Menschenantwort = Korrektursignal. Beides bleibt
+auditiert.
+
+Wichtig: `published` ist hier ein Review-Status, **kein zweites Runtime-
+Retrieval**. Die Website-Wissensbasis bleibt die einzige Antwortquelle; ein
+Lernkandidat erreicht sie nur über deren geprüften Korpus-Prozess. Negative
+Signale und Redaction-Refresh schicken Datensätze zurück in Review statt sie
+still zu fördern oder zu löschen.

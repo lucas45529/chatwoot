@@ -1,36 +1,50 @@
+import {
+  autoSendDecision,
+  questionFingerprint,
+  type AutoSendLimits,
+  type AutoSendLog,
+  type AutoSendUsage,
+  type AutoSendVerdict,
+} from './auto-send.js'
 import type { ChatwootPort } from './chatwoot-client.js'
 import type { ChatwootConversationContextStore } from './chatwoot-delivery-repository.js'
-import type { ClaudeAnswer, ClaudePort } from './claude.js'
 import type { TenantConfig } from './config.js'
-import type { ChatwootWebhookPayload, ConversationContext, KnowledgeHit } from './domain.js'
-import type { KnowledgeRepository } from './knowledge/repository.js'
+import type { ChatwootWebhookPayload } from './domain.js'
 import type { AgentState } from './state.js'
+import type {
+  SupportBrainAnswer,
+  SupportBrainHistoryTurn,
+  SupportBrainPort,
+} from './support-brain.js'
 import { directSupportReply, handoffNote, triage, type TriageOutcome } from './triage.js'
 
+/**
+ * Spiegel der humanOnly-Kategorien der Triage: wer eines dieser Labels traegt,
+ * gehoert einem Menschen. `termin` und `zugang` stehen bewusst nicht hier — die
+ * Gehirn-Policy entscheidet dort inhaltlich.
+ */
 const HUMAN_ONLY_LABELS: Record<string, true> = {
   sicherheitsverdacht: true,
   datenschutz: true,
   beschwerde: true,
   zahlung: true,
-  termin: true,
   beratung: true,
   urgent: true,
   billing: true,
   'mensch-gewuenscht': true,
 }
-const IDENTITY_BOUND_REQUEST =
-  /\b(?:leads?|versprochen|zugesagt|bank(?:wechsel|verbindung)|freischalt\w*)\b/iu
 
 export class MessageProcessor {
   constructor(
     private readonly dependencies: {
-      knowledge: KnowledgeRepository
-      claude: ClaudePort
+      brain: SupportBrainPort
       chatwoot: ChatwootPort
       context: ChatwootConversationContextStore
       state: AgentState
-      minRetrievalScore: number
-      maxSources: number
+      autoSend: AutoSendLog
+      autoSendEnabled: boolean
+      autoSendLimits: AutoSendLimits
+      whatsappInboxIds: ReadonlySet<number>
     },
   ) {}
 
@@ -45,7 +59,6 @@ export class MessageProcessor {
       accountId: tenant.accountId,
       conversationDisplayId: conversationId,
       currentMessageId: payload.id,
-      identity: payload.identity,
     })
     if (!conversationContext) {
       console.log(
@@ -163,59 +176,82 @@ export class MessageProcessor {
       return
     }
 
-    const searchQuery = contextualSearchQuery(question, conversationContext)
-    let sources: KnowledgeHit[] = []
-    const forceIdentityClarification =
-      conversationContext.needsIdentityClarification &&
-      IDENTITY_BOUND_REQUEST.test(searchQuery)
-    if (!forceIdentityClarification) {
-      try {
-        sources = await this.dependencies.knowledge.search(
-          tenant.key,
-          searchQuery,
-          this.dependencies.maxSources,
-          this.dependencies.minRetrievalScore,
-        )
-      } catch (error) {
-        await handoff('retrieval_error', error instanceof Error ? error.message : undefined)
-        return
-      }
-    }
-
-    // Unter der Schwelle gibt es kein belastbares Wissen: ohne Verlauf uebernimmt
-    // ein Mensch, mit Verlauf entscheidet das Modell quellenlos (clarify).
-    const retrievalMissed =
-      !sources[0] || sources[0].score < this.dependencies.minRetrievalScore
-    if (retrievalMissed) {
-      if (conversationContext.turns.length === 0) {
-        const excerpt = question.slice(0, 120).replace(/\s+/g, ' ')
-        await handoff(
-          'retrieval_miss',
-          `top_score=${sources[0]?.score ?? 'none'} question=${JSON.stringify(excerpt)}`,
-        )
-        return
-      }
-      sources = []
-    }
-
-    let answer: ClaudeAnswer
-    try {
-      answer = await this.dependencies.claude.answer({
+    // Sobald ein Mensch in dieser Konversation geschrieben hat, ist Auto-Send
+    // hier dauerhaft aus. Der Vermerk ueberlebt das 12-Nachrichten-Fenster des
+    // Verlaufs, der Verlauf allein waere kein dauerhaftes Gedaechtnis.
+    const humanInConversation = conversationContext.turns.some(
+      (turn) => turn.role === 'human',
+    )
+    if (humanInConversation) {
+      await this.dependencies.autoSend.blockConversation({
         tenantKey: tenant.key,
+        conversationId,
+        reason: 'human_reply',
+      })
+    }
+
+    let answer: SupportBrainAnswer
+    try {
+      answer = await this.dependencies.brain.answer({
         question,
-        sources,
-        conversationContext,
+        history: conversationContext.turns.map(
+          (turn): SupportBrainHistoryTurn => ({
+            role: turn.role === 'customer' ? 'user' : 'agent',
+            text: turn.text,
+          }),
+        ),
+        tenant: tenant.key,
+        channel:
+          payload.inboxId !== undefined &&
+          this.dependencies.whatsappInboxIds.has(payload.inboxId)
+            ? 'whatsapp'
+            : 'web',
       })
     } catch (error) {
       console.error(
         JSON.stringify({
-          event: 'agent_answer_failed',
+          event: 'agent_brain_failed',
           tenant: tenant.key,
           conversationId,
           error: error instanceof Error ? error.message : String(error),
         }),
       )
-      await handoff('answer_error', error instanceof Error ? error.message : undefined)
+      // Ausfall des Gehirns endet nie in Stille: der Kunde bekommt den
+      // sichtbaren Uebergabe-Hinweis, das Team die Notiz.
+      await handoff('brain_error', error instanceof Error ? error.message : undefined)
+      return
+    }
+
+    if (answer.action === 'handoff') {
+      await handoff('brain_handoff', answer.reason)
+      return
+    }
+
+    const usage = await this.dependencies.autoSend.usage({
+      tenantKey: tenant.key,
+      conversationId,
+      contactHash: conversationContext.contactHash,
+    })
+    const verdict = autoSendDecision({
+      enabled: this.dependencies.autoSendEnabled,
+      humanInConversation,
+      answer,
+      usage,
+      limits: this.dependencies.autoSendLimits,
+    })
+    if (verdict === 'auto_send') {
+      // Ein Fehler der Chatwoot-API laeuft hier bewusst in den Job-Retry und
+      // nicht in den Entwurfspfad: bereits gesendete Nachrichten sind ueber den
+      // Delivery-Marker idempotent, ein zweiter Weg waere es nicht.
+      await this.autoAnswer({
+        tenant,
+        conversationId,
+        deliveryId: payload.id,
+        question,
+        answer,
+        usage,
+        contactHash: conversationContext.contactHash,
+      })
       return
     }
 
@@ -225,7 +261,7 @@ export class MessageProcessor {
         conversationId,
         deliveryId: payload.id,
         answer,
-        sources,
+        verdict,
       })
     } catch (error) {
       if (!(input.isFinalAttempt ?? true)) throw error
@@ -235,24 +271,85 @@ export class MessageProcessor {
     await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
   }
 
+  /**
+   * Die automatisch gesendete Antwort. Die Audit-Zeile wird bewusst vor dem
+   * Senden geschrieben: bricht der Sendeversuch danach ab, ist die Obergrenze
+   * lieber zu streng als zu weit.
+   */
+  private async autoAnswer(input: {
+    tenant: TenantConfig
+    conversationId: number
+    deliveryId: number
+    question: string
+    answer: SupportBrainAnswer
+    usage: AutoSendUsage
+    contactHash?: string
+  }): Promise<void> {
+    const { tenant, conversationId, deliveryId, answer, usage } = input
+    await this.dependencies.state.markSending(tenant.key, deliveryId)
+    await this.dependencies.autoSend.record({
+      tenantKey: tenant.key,
+      conversationId,
+      messageId: deliveryId,
+      contactHash: input.contactHash,
+      questionHash: questionFingerprint(tenant.key, input.question),
+      confidence: answer.confidence,
+      sourceIds: answer.sources.map((source) => source.url),
+      sentText: answer.text,
+    })
+    await this.dependencies.chatwoot.sendMessage(
+      tenant,
+      conversationId,
+      answer.text,
+      deliveryId,
+      'answer',
+    )
+    const limits = this.dependencies.autoSendLimits
+    await this.dependencies.chatwoot.sendPrivateNote(
+      tenant,
+      conversationId,
+      [
+        `KI-Antwort automatisch gesendet · Confidence ${answer.confidence.toFixed(2)}`,
+        `Quellen: ${brainSources(answer)}`,
+        `Freigabe: Gehirn safeToAutoSend${answer.reason ? ` (${answer.reason})` : ''}` +
+          ` · Konversation ${usage.conversationCount + 1}/${limits.maxPerConversation}` +
+          ` · Kontakt ${usage.contactCountLastHour + 1}/${limits.maxPerContactPerHour} pro Stunde`,
+        'Antworte einfach selbst, wenn etwas fehlt — danach sendet die KI in diesem Gespräch nichts mehr automatisch.',
+      ].join('\n'),
+      deliveryId,
+      'answer_sources',
+    )
+    await this.dependencies.chatwoot.addLabels(tenant, conversationId, ['ki-antwort'])
+    await this.dependencies.state.completeReply(tenant.key, deliveryId)
+    console.log(
+      JSON.stringify({
+        event: 'agent_auto_answer_sent',
+        tenant: tenant.key,
+        conversationId,
+        confidence: answer.confidence,
+        sources: answer.sources.length,
+      }),
+    )
+  }
+
   private async prepareDraft(input: {
     tenant: TenantConfig
     conversationId: number
     deliveryId: number
-    answer: ClaudeAnswer
-    sources: readonly KnowledgeHit[]
+    answer: SupportBrainAnswer
+    verdict: AutoSendVerdict
   }): Promise<void> {
-    const { tenant, conversationId, deliveryId, answer, sources } = input
+    const { tenant, conversationId, deliveryId, answer, verdict } = input
     await this.dependencies.chatwoot.saveDraft(tenant, conversationId, answer.text)
     await this.dependencies.chatwoot.addLabels(tenant, conversationId, ['ki-entwurf'])
     const sourceNote =
-      answer.sourceIds.length > 0
-        ? `\nQuellen: ${citedSources(sources, answer.sourceIds)}`
+      answer.sources.length > 0
+        ? `\nQuellen: ${brainSources(answer)}`
         : '\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.'
     await this.dependencies.chatwoot.sendPrivateNote(
       tenant,
       conversationId,
-      `KI-Antwortentwurf wartet auf menschliche Freigabe.\n\nAntwortvorschlag:\n${answer.text}${sourceNote}`,
+      `KI-Antwortentwurf wartet auf menschliche Freigabe (${verdict}).\n\nAntwortvorschlag:\n${answer.text}${sourceNote}`,
       deliveryId,
       answer.action === 'clarify' ? 'clarify_draft_note' : 'draft_note',
     )
@@ -266,6 +363,7 @@ export class MessageProcessor {
       JSON.stringify({
         event: 'agent_draft_ready',
         action: answer.action,
+        verdict,
         tenant: tenant.key,
         conversationId,
       }),
@@ -366,38 +464,12 @@ function hasHumanOnlyLabel(labels: readonly string[]): boolean {
   return labels.some((label) => HUMAN_ONLY_LABELS[label.trim().toLowerCase()] === true)
 }
 
-function contextualSearchQuery(question: string, context: ConversationContext): string {
-  let lastHumanIndex = -1
-  for (let index = context.turns.length - 1; index >= 0; index -= 1) {
-    if (context.turns[index]?.role === 'human') {
-      lastHumanIndex = index
-      break
-    }
-  }
-  const customerTurns = context.turns
-    .slice(lastHumanIndex + 1)
-    .filter((turn) => turn.role === 'customer')
-    .slice(-3)
-    .map((turn) => turn.text)
-  return [...customerTurns, question].join('\n')
-}
-
-function citedSources(
-  sources: readonly KnowledgeHit[],
-  sourceIds: readonly string[],
-): string {
+/** Belegte Quellen fuer die interne Notiz; ohne Beleg bleibt die Zeile leer. */
+function brainSources(answer: SupportBrainAnswer): string {
   const references: string[] = []
-  for (const source of sources) {
-    if (!sourceIds.includes(source.sourceId)) continue
-    const reference = sourceReference(source)
+  for (const source of answer.sources) {
+    const reference = `${source.title} (${source.url})`
     if (!references.includes(reference)) references.push(reference)
   }
-  return references.join(', ')
-}
-
-function sourceReference(source: KnowledgeHit): string {
-  const url = source.metadata.url
-  return typeof url === 'string' && /^https:\/\//.test(url)
-    ? `${source.title} (${url})`
-    : `${source.title} [${source.sourceId}]`
+  return references.join(', ') || 'keine'
 }

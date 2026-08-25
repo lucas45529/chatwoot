@@ -12,7 +12,6 @@ export function incomingPayload(overrides: Partial<ChatwootWebhookPayload> = {})
   return {
     event: 'message_created', id: 55, created_at: '2026-08-16T18:30:44.414Z', content: 'Wie funktioniert das Onboarding?',
     message_type: 'incoming', private: false, account: { id: 101 }, conversation: { id: 77 },
-    identity: { hasEmail: false, hasPhone: false, hasIdentifier: false },
     ...overrides,
   }
 }

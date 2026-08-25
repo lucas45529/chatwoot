@@ -35,10 +35,9 @@ required=(
   REDIS_PASSWORD REDIS_URL CLAUDE_AGENT_DATABASE CLAUDE_AGENT_DATABASE_USER
   CLAUDE_AGENT_DATABASE_PASSWORD CLAUDE_AGENT_DATABASE_URL AGENT_LEARNING_CHATWOOT_DATABASE_URL
   CLAUDE_AGENT_REDIS_URL
-  TENANTS_JSON ANTHROPIC_PROVIDER ANTHROPIC_MODEL AWS_REGION BEDROCK_MODEL
-  ALLOW_DIRECT_ANTHROPIC STORAGE_LOCAL_MINIO
+  TENANTS_JSON SUPPORT_ANSWER_URL SUPPORT_ANSWER_SECRET AUTO_SEND_ENABLED
+  AUTO_SEND_MAX_PER_CONVERSATION AUTO_SEND_MAX_PER_CONTACT_PER_HOUR STORAGE_LOCAL_MINIO
   WEBHOOK_REPLAY_WINDOW_SECONDS DELIVERY_RETENTION_SECONDS MAX_BODY_BYTES
-  KNOWLEDGE_MIN_SCORE KNOWLEDGE_MAX_SOURCES
   ADMIN_NAME ADMIN_EMAIL MYINVEST_ACCOUNT_NAME
   ACADEMY_NEW_ACCOUNT_NAME ACADEMY_LEGACY_ACCOUNT_NAME MYINVEST_WEBSITE_URL
   ACADEMY_NEW_WEBSITE_URL ACADEMY_LEGACY_WEBSITE_URL
@@ -85,8 +84,8 @@ if [[ "$LOCAL_SMOKE" != true ]]; then
       exit 1
       ;;
   esac
-  [[ -z "${LOCAL_FAKE_CLAUDE_ANSWER:-}" ]] || {
-    printf 'LOCAL_FAKE_CLAUDE_ANSWER is forbidden in production.\n' >&2
+  [[ -z "${LOCAL_FAKE_BRAIN_ANSWER:-}" ]] || {
+    printf 'LOCAL_FAKE_BRAIN_ANSWER is forbidden in production.\n' >&2
     exit 1
   }
   production_required=(
@@ -125,75 +124,35 @@ if [[ "$LOCAL_SMOKE" != true ]]; then
     printf 'Production FRONTEND_URL must match CADDY_SITE_ADDRESS.\n' >&2
     exit 1
   }
-  if [[ "$ANTHROPIC_PROVIDER" == bedrock ]]; then
-    [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || {
-      printf 'Bedrock requires least-privilege AWS credentials.\n' >&2
-      exit 1
-    }
-    [[ "$AWS_REGION" == eu-* && "$BEDROCK_MODEL" == eu.* ]] || {
-      printf 'Bedrock production requires an EU region and EU inference profile.\n' >&2
-      exit 1
-    }
-  elif [[ "$ANTHROPIC_PROVIDER" == direct ]]; then
-    [[ -n "${ANTHROPIC_API_KEY:-}" ]] || {
-      printf 'Direct Anthropic requires ANTHROPIC_API_KEY.\n' >&2
-      exit 1
-    }
-    [[ "$ALLOW_DIRECT_ANTHROPIC" == true ]] || {
-      printf 'Direct Anthropic requires an explicit completed processing-region review.\n' >&2
-      exit 1
-    }
-  elif [[ "$ANTHROPIC_PROVIDER" == local ]]; then
-    [[ "$ALLOW_DIRECT_ANTHROPIC" == false ]] || {
-      printf 'Local provider must not enable direct Anthropic processing.\n' >&2
-      exit 1
-    }
-    [[ "${LOCAL_LLM_BASE_URL:-}" == http://172.30.240.1:11434/v1 &&
-       "${LOCAL_LLM_ALLOWED_HOSTS:-}" == 172.30.240.1 &&
-       "${LOCAL_LLM_MODEL:-}" == qwen3:8b ]] || {
-      printf 'Local provider must use the allowlisted Chatwoot Docker-bridge Ollama endpoint and pinned model.\n' >&2
-      exit 1
-    }
-    if [[ ! "${LOCAL_LLM_TIMEOUT_MS:-}" =~ ^[0-9]+$ ]] ||
-       (( LOCAL_LLM_TIMEOUT_MS < 1000 || LOCAL_LLM_TIMEOUT_MS > 120000 )); then
-      printf 'LOCAL_LLM_TIMEOUT_MS must be between 1000 and 120000.\n' >&2
-      exit 1
-    fi
-  elif [[ "$ANTHROPIC_PROVIDER" == gemini ]]; then
-    [[ "$ALLOW_DIRECT_ANTHROPIC" == false ]] || {
-      printf 'Gemini provider must not enable direct Anthropic processing.\n' >&2
-      exit 1
-    }
-    [[ -n "${GEMINI_API_KEY:-}" ]] || {
-      printf 'Gemini requires GEMINI_API_KEY.\n' >&2
-      exit 1
-    }
-    [[ "${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}" == \
-       https://generativelanguage.googleapis.com/v1beta/openai ]] || {
-      printf 'Gemini provider must use the pinned Google OpenAI-compatible endpoint.\n' >&2
-      exit 1
-    }
-    case "${GEMINI_THINKING_EFFORT:-high}" in
-      low|medium|high) ;;
-      *)
-        printf 'GEMINI_THINKING_EFFORT must be low, medium, or high.\n' >&2
-        exit 1
-        ;;
-    esac
-    if [[ ! "${GEMINI_TIMEOUT_MS:-30000}" =~ ^[0-9]+$ ]] ||
-       (( ${GEMINI_TIMEOUT_MS:-30000} < 1000 || ${GEMINI_TIMEOUT_MS:-30000} > 120000 )); then
-      printf 'GEMINI_TIMEOUT_MS must be between 1000 and 120000.\n' >&2
-      exit 1
-    fi
-    if [[ ! "${GEMINI_MAX_TOKENS:-4096}" =~ ^[0-9]+$ ]] ||
-       (( ${GEMINI_MAX_TOKENS:-4096} < 256 || ${GEMINI_MAX_TOKENS:-4096} > 16384 )); then
-      printf 'GEMINI_MAX_TOKENS must be between 256 and 16384.\n' >&2
-      exit 1
-    fi
-  else
-    printf 'Unsupported ANTHROPIC_PROVIDER: %s\n' "$ANTHROPIC_PROVIDER" >&2
+  # Gehirn-API statt eigenem Modell: Der Agent ruft die Website-Route
+  # /api/support/answer auf und hat weder Provider noch lokales Retrieval.
+  # Geprueft wird deshalb der Transportweg, nicht mehr ein Modell-Pinning.
+  [[ "$SUPPORT_ANSWER_URL" == https://* ]] || {
+    printf 'SUPPORT_ANSWER_URL must use HTTPS in production.\n' >&2
     exit 1
-  fi
+  }
+  (( ${#SUPPORT_ANSWER_SECRET} >= 32 )) || {
+    printf 'SUPPORT_ANSWER_SECRET must be at least 32 characters.\n' >&2
+    exit 1
+  }
+  case "$AUTO_SEND_ENABLED" in
+    true|false) ;;
+    *)
+      printf 'AUTO_SEND_ENABLED must be true or false.\n' >&2
+      exit 1
+      ;;
+  esac
+  # Obergrenzen sind die betriebliche Bremse hinter der Serverentscheidung.
+  # Ein entgleister Wert waere eine unbemerkte Massensendung an Kunden.
+  for limit in AUTO_SEND_MAX_PER_CONVERSATION:50 AUTO_SEND_MAX_PER_CONTACT_PER_HOUR:200; do
+    name="${limit%%:*}"
+    max="${limit##*:}"
+    value="${!name}"
+    if [[ ! "$value" =~ ^[0-9]+$ ]] || (( value > max )); then
+      printf '%s must be an integer between 0 and %s.\n' "$name" "$max" >&2
+      exit 1
+    fi
+  done
   [[ "$LOG_LEVEL" == error ]] || {
     printf 'Production requires LOG_LEVEL=error to keep customer payloads out of upstream retry logs.\n' >&2
     exit 1
@@ -203,8 +162,8 @@ else
     printf 'LOCAL_SMOKE requires direct HTTPS ingress.\n' >&2
     exit 1
   }
-  [[ -n "${LOCAL_FAKE_CLAUDE_ANSWER:-}" ]] || {
-    printf 'LOCAL_SMOKE requires a deterministic local Claude answer for E2E.\n' >&2
+  [[ -n "${LOCAL_FAKE_BRAIN_ANSWER:-}" ]] || {
+    printf 'LOCAL_SMOKE requires a deterministic local brain answer for E2E.\n' >&2
     exit 1
   }
   [[ "$CADDY_SITE_ADDRESS" == localhost ]] || {
@@ -304,14 +263,13 @@ if command -v jq >/dev/null 2>&1; then
     'rails|POSTGRES_ADMIN_PASSWORD' \
     'rails|MINIO_ROOT_PASSWORD' \
     'rails|TENANTS_JSON' \
-    'rails|ANTHROPIC_API_KEY' \
-    'rails|LOCAL_LLM_BASE_URL' \
+    'rails|SUPPORT_ANSWER_SECRET' \
     'channel-readiness|ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY' \
     'channel-readiness|ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY' \
     'channel-readiness|ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT' \
     'channel-readiness|GOOGLE_OAUTH_CLIENT_ID' \
     'channel-readiness|GOOGLE_OAUTH_CLIENT_SECRET' \
-    'caddy|LOCAL_LLM_BASE_URL' \
+    'caddy|SUPPORT_ANSWER_SECRET' \
     'caddy|STORAGE_SECRET_ACCESS_KEY' \
     'claude-agent|SECRET_KEY_BASE' \
     'claude-agent|POSTGRES_ADMIN_PASSWORD' \

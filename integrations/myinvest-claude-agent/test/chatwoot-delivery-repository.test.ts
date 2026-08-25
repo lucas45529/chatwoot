@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { PostgresChatwootDeliveryStore } from '../src/chatwoot-delivery-repository.js'
 
@@ -51,23 +52,20 @@ describe('PostgresChatwootDeliveryStore health', () => {
         accountId: 101,
         conversationDisplayId: 999_999,
         currentMessageId: 55,
-        identity: { hasEmail: false, hasPhone: false, hasIdentifier: false },
       }),
     ).resolves.toBeUndefined()
   })
 })
 
 describe('PostgresChatwootDeliveryStore conversation context', () => {
-  it('loads recent roles and safe identity signals for a handed-off thread', async () => {
+  it('loads recent roles and a pseudonymous contact signal for a handed-off thread', async () => {
     const query = vi
       .fn()
       .mockResolvedValueOnce({
         rows: [
           {
             conversation_id: '900',
-            has_email: false,
-            has_phone: true,
-            has_identifier: false,
+            contact_id: '4242',
             cached_label_list: 'ki-uebergabe',
             last_agent_handoff_id: '1',
           },
@@ -114,21 +112,22 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     const context = await store.loadContext({
       accountId: 101,
       conversationDisplayId: 71,
-      identity: { hasEmail: false, hasPhone: true, hasIdentifier: false },
       currentMessageId: 4,
     })
-    expect(context).toEqual(
-      expect.objectContaining({
-        needsIdentityClarification: true,
-        humanRepliedAfterBot: true,
-        labels: ['ki-uebergabe'],
-        turns: [
-          expect.objectContaining({ role: 'assistant' }),
-          expect.objectContaining({ role: 'human' }),
-          expect.objectContaining({ role: 'customer' }),
-        ],
-      }),
-    )
+    expect(context).toEqual({
+      humanRepliedAfterBot: true,
+      labels: ['ki-uebergabe'],
+      turns: [
+        { role: 'assistant', text: 'Übergabe' },
+        { role: 'human', text: 'Hallo, wie können wir helfen?' },
+        { role: 'customer', text: 'Mir wurden zwei Leads versprochen.' },
+      ],
+      // Ratengrenzen brauchen nur Gleichheit: der Kontakt verlaesst Chatwoot
+      // als accountgebundenes Pseudonym, nie als ID oder Kontaktangabe.
+      contactHash: createHash('sha256').update('101\u00004242').digest('hex'),
+    })
+    expect(context!.contactHash).not.toContain('4242')
+    expect(query.mock.calls[0]![1]).toEqual([101, 71])
     expect(query.mock.calls[1]![0]).toContain('message.id <> $3')
     expect(query.mock.calls[1]![0]).toContain('json_typeof(message.content_attributes)')
     expect(query.mock.calls[1]![0]).toContain('message.private = false')

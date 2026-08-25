@@ -148,7 +148,9 @@ const RULES: readonly TriageRule[] = [
     internalHint: 'Termin-/Rückrufwunsch. Bitte Zeitfenster abstimmen.',
     customerAck:
       'Alles klar, den Termin stimmt ein Kollege direkt mit dir ab. Ich habe deine Nachricht schon weitergegeben.',
-    humanOnly: true,
+    // Die inhaltliche Sicherheitsgrenze zieht die Gehirn-Policy, nicht die
+    // Triage: eine Terminfrage darf beantwortet werden, ein Zusagetext nicht.
+    humanOnly: false,
   },
   {
     category: 'zugang',

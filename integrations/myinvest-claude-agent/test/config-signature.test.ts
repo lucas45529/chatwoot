@@ -4,11 +4,21 @@ import {
   buildTenantRegistry,
   loadConfig,
   parseTenantConfig,
-  validateGeminiBaseUrl,
-  validateLocalLlmBaseUrl,
+  validateSupportAnswerUrl,
 } from '../src/config.js'
 import { verifyChatwootSignature } from '../src/webhook/signature.js'
 import { tenants } from './fixtures.js'
+
+/** Pflichtfelder, ohne die der Agent nicht startet. */
+const baseEnvironment = {
+  DATABASE_URL: 'postgresql://example.invalid/agent',
+  CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
+  REDIS_URL: 'redis://example.invalid/1',
+  CHATWOOT_BASE_URL: 'https://support.example.invalid',
+  TENANTS_JSON: JSON.stringify(tenants),
+  SUPPORT_ANSWER_URL: 'https://www.myinvest.example',
+  SUPPORT_ANSWER_SECRET: 'a-brain-signing-secret-with-32-chars',
+}
 
 describe('tenant configuration', () => {
   it('requires three independent tenants, accounts, and credentials', () => {
@@ -22,120 +32,87 @@ describe('tenant configuration', () => {
     expect(() => parseTenantConfig(JSON.stringify(withoutAssignee))).toThrow(/handoffAssigneeId/)
   })
 
-  it('allows deterministic Claude output only in explicit local smoke mode', () => {
-    const environment = {
-      DATABASE_URL: 'postgresql://example.invalid/agent',
-      CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
-      REDIS_URL: 'redis://example.invalid/1',
-      CHATWOOT_BASE_URL: 'https://support.example.invalid',
-      TENANTS_JSON: JSON.stringify(tenants),
-      ANTHROPIC_PROVIDER: 'bedrock',
-      LOCAL_FAKE_CLAUDE_ANSWER: 'local only',
-    }
-    expect(() => loadConfig(environment)).toThrow(/LOCAL_SMOKE/)
-    expect(loadConfig({ ...environment, LOCAL_SMOKE: 'true' }).LOCAL_FAKE_CLAUDE_ANSWER).toBe(
-      'local only',
-    )
-  })
-
-  it('normalizes compose-provided empty optional local fields for non-local providers', () => {
-    const config = loadConfig({
-      DATABASE_URL: 'postgresql://example.invalid/agent',
-      CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
-      REDIS_URL: 'redis://example.invalid/1',
-      CHATWOOT_BASE_URL: 'https://support.example.invalid',
-      TENANTS_JSON: JSON.stringify(tenants),
-      ANTHROPIC_PROVIDER: 'bedrock',
-      LOCAL_LLM_BASE_URL: '',
-      LOCAL_LLM_MODEL: '',
-      LOCAL_LLM_ALLOWED_HOSTS: '',
-      LOCAL_LLM_API_KEY: '',
-    })
-    expect(config.LOCAL_LLM_BASE_URL).toBeUndefined()
-    expect(config.LOCAL_LLM_MODEL).toBeUndefined()
-    expect(config.LOCAL_LLM_ALLOWED_HOSTS).toBeUndefined()
-    expect(config.LOCAL_LLM_API_KEY).toBeUndefined()
-    expect(() => loadConfig({
-      ...{
-        DATABASE_URL: 'postgresql://example.invalid/agent',
-        CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
-        REDIS_URL: 'redis://example.invalid/1',
-        CHATWOOT_BASE_URL: 'https://support.example.invalid',
-        TENANTS_JSON: JSON.stringify(tenants),
-      },
-      ANTHROPIC_PROVIDER: 'local',
-      LOCAL_LLM_BASE_URL: '',
-      LOCAL_LLM_MODEL: '',
-      LOCAL_LLM_ALLOWED_HOSTS: '',
-    })).toThrow(/required/i)
-  })
-
-  it('allows a local provider only on an explicit internal host and fixed v1 path', () => {
-    const environment = {
-      DATABASE_URL: 'postgresql://example.invalid/agent',
-      CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
-      REDIS_URL: 'redis://example.invalid/1',
-      CHATWOOT_BASE_URL: 'https://support.example.invalid',
-      TENANTS_JSON: JSON.stringify(tenants),
-      ANTHROPIC_PROVIDER: 'local',
-      LOCAL_LLM_BASE_URL: 'http://local-llm:8000/v1/',
-      LOCAL_LLM_MODEL: 'local-model',
-      LOCAL_LLM_ALLOWED_HOSTS: 'local-llm',
-    }
-    expect(loadConfig(environment).LOCAL_LLM_BASE_URL).toBe('http://local-llm:8000/v1')
-    expect(validateLocalLlmBaseUrl('http://10.100.24.3:8000/v1', '10.100.24.3'))
-      .toBe('http://10.100.24.3:8000/v1')
-
-    for (const [url, hosts] of [
-      ['http://example.com/v1', 'example.com'],
-      ['http://169.254.169.254/v1', '169.254.169.254'],
-      ['http://local-llm:8000/v1', 'other-service'],
-      ['http://user:password@local-llm:8000/v1', 'local-llm'],
-      ['http://local-llm:8000/admin', 'local-llm'],
-    ]) {
-      expect(() => validateLocalLlmBaseUrl(url!, hosts!)).toThrow()
-    }
-  })
-
-  it('requires an API key for the gemini provider and pins the Google endpoint', () => {
-    const environment = {
-      DATABASE_URL: 'postgresql://example.invalid/agent',
-      CHATWOOT_DATABASE_URL: 'postgresql://example.invalid/chatwoot',
-      REDIS_URL: 'redis://example.invalid/1',
-      CHATWOOT_BASE_URL: 'https://support.example.invalid',
-      TENANTS_JSON: JSON.stringify(tenants),
-      ANTHROPIC_PROVIDER: 'gemini',
-      GEMINI_API_KEY: 'gemini-test-key',
-    }
-    const config = loadConfig(environment)
-    expect(config.GEMINI_BASE_URL).toBe('https://generativelanguage.googleapis.com/v1beta/openai')
-    expect(config.GEMINI_MODEL).toBe('gemini-3.7-flash')
-    expect(config.GEMINI_THINKING_EFFORT).toBe('high')
-    expect(config.GEMINI_TIMEOUT_MS).toBe(30_000)
+  it('allows a deterministic brain answer only in explicit local smoke mode', () => {
+    expect(() =>
+      loadConfig({ ...baseEnvironment, LOCAL_FAKE_BRAIN_ANSWER: 'local only' }),
+    ).toThrow(/LOCAL_SMOKE/)
     expect(
       loadConfig({
-        ...environment,
-        GEMINI_BASE_URL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-      }).GEMINI_BASE_URL,
-    ).toBe('https://generativelanguage.googleapis.com/v1beta/openai')
-    expect(() => loadConfig({ ...environment, GEMINI_API_KEY: '' })).toThrow(/GEMINI_API_KEY/)
-    expect(() => loadConfig({ ...environment, GEMINI_API_KEY: undefined })).toThrow(/GEMINI_API_KEY/)
+        ...baseEnvironment,
+        LOCAL_SMOKE: 'true',
+        LOCAL_FAKE_BRAIN_ANSWER: 'local only',
+      }).LOCAL_FAKE_BRAIN_ANSWER,
+    ).toBe('local only')
   })
 
-  it('accepts only the exact Google host and /v1beta/openai path for Gemini', () => {
-    expect(validateGeminiBaseUrl('https://generativelanguage.googleapis.com/v1beta/openai'))
-      .toBe('https://generativelanguage.googleapis.com/v1beta/openai')
+  it('pins the brain API to a clean origin and normalizes the compose value', () => {
+    expect(
+      loadConfig({ ...baseEnvironment, SUPPORT_ANSWER_URL: 'https://www.myinvest.example/' })
+        .SUPPORT_ANSWER_URL,
+    ).toBe('https://www.myinvest.example')
+    // Kundentext verlaesst den Agenten nur ueber HTTPS; HTTP bleibt dem
+    // ausdruecklichen lokalen Smoke-Lauf vorbehalten.
+    expect(() =>
+      loadConfig({ ...baseEnvironment, SUPPORT_ANSWER_URL: 'http://agent-web:3000' }),
+    ).toThrow(/HTTPS/)
+    expect(
+      loadConfig({
+        ...baseEnvironment,
+        LOCAL_SMOKE: 'true',
+        SUPPORT_ANSWER_URL: 'http://agent-web:3000',
+      }).SUPPORT_ANSWER_URL,
+    ).toBe('http://agent-web:3000')
+  })
+
+  it('requires a signing secret for the brain API and keeps auto-send off by default', () => {
+    const config = loadConfig(baseEnvironment)
+    // Scharfschalten ist eine bewusste Entscheidung: ohne Env bleibt es Entwurf.
+    expect(config.AUTO_SEND_ENABLED).toBe(false)
+    expect(config.AUTO_SEND_MAX_PER_CONVERSATION).toBe(3)
+    expect(config.AUTO_SEND_MAX_PER_CONTACT_PER_HOUR).toBe(10)
+    expect(config.SUPPORT_ANSWER_TIMEOUT_MS).toBe(25_000)
+
+    expect(() => loadConfig({ ...baseEnvironment, SUPPORT_ANSWER_URL: undefined })).toThrow(
+      /SUPPORT_ANSWER_URL/,
+    )
+    expect(() => loadConfig({ ...baseEnvironment, SUPPORT_ANSWER_SECRET: undefined })).toThrow(
+      /SUPPORT_ANSWER_SECRET/,
+    )
+    expect(() =>
+      loadConfig({ ...baseEnvironment, SUPPORT_ANSWER_SECRET: 'too-short-secret' }),
+    ).toThrow(/SUPPORT_ANSWER_SECRET/)
+  })
+
+  it('accepts only a credential-free HTTPS origin as the brain endpoint', () => {
+    expect(validateSupportAnswerUrl('https://www.myinvest.example/', false)).toBe(
+      'https://www.myinvest.example',
+    )
 
     for (const url of [
-      'http://generativelanguage.googleapis.com/v1beta/openai',
-      'https://example.com/v1beta/openai',
-      'https://generativelanguage.googleapis.com.evil.example/v1beta/openai',
-      'https://user:password@generativelanguage.googleapis.com/v1beta/openai',
-      'https://generativelanguage.googleapis.com/v1beta/openai?key=x',
-      'https://generativelanguage.googleapis.com/v1beta/openai#fragment',
-      'https://generativelanguage.googleapis.com/v1',
+      'http://www.myinvest.example',
+      'https://user:password@www.myinvest.example',
+      'https://www.myinvest.example/api/support/answer',
+      'https://www.myinvest.example?tenant=saas',
+      'https://www.myinvest.example#fragment',
     ]) {
-      expect(() => validateGeminiBaseUrl(url)).toThrow()
+      expect(() => validateSupportAnswerUrl(url, false)).toThrow()
+    }
+
+    // Der lokale Smoke-Lauf lockert genau HTTP — und sonst nichts.
+    expect(validateSupportAnswerUrl('http://agent-web:3000', true)).toBe('http://agent-web:3000')
+    expect(() => validateSupportAnswerUrl('http://agent-web:3000/api', true)).toThrow()
+    expect(() => validateSupportAnswerUrl('http://user:pass@agent-web:3000', true)).toThrow()
+  })
+
+  it('reads WhatsApp inbox IDs and rejects anything that is not a positive ID', () => {
+    expect([...loadConfig(baseEnvironment).whatsappInboxIds]).toEqual([])
+    expect([
+      ...loadConfig({ ...baseEnvironment, WHATSAPP_INBOX_IDS: ' 6, 7 ,6' }).whatsappInboxIds,
+    ]).toEqual([6, 7])
+    for (const value of ['0', '-6', 'six', '6.5']) {
+      expect(() => loadConfig({ ...baseEnvironment, WHATSAPP_INBOX_IDS: value })).toThrow(
+        /WHATSAPP_INBOX_IDS/,
+      )
     }
   })
 })
