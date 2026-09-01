@@ -16,6 +16,7 @@ import {
 const TEST_SECRET = 'support-brain-test-secret-not-real'
 const FIXED_NOW_MS = 1_771_000_000_123
 const FIXED_TIMESTAMP = '1771000000'
+const REQUEST_ID = '550e8400-e29b-41d4-a716-446655440000'
 const ENDPOINT = 'https://myinvest.example.test/api/support/answer'
 
 /** Genau das Bild des Bodys, das ueber die Leitung geht — ohne `any`. */
@@ -30,6 +31,7 @@ const sentBodySchema = z.object({
 
 function brainRequest(overrides: Partial<SupportBrainRequest> = {}): SupportBrainRequest {
   return {
+    requestId: REQUEST_ID,
     question: 'Wie funktioniert das Onboarding?',
     history: [],
     tenant: 'saas',
@@ -102,11 +104,14 @@ describe('supportAnswerSignature', () => {
     const signature = supportAnswerSignature({
       rawBody,
       timestamp: FIXED_TIMESTAMP,
+      requestId: REQUEST_ID,
       secret: TEST_SECRET,
     })
 
     expect(signature).toBe(
-      createHmac('sha256', TEST_SECRET).update(`${FIXED_TIMESTAMP}.${rawBody}`).digest('hex'),
+      createHmac('sha256', TEST_SECRET)
+        .update(`${FIXED_TIMESTAMP}.${REQUEST_ID}.${rawBody}`)
+        .digest('hex'),
     )
     // Der nackte Body allein waere ohne Zeitbindung beliebig wiedereinspielbar.
     expect(signature).not.toBe(
@@ -114,10 +119,20 @@ describe('supportAnswerSignature', () => {
     )
   })
 
-  it('ergibt fuer denselben Body mit anderem Zeitstempel eine andere Signatur', () => {
+  it('ergibt fuer dieselben Bytes mit anderer Request-ID eine andere Signatur', () => {
     const rawBody = '{"question":"Hallo"}'
-    const first = supportAnswerSignature({ rawBody, timestamp: '1771000000', secret: TEST_SECRET })
-    const second = supportAnswerSignature({ rawBody, timestamp: '1771000001', secret: TEST_SECRET })
+    const first = supportAnswerSignature({
+      rawBody,
+      timestamp: FIXED_TIMESTAMP,
+      requestId: REQUEST_ID,
+      secret: TEST_SECRET,
+    })
+    const second = supportAnswerSignature({
+      rawBody,
+      timestamp: FIXED_TIMESTAMP,
+      requestId: '550e8400-e29b-41d4-a716-446655440001',
+      secret: TEST_SECRET,
+    })
 
     expect(first).not.toBe(second)
   })
@@ -136,6 +151,7 @@ describe('SupportBrainClient · Signatur auf der Leitung', () => {
       supportAnswerSignature({
         rawBody,
         timestamp: headers.get('x-support-timestamp') ?? '',
+        requestId: headers.get('x-support-request-id') ?? '',
         secret: TEST_SECRET,
       }),
     )
@@ -148,6 +164,9 @@ describe('SupportBrainClient · Signatur auf der Leitung', () => {
     const headers = new Headers(requestInit(fetchImplementation).headers)
     expect(fetchImplementation.mock.calls[0]?.[0]).toBe(ENDPOINT)
     expect(headers.get('x-support-timestamp')).toBe(FIXED_TIMESTAMP)
+    expect(headers.get('x-support-request-id')).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f-]{27}$/,
+    )
     expect(headers.get('x-support-signature')).toMatch(/^[0-9a-f]{64}$/)
     expect(headers.get('content-type')).toBe('application/json')
   })
@@ -197,6 +216,7 @@ describe('SupportBrainClient · Contract-Grenzen der Anfrage', () => {
       supportAnswerSignature({
         rawBody: raw,
         timestamp: FIXED_TIMESTAMP,
+        requestId: headers.get('x-support-request-id') ?? '',
         secret: TEST_SECRET,
       }),
     )
@@ -216,6 +236,7 @@ describe('SupportBrainClient · Contract-Grenzen der Anfrage', () => {
       supportAnswerSignature({
         rawBody: raw,
         timestamp: FIXED_TIMESTAMP,
+        requestId: headers.get('x-support-request-id') ?? '',
         secret: TEST_SECRET,
       }),
     )
@@ -317,7 +338,28 @@ describe('SupportBrainClient · Netzverhalten', () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(2)
   })
 
-  it('wiederholt einen 5xx genau einmal und sendet dabei denselben Body erneut', async () => {
+  it('wiederholt einen abgebrochenen Response-Stream genau einmal', async () => {
+    const brokenBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"action":'))
+        controller.error(new Error('response reset'))
+      },
+    })
+    const fetchImplementation = respondingFetch(
+      new Response(brokenBody, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+      jsonResponse(brainPayload()),
+    )
+
+    const answer = await clientWith(fetchImplementation).answer(brainRequest())
+
+    expect(answer.text).toContain('Onboarding')
+    expect(fetchImplementation).toHaveBeenCalledTimes(2)
+  })
+
+  it('wiederholt einen 5xx genau einmal mit derselben idempotenten Anfrage', async () => {
     const fetchImplementation = respondingFetch(
       new Response('upstream down', { status: 503 }),
       jsonResponse(brainPayload()),
@@ -327,6 +369,11 @@ describe('SupportBrainClient · Netzverhalten', () => {
 
     expect(fetchImplementation).toHaveBeenCalledTimes(2)
     expect(sentRawBody(fetchImplementation, 1)).toBe(sentRawBody(fetchImplementation, 0))
+    const firstHeaders = new Headers(requestInit(fetchImplementation, 0).headers)
+    const secondHeaders = new Headers(requestInit(fetchImplementation, 1).headers)
+    expect(secondHeaders.get('x-support-request-id')).toBe(
+      firstHeaders.get('x-support-request-id'),
+    )
   })
 
   it('wiederholt einen 4xx nicht, damit ein Signaturfehler die Route nicht hammert', async () => {

@@ -1,11 +1,17 @@
-import { createHash } from 'node:crypto'
+import { createHmac } from 'node:crypto'
+import {
+  contactFingerprint,
+  questionFingerprint,
+  supportBrainRequestId,
+} from '../src/auto-send.js'
 import { describe, expect, it, vi } from 'vitest'
 import { PostgresChatwootDeliveryStore } from '../src/chatwoot-delivery-repository.js'
+import { PSEUDONYMIZATION_KEY } from './fixtures.js'
 
 describe('PostgresChatwootDeliveryStore', () => {
   it('binds account, conversation, delivery and message kind in the read-only lookup', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [{ exists: true }] })
-    const store = new PostgresChatwootDeliveryStore({ query })
+    const store = new PostgresChatwootDeliveryStore({ query }, PSEUDONYMIZATION_KEY)
     await expect(
       store.exists({
         accountId: 101,
@@ -26,9 +32,12 @@ describe('PostgresChatwootDeliveryStore', () => {
   })
 
   it('returns false when no scoped message marker exists', async () => {
-    const store = new PostgresChatwootDeliveryStore({
-      query: vi.fn().mockResolvedValue({ rows: [{ exists: false }] }),
-    })
+    const store = new PostgresChatwootDeliveryStore(
+      {
+        query: vi.fn().mockResolvedValue({ rows: [{ exists: false }] }),
+      },
+      PSEUDONYMIZATION_KEY,
+    )
     await expect(
       store.exists({ accountId: 202, conversationDisplayId: 8, deliveryId: 9, kind: 'answer' }),
     ).resolves.toBe(false)
@@ -38,16 +47,19 @@ describe('PostgresChatwootDeliveryStore', () => {
 describe('PostgresChatwootDeliveryStore health', () => {
   it('checks real tables instead of only the database connection', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [] })
-    const store = new PostgresChatwootDeliveryStore({ query })
+    const store = new PostgresChatwootDeliveryStore({ query }, PSEUDONYMIZATION_KEY)
     await store.healthCheck()
     expect(query.mock.calls[0]![0]).toContain('FROM messages CROSS JOIN conversations')
     expect(query.mock.calls[0]![0]).toContain('CROSS JOIN contacts')
   })
 
   it('returns no context for a signed webhook whose conversation no longer exists', async () => {
-    const store = new PostgresChatwootDeliveryStore({
-      query: vi.fn().mockResolvedValue({ rows: [] }),
-    })
+    const store = new PostgresChatwootDeliveryStore(
+      {
+        query: vi.fn().mockResolvedValue({ rows: [] }),
+      },
+      PSEUDONYMIZATION_KEY,
+    )
     await expect(
       store.loadContext({
         accountId: 101,
@@ -113,7 +125,7 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
           },
         ],
       })
-    const store = new PostgresChatwootDeliveryStore({ query })
+    const store = new PostgresChatwootDeliveryStore({ query }, PSEUDONYMIZATION_KEY)
     const context = await store.loadContext({
       accountId: 101,
       conversationDisplayId: 71,
@@ -131,7 +143,9 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
       ],
       // Ratengrenzen brauchen nur Gleichheit: der Kontakt verlaesst Chatwoot
       // als accountgebundenes Pseudonym, nie als ID oder Kontaktangabe.
-      contactHash: createHash('sha256').update('101\u00004242').digest('hex'),
+      contactHash: createHmac('sha256', PSEUDONYMIZATION_KEY)
+        .update('myinvest-claude-agent/contact/v1\u0000101\u00004242')
+        .digest('hex'),
       contactEmail: 'kunde@example.de',
     })
     expect(context!.contactHash).not.toContain('4242')
@@ -152,6 +166,35 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     expect(query.mock.calls[1]![0]).toContain("content_attributes ->> 'external_echo'")
     expect(query.mock.calls[1]![1]).toEqual([101, '900', 4])
   })
+
+  it('keys and domain-separates production pseudonyms', () => {
+    const contact = contactFingerprint(PSEUDONYMIZATION_KEY, 101, '4242')
+    const otherKeyContact = contactFingerprint(
+      'another-independent-pseudonymization-key-2026',
+      101,
+      '4242',
+    )
+    const question = questionFingerprint(PSEUDONYMIZATION_KEY, 'saas', '4242')
+    expect(contact).toBe(
+      createHmac('sha256', PSEUDONYMIZATION_KEY)
+        .update('myinvest-claude-agent/contact/v1\u0000101\u00004242')
+        .digest('hex'),
+    )
+
+    expect(contact).not.toBe(otherKeyContact)
+    expect(contact).not.toBe(question)
+    const requestId = supportBrainRequestId(PSEUDONYMIZATION_KEY, 101, 55)
+    expect(requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+    expect(requestId).toBe(
+      supportBrainRequestId(PSEUDONYMIZATION_KEY, 101, 55),
+    )
+    expect(requestId).not.toBe(
+      supportBrainRequestId(PSEUDONYMIZATION_KEY, 101, 56),
+    )
+  })
+
   it('erkennt eine historische Menschenantwort auch ausserhalb des Verlaufsfensters', async () => {
     const query = vi
       .fn()
@@ -168,7 +211,7 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] })
-    const store = new PostgresChatwootDeliveryStore({ query })
+    const store = new PostgresChatwootDeliveryStore({ query }, PSEUDONYMIZATION_KEY)
 
     await expect(
       store.loadContext({

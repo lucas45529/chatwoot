@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { contactFingerprint } from './auto-send.js'
 import type { DeliveryMessageKind } from './chatwoot-client.js'
 import type {
   ConversationContext,
@@ -70,7 +70,10 @@ interface ContextMessageRow extends Record<string, unknown> {
 export class PostgresChatwootDeliveryStore
   implements ChatwootDeliveryStore, ChatwootConversationContextStore
 {
-  constructor(private readonly database: Queryable) {}
+  constructor(
+    private readonly database: Queryable,
+    private readonly pseudonymizationKey: string,
+  ) {}
 
   async healthCheck(): Promise<void> {
     await this.database.query(
@@ -212,11 +215,13 @@ export class PostgresChatwootDeliveryStore
       humanRepliedAfterBot: lastBotHandoffId > 0 && lastHumanMessageId > lastBotHandoffId,
       humanEverReplied: lastHumanMessageId > 0,
       previousAgentDraft: extractAgentDraft(conversation.last_agent_draft_note),
-      // Pseudonym statt Kontakt-ID: die Ratengrenze braucht nur Gleichheit.
+      // Keyed Pseudonym statt Kontakt-ID: die Ratengrenze braucht nur Gleichheit.
       contactHash: conversation.contact_id
-        ? createHash('sha256')
-            .update(`${input.accountId}\0${conversation.contact_id}`)
-            .digest('hex')
+        ? contactFingerprint(
+            this.pseudonymizationKey,
+            input.accountId,
+            conversation.contact_id,
+          )
         : undefined,
       contactEmail:
         typeof conversation.contact_email === 'string' &&

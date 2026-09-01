@@ -2,11 +2,14 @@
 
 require 'fileutils'
 require 'json'
+require 'securerandom'
+require_relative 'rebooking_bridge'
 
 required = %w[
   ADMIN_NAME ADMIN_EMAIL MYINVEST_ACCOUNT_NAME
   ACADEMY_NEW_ACCOUNT_NAME ACADEMY_LEGACY_ACCOUNT_NAME
   MYINVEST_WEBSITE_URL ACADEMY_NEW_WEBSITE_URL ACADEMY_LEGACY_WEBSITE_URL
+  MYINVEST_REBOOKING_WEBHOOK_URL
 ]
 missing = required.select { |key| ENV[key].blank? }
 raise "Missing bootstrap variables: #{missing.join(', ')}" if missing.any?
@@ -24,6 +27,7 @@ agent_bot_name = 'MyInvest Support'
 legacy_agent_bot_name = 'MyInvest Claude Support'
 
 tenant_credentials = []
+rebooking_bridge_credentials = nil
 # rubocop:disable Metrics/BlockLength
 ActiveRecord::Base.transaction do
   ActiveRecord::Base.connection.execute('SELECT pg_advisory_xact_lock(728395104)')
@@ -61,6 +65,20 @@ ActiveRecord::Base.transaction do
     admin.skip_confirmation!
     admin.save!
   end
+  integration_user = User.from_email('support-bridge@myinvest.internal')
+  unless integration_user
+    password = SecureRandom.urlsafe_base64(48)
+    integration_user = User.new(
+      name: 'MyInvest Support Bridge',
+      email: 'support-bridge@myinvest.internal',
+      password: password,
+      password_confirmation: password
+    )
+    integration_user.skip_confirmation!
+    integration_user.save!
+  end
+  raise 'Rebooking integration user must not be a SuperAdmin' if integration_user.is_a?(SuperAdmin)
+
 
   account_names.each do |key, name, website_url|
     account = accounts_by_key.fetch(key, []).first || Account.new
@@ -105,11 +123,27 @@ ActiveRecord::Base.transaction do
     bot_inbox.agent_bot = agent_bot
     bot_inbox.status = :active
     bot_inbox.save!
+    if key == 'new_academy'
+      AccountUser.where(user: integration_user).where.not(account: account).destroy_all
+      integration_membership = AccountUser.find_or_initialize_by(account: account, user: integration_user)
+      integration_membership.role = :administrator
+      integration_membership.save!
+    end
+    if key == 'new_academy'
+      rebooking_bridge_credentials = Myinvest::RebookingBridge.new(
+        account: account,
+        administrator: admin,
+        integration_user: integration_user,
+        agent_bot: agent_bot,
+        webhook_url: ENV.fetch('MYINVEST_REBOOKING_WEBHOOK_URL')
+      ).call.merge(account_id: account.id)
+    end
 
     tenant_credentials << {
       key: key,
       accountId: account.id,
       webhookSecret: agent_bot.secret,
+      handoffAssigneeId: admin.id,
       agentBotToken: agent_bot.access_token.token,
       websiteToken: inbox.channel.website_token
     }
@@ -125,4 +159,12 @@ File.write(temporary_path, JSON.generate(tenant_credentials), mode: 'w', perm: 0
 File.rename(temporary_path, output_path)
 File.chmod(0o600, output_path)
 
-puts "Bootstrap complete: #{account_names.length} account boundaries, website inboxes, and Agent Bots."
+raise 'Rebooking bridge credentials were not provisioned' unless rebooking_bridge_credentials
+
+bridge_temporary_path = File.join(output_directory, "rebooking-bridge.json.tmp.#{Process.pid}")
+bridge_output_path = File.join(output_directory, 'rebooking-bridge.json')
+File.write(bridge_temporary_path, JSON.generate(rebooking_bridge_credentials), mode: 'w', perm: 0o600)
+File.rename(bridge_temporary_path, bridge_output_path)
+File.chmod(0o600, bridge_output_path)
+
+puts "Bootstrap complete: #{account_names.length} account boundaries, website inboxes, API bridge, and Agent Bots."

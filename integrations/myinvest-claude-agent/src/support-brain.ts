@@ -18,6 +18,7 @@ export interface SupportBrainHistoryTurn {
 }
 
 export interface SupportBrainRequest {
+  requestId: string
   question: string
   history: readonly SupportBrainHistoryTurn[]
   tenant: TenantKey
@@ -61,18 +62,17 @@ export class SupportBrainError extends Error {
 }
 
 /**
- * Signiert wird der kanonische String `${timestamp}.${rawBody}`, nicht der
- * nackte Body: ohne Zeitbindung liesse sich ein gueltiger Body mit jedem
- * frischen Zeitstempel beliebig oft wiedereinspielen. Gleiches Muster wie die
- * eingehende Chatwoot-Signatur.
+ * Zeitstempel und eindeutige Request-ID binden den Body an ein einzelnes,
+ * dauerhaft beanspruchbares Ereignis. Der Server verwirft wiederholte IDs.
  */
 export function supportAnswerSignature(input: {
   rawBody: string
   timestamp: string
+  requestId: string
   secret: string
 }): string {
   return createHmac('sha256', input.secret)
-    .update(`${input.timestamp}.${input.rawBody}`)
+    .update(`${input.timestamp}.${input.requestId}.${input.rawBody}`)
     .digest('hex')
 }
 
@@ -118,6 +118,10 @@ export class SupportBrainClient implements SupportBrainPort {
   }
 
   async answer(request: SupportBrainRequest): Promise<SupportBrainAnswer> {
+    const requestId = z.string().uuid().safeParse(request.requestId)
+    if (!requestId.success) {
+      throw new SupportBrainError('Support brain request ID is invalid', 400)
+    }
     // Genau ein JSON.stringify: der gesendete Body muss byteidentisch der
     // signierte Body sein.
     const rawBody = JSON.stringify({
@@ -134,7 +138,7 @@ export class SupportBrainClient implements SupportBrainPort {
       ...(request.reviewOnly ? { reviewOnly: true } : {}),
     })
     try {
-      return await this.send(rawBody)
+      return await this.send(rawBody, requestId.data)
     } catch (error) {
       // Genau ein Wiederholungsversuch, und nur bei Netzfehler (Status 0) oder
       // 5xx: ein abgelehnter oder unverstaendlicher Aufruf wird durch
@@ -142,11 +146,14 @@ export class SupportBrainClient implements SupportBrainPort {
       const retryable =
         error instanceof SupportBrainError && (error.status === 0 || error.status >= 500)
       if (!retryable) throw error
-      return this.send(rawBody)
+      return this.send(rawBody, requestId.data)
     }
   }
 
-  private async send(rawBody: string): Promise<SupportBrainAnswer> {
+  private async send(
+    rawBody: string,
+    requestId: string,
+  ): Promise<SupportBrainAnswer> {
     const fetchImplementation = this.options.fetchImplementation ?? fetch
     const timestamp = Math.floor((this.options.now?.() ?? Date.now()) / 1000).toString()
     let response: Response
@@ -156,9 +163,11 @@ export class SupportBrainClient implements SupportBrainPort {
         headers: {
           'content-type': 'application/json',
           'x-support-timestamp': timestamp,
+          'x-support-request-id': requestId,
           'x-support-signature': supportAnswerSignature({
             rawBody,
             timestamp,
+            requestId,
             secret: this.options.secret,
           }),
         },
@@ -178,7 +187,18 @@ export class SupportBrainClient implements SupportBrainPort {
         response.status,
       )
     }
-    const responseText = await readCappedText(response, MAX_RESPONSE_CHARS)
+    let responseText: string
+    try {
+      responseText = await readCappedText(response, MAX_RESPONSE_CHARS)
+    } catch (error) {
+      if (error instanceof SupportBrainError) throw error
+      throw new SupportBrainError(
+        `Support brain response stream failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+        0,
+      )
+    }
     let payload: unknown
     try {
       payload = JSON.parse(responseText)

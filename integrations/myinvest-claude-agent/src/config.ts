@@ -80,6 +80,8 @@ const envSchema = z.object({
   /** Herkunft der Antworten: die Gehirn-API der Website. */
   SUPPORT_ANSWER_URL: z.string().url().max(2_048),
   SUPPORT_ANSWER_SECRET: z.string().min(32).max(512),
+  /** Unabhaengiger HMAC-Schluessel fuer irreversible Laufzeit-Pseudonyme. */
+  PSEUDONYMIZATION_KEY: z.string().min(32).max(512),
   SUPPORT_ANSWER_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(65_000),
   // Scharfschalten ist eine bewusste Entscheidung, kein Nebeneffekt eines
   // Deployments: ohne dieses Flag entsteht weiterhin nur ein Entwurf.
@@ -135,10 +137,21 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   if (env.LOCAL_FAKE_BRAIN_ANSWER && !env.LOCAL_SMOKE) {
     throw new Error('LOCAL_FAKE_BRAIN_ANSWER is restricted to LOCAL_SMOKE=true')
   }
+  const tenants = buildTenantRegistry(parseTenantConfig(env.TENANTS_JSON))
+  const unrelatedSecrets = [
+    env.SUPPORT_ANSWER_SECRET,
+    ...tenants.all.flatMap(({ webhookSecret, agentBotToken }) => [
+      webhookSecret,
+      agentBotToken,
+    ]),
+  ]
+  if (unrelatedSecrets.includes(env.PSEUDONYMIZATION_KEY)) {
+    throw new Error('PSEUDONYMIZATION_KEY must be independent from all other credentials')
+  }
   return {
     ...env,
     SUPPORT_ANSWER_URL: validateSupportAnswerUrl(env.SUPPORT_ANSWER_URL, env.LOCAL_SMOKE),
     whatsappInboxIds: parseWhatsappInboxIds(env.WHATSAPP_INBOX_IDS),
-    tenants: buildTenantRegistry(parseTenantConfig(env.TENANTS_JSON)),
+    tenants,
   }
 }

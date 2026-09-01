@@ -55,12 +55,13 @@ export class WebhookController {
     if (
       payload.event !== 'message_created' ||
       payload.message_type !== 'incoming' ||
-      payload.private
+      payload.private ||
+      payload.agentAction !== 'draft'
     ) {
       return { status: 200, body: { accepted: false } } as const
     }
     try {
-      await this.dependencies.queue.enqueue(tenant, deliveryId, payload)
+      await this.dependencies.queue.enqueue(tenant, `message:${payload.id}`, payload)
     } catch {
       throw new QueueUnavailableError()
     }

@@ -11,14 +11,16 @@ transportiert die signierte Anfrage und setzt das serverseitige Urteil um.
 - `saas`, `new_academy` und `legacy_academy` haben getrennte Account-IDs,
   Webhook-Secrets und AgentBot-Tokens. Jeder Gehirn-Aufruf trägt genau einen
   `tenant`; Tests halten den Negativpfad.
-- Gehirn-Auth: HMAC-SHA256 über `${timestamp}.${rawBody}` mit
-  `SUPPORT_ANSWER_SECRET`, Header `x-support-signature` und
-  `x-support-timestamp`. 4xx wird nie wiederholt; Netz/5xx genau einmal.
+- Gehirn-Auth: HMAC-SHA256 über `${timestamp}.${requestId}.${rawBody}` mit
+  `SUPPORT_ANSWER_SECRET`; Header für Signatur, Zeitstempel und UUID. Der
+  Server beansprucht jede UUID dauerhaft. 4xx wird nie wiederholt;
+  Netz/5xx genau einmal mit neuer UUID.
   Antworten werden vor dem Einlesen begrenzt und strikt mit Zod validiert.
 - Die Website entscheidet `safeToAutoSend`; der Agent kann es nie selbst
-  hochstufen. Zusätzlich gelten Kill-Switch, dauerhafte Sperre nach jeder
-  Menschenantwort, Obergrenze je Konversation und Kontakt/Stunde,
-  Längenlimit und Audit vor dem Send.
+  hochstufen. Zusätzlich gelten Kill-Switch, finale Live-Prüfung von Chatwoot
+  und AgentState, dauerhafte Sperre nach jeder Menschenantwort sowie atomare
+  Obergrenzen je Konversation und Kontakt/Stunde. Eine Transaktionsreservierung
+  steht vor jedem öffentlichen Send.
 - Sicherheits-, Geld-, Vertrags-, Rechts-, Steuer-, Datenschutz- und explizite
   Menschenanliegen bleiben beim Team. Unsichere oder abgelehnte Antworten
   werden Entwurf oder Übergabe, nie erfundene Kundenantwort.
@@ -32,6 +34,7 @@ transportiert die signierte Anfrage und setzt das serverseitige Urteil um.
 SUPPORT_ANSWER_URL=https://www.myinvest-pro.de
 SUPPORT_ANSWER_SECRET=<mindestens 32 Zeichen, identisch zur Website>
 SUPPORT_ANSWER_TIMEOUT_MS=25000
+PSEUDONYMIZATION_KEY=<unabhaengiger Schluessel mit mindestens 32 Zeichen>
 AUTO_SEND_ENABLED=false
 AUTO_SEND_MAX_PER_CONVERSATION=3
 AUTO_SEND_MAX_PER_CONTACT_PER_HOUR=10
@@ -40,8 +43,10 @@ WHATSAPP_INBOX_IDS=6
 ```
 
 `SUPPORT_ANSWER_URL` ist in Produktion HTTPS und eine reine Origin ohne Pfad,
-Credentials, Query oder Fragment. `AUTO_SEND_ENABLED=false` ist der sichere
-Default; die übrigen Bremsen gelten auch nach dem Einschalten.
+Credentials, Query oder Fragment. `PSEUDONYMIZATION_KEY` ist ein eigener,
+von allen Signatur- und Tenant-Secrets verschiedener HMAC-Schlüssel für
+domain-separierte Kontakt- und Fragepseudonyme. `AUTO_SEND_ENABLED=false`
+ist der sichere Default; die übrigen Bremsen gelten auch nach dem Einschalten.
 
 ## Bootstrap
 

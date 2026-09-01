@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 receipt_path="${1:-}"
 [[ -n "$receipt_path" && -f "$receipt_path" ]] || {
   printf 'Usage: %s <offsite-receipt.json>\n' "$0" >&2
   exit 1
 }
-for command_name in gpg jq rclone shasum tar; do
+for command_name in gpg jq pg_restore rclone shasum tar; do
   command -v "$command_name" >/dev/null 2>&1 || {
     printf '%s is required for recovery verification.\n' "$command_name" >&2
     exit 1
   }
 done
+"$script_dir/verify-backup-receipt.sh" "$receipt_path"
 remote_path="$(jq -er '.remote | select(type == "string" and length > 0)' "$receipt_path")"
 expected_sha256="$(jq -er '.sha256 | select(type == "string" and test("^[0-9a-fA-F]{64}$"))' "$receipt_path")"
 expected_snapshot="$(jq -er '.snapshot | select(type == "string" and test("^20[0-9]{6}T[0-9]{6}Z$"))' "$receipt_path")"
@@ -42,4 +44,6 @@ for file in chatwoot.dump claude-agent.dump storage.tar.gz redis.tar.gz object-s
   }
 done
 (cd "$snapshot" && shasum -a 256 -c SHA256SUMS >/dev/null)
+pg_restore --list "$snapshot/chatwoot.dump" >/dev/null
+pg_restore --list "$snapshot/claude-agent.dump" >/dev/null
 printf 'Off-host recovery proof passed: AEAD decryption and all internal checksums verified.\n'

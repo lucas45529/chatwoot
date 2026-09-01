@@ -12,12 +12,15 @@ command -v openssl >/dev/null 2>&1 || {
 
 if [[ -e "$env_path" ]]; then
   if grep '__GENERATE' "$env_path" |
-    grep -Ev '^(MINIO_ROOT_USER=__GENERATE_MINIO_ROOT_USER__|MINIO_ROOT_PASSWORD=__GENERATE_MINIO_ROOT_PASSWORD__|STORAGE_ACCESS_KEY_ID=__GENERATE_STORAGE_ACCESS_KEY_ID__|STORAGE_SECRET_ACCESS_KEY=__GENERATE_STORAGE_SECRET_ACCESS_KEY__)$' |
+    grep -Ev '^(IMPORT_ID_HMAC_KEY=__GENERATE_IMPORT_ID_HMAC_KEY__|AGENT_LEARNING_DATABASE_PASSWORD=__GENERATE_AGENT_LEARNING_DATABASE_PASSWORD__|AGENT_LEARNING_CHATWOOT_DATABASE_URL=__GENERATE_CHATWOOT_READONLY_DATABASE_URL__|MINIO_ROOT_USER=__GENERATE_MINIO_ROOT_USER__|MINIO_ROOT_PASSWORD=__GENERATE_MINIO_ROOT_PASSWORD__|STORAGE_ACCESS_KEY_ID=__GENERATE_STORAGE_ACCESS_KEY_ID__|STORAGE_SECRET_ACCESS_KEY=__GENERATE_STORAGE_SECRET_ACCESS_KEY__)$' |
     grep -q .; then
     printf 'Refusing to use environment file with unknown unresolved placeholders: %s\n' "$env_path" >&2
     exit 1
   fi
   if ! grep -Eq '^IMPORT_ID_HMAC_KEY=.+$' "$env_path" ||
+     ! grep -Eq '^AGENT_LEARNING_DATABASE_USER=.+$' "$env_path" ||
+     ! grep -Eq '^AGENT_LEARNING_DATABASE_PASSWORD=.+$' "$env_path" ||
+     ! grep -Eq '^AGENT_LEARNING_CHATWOOT_DATABASE_URL=.+$' "$env_path" ||
      ! grep -Eq '^MINIO_ROOT_USER=.+$' "$env_path" ||
      ! grep -Eq '^MINIO_ROOT_PASSWORD=.+$' "$env_path" ||
      ! grep -Eq '^STORAGE_ACCESS_KEY_ID=.+$' "$env_path" ||
@@ -26,26 +29,42 @@ if [[ -e "$env_path" ]]; then
     umask 077
     temporary_path="${env_path}.tmp.$$"
     trap 'rm -f -- "$temporary_path"' EXIT
-    cp "$env_path" "$temporary_path"
+    agent_learning_database_user_line="$(grep -E '^AGENT_LEARNING_DATABASE_USER=' "$env_path" | tail -n 1 || true)"
+    agent_learning_database_user="${agent_learning_database_user_line#*=}"
+    [[ -n "$agent_learning_database_user" ]] || agent_learning_database_user='agent_learning_ro'
+    agent_learning_database_password_line="$(grep -E '^AGENT_LEARNING_DATABASE_PASSWORD=' "$env_path" | tail -n 1 || true)"
+    agent_learning_database_password="${agent_learning_database_password_line#*=}"
+    if [[ -z "$agent_learning_database_password" ||
+          "$agent_learning_database_password" == '__GENERATE_AGENT_LEARNING_DATABASE_PASSWORD__' ]]; then
+      agent_learning_database_password="$(openssl rand -hex 32)"
+    fi
     import_id_hmac_key="$(openssl rand -hex 32)"
     minio_root_user="root-$(openssl rand -hex 12)"
     minio_root_password="$(openssl rand -hex 32)"
     storage_access_key_id="app-$(openssl rand -hex 12)"
     storage_secret_access_key="$(openssl rand -hex 32)"
-    sed -i.bak \
-      -e "s|^IMPORT_ID_HMAC_KEY=$|IMPORT_ID_HMAC_KEY=$import_id_hmac_key|" \
-      -e "s|^MINIO_ROOT_USER=__GENERATE_MINIO_ROOT_USER__$|MINIO_ROOT_USER=$minio_root_user|" \
-      -e "s|^MINIO_ROOT_USER=$|MINIO_ROOT_USER=$minio_root_user|" \
-      -e "s|^MINIO_ROOT_PASSWORD=__GENERATE_MINIO_ROOT_PASSWORD__$|MINIO_ROOT_PASSWORD=$minio_root_password|" \
-      -e "s|^MINIO_ROOT_PASSWORD=$|MINIO_ROOT_PASSWORD=$minio_root_password|" \
-      -e "s|^STORAGE_ACCESS_KEY_ID=__GENERATE_STORAGE_ACCESS_KEY_ID__$|STORAGE_ACCESS_KEY_ID=$storage_access_key_id|" \
-      -e "s|^STORAGE_ACCESS_KEY_ID=$|STORAGE_ACCESS_KEY_ID=$storage_access_key_id|" \
-      -e "s|^STORAGE_SECRET_ACCESS_KEY=__GENERATE_STORAGE_SECRET_ACCESS_KEY__$|STORAGE_SECRET_ACCESS_KEY=$storage_secret_access_key|" \
-      -e "s|^STORAGE_SECRET_ACCESS_KEY=$|STORAGE_SECRET_ACCESS_KEY=$storage_secret_access_key|" \
-      "$temporary_path"
-    rm -f -- "${temporary_path}.bak"
+    : > "$temporary_path"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        IMPORT_ID_HMAC_KEY=|IMPORT_ID_HMAC_KEY=__GENERATE_IMPORT_ID_HMAC_KEY__) line="IMPORT_ID_HMAC_KEY=$import_id_hmac_key" ;;
+        AGENT_LEARNING_DATABASE_USER=) line="AGENT_LEARNING_DATABASE_USER=$agent_learning_database_user" ;;
+        AGENT_LEARNING_DATABASE_PASSWORD=* ) line="AGENT_LEARNING_DATABASE_PASSWORD=$agent_learning_database_password" ;;
+        AGENT_LEARNING_CHATWOOT_DATABASE_URL=* ) line="AGENT_LEARNING_CHATWOOT_DATABASE_URL=postgresql://${agent_learning_database_user}:${agent_learning_database_password}@postgres:5432/chatwoot" ;;
+        MINIO_ROOT_USER=|MINIO_ROOT_USER=__GENERATE_MINIO_ROOT_USER__) line="MINIO_ROOT_USER=$minio_root_user" ;;
+        MINIO_ROOT_PASSWORD=|MINIO_ROOT_PASSWORD=__GENERATE_MINIO_ROOT_PASSWORD__) line="MINIO_ROOT_PASSWORD=$minio_root_password" ;;
+        STORAGE_ACCESS_KEY_ID=|STORAGE_ACCESS_KEY_ID=__GENERATE_STORAGE_ACCESS_KEY_ID__) line="STORAGE_ACCESS_KEY_ID=$storage_access_key_id" ;;
+        STORAGE_SECRET_ACCESS_KEY=|STORAGE_SECRET_ACCESS_KEY=__GENERATE_STORAGE_SECRET_ACCESS_KEY__) line="STORAGE_SECRET_ACCESS_KEY=$storage_secret_access_key" ;;
+      esac
+      printf '%s\n' "$line" >> "$temporary_path"
+    done < "$env_path"
     grep -Eq '^IMPORT_ID_HMAC_KEY=.+$' "$temporary_path" ||
       printf 'IMPORT_ID_HMAC_KEY=%s\n' "$import_id_hmac_key" >> "$temporary_path"
+    grep -Eq '^AGENT_LEARNING_DATABASE_USER=.+$' "$temporary_path" ||
+      printf 'AGENT_LEARNING_DATABASE_USER=%s\n' "$agent_learning_database_user" >> "$temporary_path"
+    grep -Eq '^AGENT_LEARNING_DATABASE_PASSWORD=.+$' "$temporary_path" ||
+      printf 'AGENT_LEARNING_DATABASE_PASSWORD=%s\n' "$agent_learning_database_password" >> "$temporary_path"
+    grep -Eq '^AGENT_LEARNING_CHATWOOT_DATABASE_URL=.+$' "$temporary_path" ||
+      printf 'AGENT_LEARNING_CHATWOOT_DATABASE_URL=postgresql://%s:%s@postgres:5432/chatwoot\n' "$agent_learning_database_user" "$agent_learning_database_password" >> "$temporary_path"
     grep -Eq '^MINIO_ROOT_USER=.+$' "$temporary_path" ||
       printf 'MINIO_ROOT_USER=%s\n' "$minio_root_user" >> "$temporary_path"
     grep -Eq '^MINIO_ROOT_PASSWORD=.+$' "$temporary_path" ||
@@ -78,6 +97,7 @@ postgres_password="$(openssl rand -hex 32)"
 redis_password="$(openssl rand -hex 32)"
 claude_database_password="$(openssl rand -hex 32)"
 admin_password="Mw-$(openssl rand -hex 18)!A7"
+agent_learning_database_password="$(openssl rand -hex 32)"
 import_id_hmac_key="$(openssl rand -hex 32)"
 minio_root_user="root-$(openssl rand -hex 12)"
 minio_root_password="$(openssl rand -hex 32)"
@@ -100,6 +120,8 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     CLAUDE_AGENT_DATABASE_PASSWORD=__GENERATE__) line="CLAUDE_AGENT_DATABASE_PASSWORD=$claude_database_password" ;;
     CLAUDE_AGENT_DATABASE_URL=__GENERATE_CLAUDE_DATABASE_URL__) line="CLAUDE_AGENT_DATABASE_URL=postgresql://claude_agent:${claude_database_password}@postgres:5432/claude_agent" ;;
     CLAUDE_AGENT_REDIS_URL=__GENERATE_CLAUDE_REDIS_URL__) line="CLAUDE_AGENT_REDIS_URL=redis://:${redis_password}@redis:6379/1" ;;
+    AGENT_LEARNING_DATABASE_PASSWORD=__GENERATE_AGENT_LEARNING_DATABASE_PASSWORD__) line="AGENT_LEARNING_DATABASE_PASSWORD=$agent_learning_database_password" ;;
+    AGENT_LEARNING_CHATWOOT_DATABASE_URL=__GENERATE_CHATWOOT_READONLY_DATABASE_URL__) line="AGENT_LEARNING_CHATWOOT_DATABASE_URL=postgresql://agent_learning_ro:${agent_learning_database_password}@postgres:5432/chatwoot" ;;
     ADMIN_PASSWORD=__GENERATE_ADMIN_PASSWORD__) line="ADMIN_PASSWORD=$admin_password" ;;
     MINIO_ROOT_USER=__GENERATE_MINIO_ROOT_USER__) line="MINIO_ROOT_USER=$minio_root_user" ;;
     MINIO_ROOT_PASSWORD=__GENERATE_MINIO_ROOT_PASSWORD__) line="MINIO_ROOT_PASSWORD=$minio_root_password" ;;

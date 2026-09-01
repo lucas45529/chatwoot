@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 receipt_path="${1:-}"
 recovery_root="${2:-}"
 [[ -n "$receipt_path" && -f "$receipt_path" && -n "$recovery_root" ]] || {
   printf 'Usage: RECOVERY_CONFIRMATION=recover:<snapshot-name> %s <offsite-receipt.json> <empty-recovery-root>\n' "$0" >&2
   exit 1
 }
-for command_name in gpg jq rclone shasum tar; do
+for command_name in gpg jq pg_restore rclone shasum tar; do
   command -v "$command_name" >/dev/null 2>&1 || {
     printf '%s is required for off-host recovery.\n' "$command_name" >&2
     exit 1
   }
 done
+"$script_dir/verify-backup-receipt.sh" "$receipt_path"
 remote_path="$(jq -er '.remote | select(type == "string" and length > 0)' "$receipt_path")"
 expected_sha256="$(jq -er '.sha256 | select(type == "string" and test("^[0-9a-fA-F]{64}$"))' "$receipt_path")"
 snapshot_name="$(jq -er '.snapshot | select(type == "string" and test("^20[0-9]{6}T[0-9]{6}Z$"))' "$receipt_path")"
@@ -51,6 +53,8 @@ gpg --batch --quiet --decrypt "$work_dir/snapshot.tar.gpg" | tar -xf - -C "$work
   exit 1
 }
 (cd "$work_dir/$snapshot_name" && shasum -a 256 -c SHA256SUMS >/dev/null)
+pg_restore --list "$work_dir/$snapshot_name/chatwoot.dump" >/dev/null
+pg_restore --list "$work_dir/$snapshot_name/claude-agent.dump" >/dev/null
 mv "$work_dir/$snapshot_name" "$target"
 cleanup_work_dir
 trap - EXIT

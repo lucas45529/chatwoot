@@ -15,6 +15,10 @@ trap cleanup EXIT
 trap 'cleanup; exit 1' HUP INT TERM
 
 cp "$deployment_dir/.env.example" "$compose_env"
+cat >>"$compose_env" <<'ENV'
+SUPPORT_ANSWER_SECRET=readiness-compose-interpolation-only-answer
+PSEUDONYMIZATION_KEY=readiness-compose-interpolation-only-pseudonym
+ENV
 cat >"$manifest_env" <<'ENV'
 TENANTS_JSON=[]
 CHANNEL_READINESS_CONFIG_JSON=[]

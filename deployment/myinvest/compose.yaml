@@ -5,6 +5,8 @@ x-chatwoot: &chatwoot
   build:
     context: ../..
     dockerfile: docker/Dockerfile
+    args:
+      GIT_SHA: ${CHATWOOT_BUILD_GIT_SHA:-}
   environment: &chatwoot-environment
     NODE_ENV: production
     RAILS_ENV: production
@@ -140,6 +142,8 @@ services:
       CLAUDE_AGENT_DATABASE: ${CLAUDE_AGENT_DATABASE:?CLAUDE_AGENT_DATABASE is required}
       CLAUDE_AGENT_DATABASE_USER: ${CLAUDE_AGENT_DATABASE_USER:?CLAUDE_AGENT_DATABASE_USER is required}
       CLAUDE_AGENT_DATABASE_PASSWORD: ${CLAUDE_AGENT_DATABASE_PASSWORD:?CLAUDE_AGENT_DATABASE_PASSWORD is required}
+      AGENT_LEARNING_DATABASE_USER: ${AGENT_LEARNING_DATABASE_USER:?AGENT_LEARNING_DATABASE_USER is required}
+      AGENT_LEARNING_DATABASE_PASSWORD: ${AGENT_LEARNING_DATABASE_PASSWORD:?AGENT_LEARNING_DATABASE_PASSWORD is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
@@ -243,6 +247,7 @@ services:
       # und lokale LLM-Konfiguration sind deshalb entfallen.
       SUPPORT_ANSWER_URL: ${SUPPORT_ANSWER_URL:?SUPPORT_ANSWER_URL is required}
       SUPPORT_ANSWER_SECRET: ${SUPPORT_ANSWER_SECRET:?SUPPORT_ANSWER_SECRET is required}
+      PSEUDONYMIZATION_KEY: ${PSEUDONYMIZATION_KEY:?PSEUDONYMIZATION_KEY is required}
       SUPPORT_ANSWER_TIMEOUT_MS: ${SUPPORT_ANSWER_TIMEOUT_MS:-65000}
       # Kill-Switch. Standard AUS: Auto-Send wird bewusst eingeschaltet,
       # nie versehentlich durch ein fehlendes Env geerbt.

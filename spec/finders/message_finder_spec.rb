@@ -73,5 +73,31 @@ describe MessageFinder do
         expect(result.last.id).to be conversation.messages[-2].id
       end
     end
+
+    context 'with source_id attribute' do
+      let!(:matched_message) do
+        create(
+          :message,
+          source_id: 'mip:web:saas:message-1',
+          account: account,
+          inbox: inbox,
+          conversation: conversation
+        )
+      end
+      let(:params) { { source_id: matched_message.source_id } }
+
+      it 'returns the exact message from the bound conversation' do
+        other_conversation = create(:conversation, account: account, inbox: inbox, contact: contact)
+        create(
+          :message,
+          source_id: matched_message.source_id,
+          account: account,
+          inbox: inbox,
+          conversation: other_conversation
+        )
+
+        expect(message_finder.perform).to contain_exactly(matched_message)
+      end
+    end
   end
 end

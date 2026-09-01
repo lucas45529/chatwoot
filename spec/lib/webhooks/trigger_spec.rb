@@ -102,6 +102,26 @@ describe Webhooks::Trigger do
         expect(Conversations::ActivityMessageJob).not_to have_been_enqueued
       end
 
+      it 'raises every 5xx response for retry' do
+        payload = { event: 'message_created', id: pending_message.id }
+
+        expect(SafeFetch).to receive(:fetch).and_raise(SafeFetch::HttpError.new('503 Service Unavailable'))
+
+        expect { trigger.execute(url, payload, webhook_type) }
+          .to raise_error(Webhooks::Trigger::RetryableError) { |error| expect(error.status).to eq(503) }
+        expect(pending_conversation.reload.status).to eq('pending')
+      end
+
+      it 'raises network failures for retry' do
+        payload = { event: 'message_created', id: pending_message.id }
+
+        expect(SafeFetch).to receive(:fetch).and_raise(SafeFetch::FetchError.new('execution expired'))
+
+        expect { trigger.execute(url, payload, webhook_type) }
+          .to raise_error(Webhooks::Trigger::RetryableError) { |error| expect(error.status).to be_nil }
+        expect(pending_conversation.reload.status).to eq('pending')
+      end
+
       it 'reopens conversation and enqueues activity message if pending' do
         payload = { event: 'message_created', id: pending_message.id }
 
@@ -172,6 +192,42 @@ describe Webhooks::Trigger do
 
       expect { trigger.execute(url, payload, webhook_type) }.not_to raise_error
       expect(message.reload.status).to eq('failed')
+    end
+
+    context 'when a signed delivery webhook is durable infrastructure' do
+      let(:webhook_type) { :api_inbox_webhook }
+      let(:secret) { 'durable-webhook-secret' }
+
+      it 'raises transient HTTP failures for the job backend to retry' do
+        expect(SafeFetch).to receive(:fetch)
+          .and_raise(SafeFetch::HttpError.new('503 Service Unavailable'))
+
+        expect do
+          trigger.execute(url, payload, webhook_type, secret: secret)
+        end.to raise_error(Webhooks::Trigger::RetryableError) { |error|
+          expect(error.status).to eq(503)
+        }
+      end
+
+      it 'raises network failures for the job backend to retry' do
+        expect(SafeFetch).to receive(:fetch)
+          .and_raise(SafeFetch::FetchError.new('execution expired'))
+
+        expect do
+          trigger.execute(url, payload, webhook_type, secret: secret)
+        end.to raise_error(Webhooks::Trigger::RetryableError) { |error|
+          expect(error.status).to be_nil
+        }
+      end
+
+      it 'does not retry terminal client errors' do
+        expect(SafeFetch).to receive(:fetch)
+          .and_raise(SafeFetch::HttpError.new('422 Unprocessable Entity'))
+
+        expect do
+          trigger.execute(url, payload, webhook_type, secret: secret)
+        end.not_to raise_error
+      end
     end
   end
 

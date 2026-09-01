@@ -8,6 +8,8 @@ log
 storage
 public/system
 tmp
+deployment/myinvest/runtime
+deployment/myinvest/backups
 .codeclimate.yml
 public/packs
 node_modules

@@ -32,7 +32,7 @@ done
 timeout 20s docker network create "$network_name" >/dev/null
 timeout 20s docker run --detach --name "$backend_name" --network "$network_name" \
   --network-alias rails --network-alias claude-agent --entrypoint sh "$caddy_image" -c \
-  'caddy respond --listen :3000 --status 204 & exec caddy respond --listen :8080 --status 202' >/dev/null
+  'caddy respond --listen :3000 --status 200 --body ok --header "Content-Type: text/html" --header "X-Frame-Options: SAMEORIGIN" & exec caddy respond --listen :8080 --status 202' >/dev/null
 for port in 3000 8080; do
   for _ in $(seq 1 20); do
     timeout 3s docker exec "$backend_name" wget -q -T 2 -t 1 -O /dev/null "http://127.0.0.1:$port/" && break
@@ -59,6 +59,23 @@ timeout 5s docker exec "$edge_name" sh -c \
   >"$work_dir/root.headers"
 grep -Eq 'HTTP/1\.[01] 302' "$work_dir/root.headers"
 grep -Eiq 'Location: /app/login' "$work_dir/root.headers"
+timeout 5s docker exec "$edge_name" wget -S -T 2 -t 1 -O /dev/null \
+  http://localhost/app/accounts/1/inbox/9 2>"$work_dir/app.headers"
+if grep -Eiq '^[[:space:]]*X-Frame-Options:' "$work_dir/app.headers"; then
+  printf 'The embedded Chatwoot app must not emit X-Frame-Options.\n' >&2
+  exit 1
+fi
+grep -Eiq "^[[:space:]]*Content-Security-Policy: frame-ancestors 'self' https://www\\.myinvest-pro\\.de https://app\\.myinvest-pro\\.de" "$work_dir/app.headers" || {
+  printf 'The Chatwoot app must allow only the Intern origins to frame it.\n' >&2
+  exit 1
+}
+
+timeout 5s docker exec "$edge_name" wget -S -T 2 -t 1 -O /dev/null \
+  http://localhost/health 2>"$work_dir/health.headers"
+grep -Eiq '^[[:space:]]*X-Frame-Options: SAMEORIGIN' "$work_dir/health.headers" || {
+  printf 'Non-app Chatwoot routes must remain protected from cross-origin framing.\n' >&2
+  exit 1
+}
 
 for asset in logo.svg logo_dark.svg logo_thumbnail.png myinvest-pro-icon.png; do
   timeout 5s docker exec "$edge_name" wget -q -T 2 -t 1 -O - "http://127.0.0.1/brand-assets/$asset" >"$work_dir/$asset"
@@ -67,7 +84,7 @@ done
 
 for path in health api/v1/accounts widget _agent/webhooks/chatwoot-other; do
   status="$(timeout 5s docker exec "$edge_name" wget -S -T 2 -t 1 -O /dev/null "http://127.0.0.1/$path" 2>&1 | sed -n 's/.*HTTP\/1\.[01] \([0-9][0-9][0-9]\).*/\1/p' | tail -n 1)"
-  test "$status" = 204
+  test "$status" = 200
 done
 webhook_status="$(timeout 5s docker exec "$edge_name" wget -S -T 2 -t 1 -O /dev/null \
   http://127.0.0.1/_agent/webhooks/chatwoot 2>&1 | sed -n 's/.*HTTP\/1\.[01] \([0-9][0-9][0-9]\).*/\1/p' | tail -n 1)"

@@ -84,7 +84,7 @@ curl_tls=()
 
 root_headers="$(curl "${curl_tls[@]}" --silent --show-error --max-time 15 --output /dev/null --dump-header - "$base_url/")"
 root_status="$(awk '/^HTTP\// { status = $2 } END { print status }' <<<"$root_headers")"
-root_location="$(awk 'BEGIN { IGNORECASE = 1 } /^Location:/ { sub(/\r$/, "", $2); location = $2 } END { print location }' <<<"$root_headers")"
+root_location="$(awk 'tolower($1) == "location:" { sub(/\r$/, "", $2); location = $2 } END { print location }' <<<"$root_headers")"
 [[ "$root_status" == 302 && "$root_location" == /app/login ]] || {
   printf 'Unexpected public root response: status=%s location=%s\n' "$root_status" "$root_location" >&2
   exit 1

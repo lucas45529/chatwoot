@@ -86,8 +86,13 @@ RUN if [ "$RAILS_ENV" = "production" ]; then \
   && rm -rf spec node_modules tmp/cache; \
   fi
 
-# Generate .git_sha file with current commit hash
-RUN git rev-parse HEAD > /app/.git_sha
+ARG GIT_SHA=""
+# Generate .git_sha from an explicit build revision. Normal clones retain the
+# upstream fallback; linked worktrees expose only an out-of-context .git file.
+RUN if [ -n "$GIT_SHA" ]; then \
+  printf '%s\n' "$GIT_SHA" > /app/.git_sha; \
+  else git rev-parse HEAD > /app/.git_sha; \
+  fi
 
 # Remove unnecessary files
 RUN rm -rf /gems/ruby/3.4.0/cache/*.gem \

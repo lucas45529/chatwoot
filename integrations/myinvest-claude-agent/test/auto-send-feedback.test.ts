@@ -26,5 +26,9 @@ describe('runAutoSendFeedbackSweep', () => {
     // Aufloesung als "helpful" gelernt werden.
     expect(sql).toContain('sent_at IS NOT NULL')
     expect(sql).toContain('sent_at AS sent_at')
+    const expirySql = String(query.mock.calls[1]?.[0])
+    expect(expirySql).toContain('agent_delivery_ledger')
+    expect(expirySql).toContain("interval '120 days'")
+    expect(expirySql).toContain('LIMIT 1000')
   })
 })

@@ -54,6 +54,7 @@ RSpec.describe '/api/v1/widget/messages', type: :request do
         expect(response).to have_http_status(:success)
         json_response = response.parsed_body
         expect(json_response['content']).to eq(message_params[:content])
+        expect(json_response.dig('content_attributes', 'myinvest_agent_action')).to eq('draft')
       end
 
       it 'creates conversation with custom_attributes when first message is sent' do

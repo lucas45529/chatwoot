@@ -3,6 +3,9 @@ set -Eeuo pipefail
 
 deployment_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 env_path="${ENV_FILE:-$deployment_dir/.env}"
+if [[ -z "${CHATWOOT_BUILD_GIT_SHA:-}" ]]; then
+  export CHATWOOT_BUILD_GIT_SHA="$("$deployment_dir/scripts/resolve-build-revision.sh")"
+fi
 compose=(docker compose --project-directory "$deployment_dir" --env-file "$env_path" -f "$deployment_dir/compose.yaml")
 
 "$deployment_dir/scripts/validate.sh"
@@ -14,6 +17,7 @@ bootstrap_environment=(
   -e ADMIN_NAME -e ADMIN_EMAIL -e ADMIN_PASSWORD
   -e MYINVEST_ACCOUNT_NAME -e ACADEMY_NEW_ACCOUNT_NAME -e ACADEMY_LEGACY_ACCOUNT_NAME
   -e MYINVEST_WEBSITE_URL -e ACADEMY_NEW_WEBSITE_URL -e ACADEMY_LEGACY_WEBSITE_URL
+  -e MYINVEST_REBOOKING_WEBHOOK_URL
 )
 "${compose[@]}" run --rm rails bundle exec rails runner /bootstrap/branding.rb
 "${compose[@]}" run --rm "${bootstrap_environment[@]}" rails bundle exec rails runner /bootstrap/seed.rb

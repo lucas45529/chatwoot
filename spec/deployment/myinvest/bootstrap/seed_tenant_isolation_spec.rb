@@ -13,7 +13,8 @@ RSpec.describe 'MyInvest bootstrap tenant isolation' do # rubocop:disable RSpec/
       'MYINVEST_WEBSITE_URL' => 'https://app.example.test',
       'ACADEMY_NEW_WEBSITE_URL' => 'https://academy.example.test',
       'ACADEMY_LEGACY_WEBSITE_URL' => 'https://legacy.example.test',
-      'FRONTEND_URL' => 'https://support.example.test'
+      'FRONTEND_URL' => 'https://support.example.test',
+      'MYINVEST_REBOOKING_WEBHOOK_URL' => 'https://app.example.test/api/webhooks/chatwoot'
     }
   end
 
@@ -81,5 +82,32 @@ RSpec.describe 'MyInvest bootstrap tenant isolation' do # rubocop:disable RSpec/
     expect(AgentBot.order(:id).ids).to eq(record_ids[:agent_bots])
     expect(InboxMember.order(:id).ids).to eq(record_ids[:inbox_members])
     expect(Account.where(id: accounts.values).order(:id).ids).to eq(record_ids[:accounts])
+    academy_account = accounts.fetch('new_academy')
+    expect(
+      academy_account.custom_attribute_definitions
+                     .where(attribute_model: :conversation_attribute)
+                     .pluck(:attribute_key)
+    ).to include(
+      'myinvest_appointment_owner',
+      'myinvest_appointment_at',
+      'myinvest_appointment_timezone',
+      'myinvest_booking_uid',
+      'myinvest_support_state',
+      'myinvest_review_reason'
+    )
+    expect(
+      academy_account.custom_attribute_definitions
+                     .where(attribute_model: :contact_attribute)
+                     .pluck(:attribute_key)
+    ).to contain_exactly(
+      'myinvest_hubspot_contact_id',
+      'myinvest_hubspot_contact_name',
+      'myinvest_hubspot_contact_status'
+    )
+    expect(academy_account.labels.pluck(:title)).to include(
+      'termin-absage',
+      'rebooking-laeuft',
+      'rebooking-menschlich-pruefen'
+    )
   end
 end

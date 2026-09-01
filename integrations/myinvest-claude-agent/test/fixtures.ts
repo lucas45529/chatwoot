@@ -2,6 +2,8 @@ import { createHmac } from 'node:crypto'
 import type { TenantConfig } from '../src/config.js'
 import type { ChatwootWebhookPayload } from '../src/domain.js'
 
+export const PSEUDONYMIZATION_KEY = 'test-pseudonymization-key-is-independent-2026'
+
 export const tenants: TenantConfig[] = [
   { key: 'saas', accountId: 101, webhookSecret: 'saas-webhook-secret-with-32-bytes', agentBotToken: 'saas-agent-bot-token-with-32-bytes', handoffAssigneeId: 901 },
   { key: 'new_academy', accountId: 202, webhookSecret: 'new-academy-secret-with-32-bytes', agentBotToken: 'new-academy-token-with-32-bytes', handoffAssigneeId: 902 },

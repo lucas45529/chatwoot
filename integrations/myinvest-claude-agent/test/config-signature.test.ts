@@ -7,7 +7,7 @@ import {
   validateSupportAnswerUrl,
 } from '../src/config.js'
 import { verifyChatwootSignature } from '../src/webhook/signature.js'
-import { tenants } from './fixtures.js'
+import { PSEUDONYMIZATION_KEY, tenants } from './fixtures.js'
 
 /** Pflichtfelder, ohne die der Agent nicht startet. */
 const baseEnvironment = {
@@ -18,6 +18,7 @@ const baseEnvironment = {
   TENANTS_JSON: JSON.stringify(tenants),
   SUPPORT_ANSWER_URL: 'https://www.myinvest.example',
   SUPPORT_ANSWER_SECRET: 'a-brain-signing-secret-with-32-chars',
+  PSEUDONYMIZATION_KEY,
 }
 
 describe('tenant configuration', () => {
@@ -81,6 +82,28 @@ describe('tenant configuration', () => {
     expect(() =>
       loadConfig({ ...baseEnvironment, SUPPORT_ANSWER_SECRET: 'too-short-secret' }),
     ).toThrow(/SUPPORT_ANSWER_SECRET/)
+  })
+
+  it('requires an independent production-length pseudonymization key', () => {
+    expect(loadConfig(baseEnvironment).PSEUDONYMIZATION_KEY).toBe(PSEUDONYMIZATION_KEY)
+    expect(() =>
+      loadConfig({ ...baseEnvironment, PSEUDONYMIZATION_KEY: undefined }),
+    ).toThrow(/PSEUDONYMIZATION_KEY/)
+    expect(() =>
+      loadConfig({ ...baseEnvironment, PSEUDONYMIZATION_KEY: 'too-short' }),
+    ).toThrow(/PSEUDONYMIZATION_KEY/)
+    expect(() =>
+      loadConfig({
+        ...baseEnvironment,
+        PSEUDONYMIZATION_KEY: baseEnvironment.SUPPORT_ANSWER_SECRET,
+      }),
+    ).toThrow(/independent/)
+    expect(() =>
+      loadConfig({
+        ...baseEnvironment,
+        PSEUDONYMIZATION_KEY: tenants[0]!.agentBotToken,
+      }),
+    ).toThrow(/independent/)
   })
 
   it('accepts only a credential-free HTTPS origin as the brain endpoint', () => {

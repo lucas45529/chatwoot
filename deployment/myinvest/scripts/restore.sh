@@ -3,6 +3,9 @@ set -Eeuo pipefail
 
 deployment_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 env_path="${ENV_FILE:-$deployment_dir/.env}"
+if [[ -z "${CHATWOOT_BUILD_GIT_SHA:-}" ]]; then
+  export CHATWOOT_BUILD_GIT_SHA="$("$deployment_dir/scripts/resolve-build-revision.sh")"
+fi
 compose=(docker compose --project-directory "$deployment_dir" --env-file "$env_path" -f "$deployment_dir/compose.yaml")
 snapshot="${1:-}"
 
@@ -100,6 +103,7 @@ docker run --rm \
 "${compose[@]}" up -d minio
 "${compose[@]}" run --rm minio-init
 "${compose[@]}" run --rm rails bundle exec rails db:chatwoot_prepare
+"$deployment_dir/scripts/reconcile-readonly-role.sh"
 "${compose[@]}" run --rm -v "$snapshot:/restore:ro" rails \
   bundle exec rails runner /bootstrap/restore_object_storage.rb
 "${compose[@]}" up -d rails

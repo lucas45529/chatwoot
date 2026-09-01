@@ -21,6 +21,12 @@ const rawChatwootWebhookSchema = z.object({
   conversation: z.object({ id: z.number().int().positive() }),
   // Chatwoot liefert nur id und name; die id entscheidet ueber den Kanal.
   inbox: z.object({ id: z.number().int().positive() }).optional(),
+  content_attributes: z
+    .object({
+      myinvest_agent_action: z.enum(['draft', 'preprocessed']).optional(),
+    })
+    .passthrough()
+    .optional(),
 })
 
 /**
@@ -38,6 +44,7 @@ export const chatwootWebhookSchema = rawChatwootWebhookSchema.transform((raw) =>
   account: raw.account,
   conversation: { id: raw.conversation.id },
   inboxId: raw.inbox?.id,
+  agentAction: raw.content_attributes?.myinvest_agent_action,
 }))
 
 export type ChatwootWebhookPayload = z.infer<typeof chatwootWebhookSchema>

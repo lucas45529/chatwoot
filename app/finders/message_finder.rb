@@ -21,6 +21,8 @@ class MessageFinder
   end
 
   def current_messages
+    return messages_by_source_id if @params[:source_id].present?
+
     if @params[:after].present? && @params[:before].present?
       messages_between(@params[:after].to_i, @params[:before].to_i)
     elsif @params[:before].present?
@@ -30,6 +32,13 @@ class MessageFinder
     else
       messages_latest
     end
+  end
+
+  def messages_by_source_id
+    source_id = @params[:source_id].to_s
+    return messages.none unless source_id.bytesize.between?(1, 256)
+
+    messages.where(source_id: source_id).limit(1)
   end
 
   def messages_after(after_id)

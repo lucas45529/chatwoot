@@ -1,15 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   questionFingerprint,
+  supportBrainRequestId,
   type AutoSendLimits,
+  type AutoSendRecord,
   type AutoSendUsage,
 } from '../src/auto-send.js'
-import type { ConversationContext } from '../src/domain.js'
+import type { ConversationContext, TenantKey } from '../src/domain.js'
 import { PostgresKnowledgeRepository } from '../src/knowledge/repository.js'
 import { MessageProcessor } from '../src/processor.js'
 import type { SupportBrainAnswer } from '../src/support-brain.js'
 import { triage } from '../src/triage.js'
-import { incomingPayload, tenants } from './fixtures.js'
+import { incomingPayload, PSEUDONYMIZATION_KEY, tenants } from './fixtures.js'
 
 describe('knowledge isolation', () => {
   it('binds tenant_key and never widens an empty result', async () => {
@@ -54,7 +56,7 @@ function setup(
     limits?: AutoSendLimits
   } = {},
 ) {
-  // Reihenfolge der beiden gefaehrlichen Schritte: die Audit-Zeile muss vor
+  // Reihenfolge des gefaehrlichen Pfads: die atomare Reservierung muss vor
   // der Kundennachricht stehen.
   const sequence: string[] = []
   const answer = vi.fn().mockResolvedValue(options.answer ?? BRAIN_ANSWER)
@@ -80,15 +82,25 @@ function setup(
     contactHash: CONTACT_HASH,
     ...options.context,
   })
-  const usage = vi.fn().mockResolvedValue({
+  const usage: AutoSendUsage = {
     blocked: false,
     conversationCount: 0,
     contactCountLastHour: 0,
     ...options.usage,
-  })
+  }
   const blockConversation = vi.fn().mockResolvedValue(undefined)
-  const record = vi.fn(async () => {
-    sequence.push('record')
+  const reserve = vi.fn(async (entry: AutoSendRecord, limits: AutoSendLimits) => {
+    sequence.push('reserve')
+    if (usage.blocked) {
+      return { reserved: false as const, verdict: 'human_in_conversation' as const, usage }
+    }
+    if (usage.conversationCount >= limits.maxPerConversation) {
+      return { reserved: false as const, verdict: 'conversation_limit' as const, usage }
+    }
+    if (usage.contactCountLastHour >= limits.maxPerContactPerHour) {
+      return { reserved: false as const, verdict: 'contact_rate_limit' as const, usage }
+    }
+    return { reserved: true as const, usage, entry }
   })
   const markSent = vi.fn(async () => {
     sequence.push('mark-sent')
@@ -107,7 +119,17 @@ function setup(
     chatwoot: { sendMessage, sendPrivateNote, saveDraft, setPriority, addLabels, assign, handoff },
     context: { loadContext },
     state,
-    autoSend: { usage, blockConversation, record, markSent },
+    autoSend: { reserve, blockConversation, markSent },
+    conversationLock: {
+      async runExclusive<Result>(
+        _tenantKey: TenantKey,
+        _conversationId: number,
+        operation: () => Promise<Result>,
+      ): Promise<Result> {
+        return operation()
+      },
+    },
+    pseudonymizationKey: PSEUDONYMIZATION_KEY,
     autoSendEnabled: options.autoSendEnabled ?? false,
     autoSendLimits: options.limits ?? LIMITS,
     whatsappInboxIds: new Set([6]),
@@ -124,7 +146,7 @@ function setup(
     handoff,
     loadContext,
     state,
-    autoSend: { usage, blockConversation, record, markSent },
+    autoSend: { reserve, blockConversation, markSent },
     sequence,
   }
 }
@@ -137,11 +159,13 @@ describe('MessageProcessor', () => {
       payload: incomingPayload({ account: { id: 202 } }),
     })
     expect(supported.answer).toHaveBeenCalledWith(
-      expect.objectContaining({ tenant: 'new_academy', channel: 'web' }),
+      expect.objectContaining({
+        tenant: 'new_academy',
+        channel: 'web',
+        requestId: supportBrainRequestId(PSEUDONYMIZATION_KEY, 202, 55),
+      }),
     )
-    expect(supported.autoSend.usage).toHaveBeenCalledWith(
-      expect.objectContaining({ tenantKey: 'new_academy', messageId: 55 }),
-    )
+    expect(supported.autoSend.reserve).not.toHaveBeenCalled()
     expect(supported.saveDraft).toHaveBeenCalledWith(tenants[1], 77, BRAIN_ANSWER.text)
     expect(supported.sendMessage).not.toHaveBeenCalled()
     expect(supported.state.completeHandoff).toHaveBeenCalledWith('new_academy', 55, 77)
@@ -233,8 +257,8 @@ describe('MessageProcessor', () => {
     })
 
     expect(presence.answer).not.toHaveBeenCalled()
-    expect(presence.autoSend.record).toHaveBeenCalledOnce()
-    expect(presence.sequence).toEqual(['record', 'send', 'mark-sent'])
+    expect(presence.autoSend.reserve).toHaveBeenCalledOnce()
+    expect(presence.sequence).toEqual(['reserve', 'send', 'mark-sent'])
     expect(presence.setPriority).not.toHaveBeenCalled()
     expect(presence.handoff).not.toHaveBeenCalled()
     expect(presence.sendMessage).toHaveBeenCalledWith(
@@ -257,7 +281,7 @@ describe('MessageProcessor', () => {
 
     expect(presence.answer).not.toHaveBeenCalled()
     expect(presence.sendMessage).not.toHaveBeenCalled()
-    expect(presence.autoSend.record).not.toHaveBeenCalled()
+    expect(presence.autoSend.reserve).not.toHaveBeenCalled()
     expect(presence.saveDraft).toHaveBeenCalledWith(
       tenants[0],
       77,
@@ -301,6 +325,7 @@ describe('MessageProcessor', () => {
     // Der Agent transportiert die aktuelle Frage und den redigierten Verlauf —
     // und sonst nichts.
     expect(thread.answer).toHaveBeenCalledWith({
+      requestId: supportBrainRequestId(PSEUDONYMIZATION_KEY, 101, 55),
       question: 'Die möchte ich gerne haben :)',
       history: [
         { role: 'agent', text: 'Danke für deine Nachricht. Ein Kollege meldet sich.' },
@@ -382,7 +407,12 @@ describe('MessageProcessor', () => {
       SAFE_ANSWER.text,
     )
     expect(handedOff.sendMessage).not.toHaveBeenCalled()
-    expect(handedOff.autoSend.record).not.toHaveBeenCalled()
+    expect(handedOff.autoSend.reserve).not.toHaveBeenCalled()
+    expect(handedOff.autoSend.blockConversation).toHaveBeenCalledWith({
+      tenantKey: 'saas',
+      conversationId: 77,
+      reason: 'agent_handoff',
+    })
   })
   it('markiert einen bewahrten menschlichen Composertext nie als KI-Draft', async () => {
     const humanDraft = setup({
@@ -484,7 +514,7 @@ describe('MessageProcessor', () => {
       'beratung',
     ])
     expect(firstQuestion.sendMessage).not.toHaveBeenCalled()
-    expect(firstQuestion.autoSend.record).not.toHaveBeenCalled()
+    expect(firstQuestion.autoSend.reserve).not.toHaveBeenCalled()
   })
 
   it('suppresses terminal and concurrently owned deliveries without side effects', async () => {
@@ -493,7 +523,7 @@ describe('MessageProcessor', () => {
       duplicate.state.beginDelivery.mockResolvedValueOnce({ status, acquired: false })
       await duplicate.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
       expect(duplicate.sendMessage).not.toHaveBeenCalled()
-      expect(duplicate.autoSend.record).not.toHaveBeenCalled()
+      expect(duplicate.autoSend.reserve).not.toHaveBeenCalled()
       expect(duplicate.setPriority).not.toHaveBeenCalled()
       expect(duplicate.handoff).not.toHaveBeenCalled()
       expect(duplicate.state.completeHandoff).not.toHaveBeenCalled()
@@ -674,7 +704,7 @@ describe('MessageProcessor auto-send', () => {
       const drafted = setup({ autoSendEnabled: true, answer })
       await drafted.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
       expect(drafted.sendMessage).not.toHaveBeenCalled()
-      expect(drafted.autoSend.record).not.toHaveBeenCalled()
+      expect(drafted.autoSend.reserve).not.toHaveBeenCalled()
       expect(drafted.saveDraft).toHaveBeenCalledWith(tenants[0], 77, SAFE_ANSWER.text)
       expect(drafted.sendPrivateNote).toHaveBeenCalledWith(
         tenants[0],
@@ -684,6 +714,102 @@ describe('MessageProcessor auto-send', () => {
         expect.any(String),
       )
     }
+  })
+
+  it('refreshes Chatwoot human ownership immediately before public send', async () => {
+    const guarded = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
+    guarded.loadContext
+      .mockResolvedValueOnce({
+        turns: [],
+        labels: [],
+        humanRepliedAfterBot: false,
+        humanEverReplied: false,
+        contactHash: CONTACT_HASH,
+      })
+      .mockResolvedValueOnce({
+        turns: [{ role: 'human', text: 'Ich übernehme diese Unterhaltung.' }],
+        labels: [],
+        humanRepliedAfterBot: false,
+        humanEverReplied: true,
+        contactHash: CONTACT_HASH,
+      })
+
+    await guarded.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload(),
+    })
+
+    expect(guarded.loadContext).toHaveBeenCalledTimes(2)
+    expect(guarded.autoSend.blockConversation).toHaveBeenCalledWith({
+      tenantKey: 'saas',
+      conversationId: 77,
+      reason: 'human_reply',
+    })
+    expect(guarded.autoSend.reserve).toHaveBeenCalledOnce()
+    expect(guarded.sendMessage).not.toHaveBeenCalled()
+    expect(guarded.saveDraft).toHaveBeenCalledWith(tenants[0], 77, SAFE_ANSWER.text)
+  })
+
+  it('refreshes AgentState handoff immediately before public send', async () => {
+    const guarded = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
+    guarded.state.isHandedOff
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+
+    await guarded.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload(),
+    })
+
+    expect(guarded.state.isHandedOff).toHaveBeenCalledTimes(2)
+    expect(guarded.autoSend.reserve).toHaveBeenCalledOnce()
+    expect(guarded.autoSend.blockConversation).toHaveBeenCalledWith({
+      tenantKey: 'saas',
+      conversationId: 77,
+      reason: 'agent_handoff',
+    })
+    expect(guarded.sendMessage).not.toHaveBeenCalled()
+    expect(guarded.saveDraft).toHaveBeenCalledWith(tenants[0], 77, SAFE_ANSWER.text)
+  })
+
+  it('reuses the winning reservation payload on an idempotent retry', async () => {
+    const retry = setup({
+      autoSendEnabled: true,
+      answer: { ...SAFE_ANSWER, text: 'Neu berechnete Antwort' },
+    })
+    const reservedEntry: AutoSendRecord = {
+      tenantKey: 'saas',
+      conversationId: 77,
+      messageId: 55,
+      contactHash: CONTACT_HASH,
+      questionHash: 'first-attempt-question-fingerprint',
+      confidence: SAFE_ANSWER.confidence,
+      sourceIds: SAFE_ANSWER.sources.map((source) => source.url),
+      sentText: 'Bereits reservierte Antwort',
+    }
+    retry.autoSend.reserve.mockResolvedValueOnce({
+      reserved: true,
+      usage: {
+        blocked: false,
+        conversationCount: 0,
+        contactCountLastHour: 0,
+      },
+      entry: reservedEntry,
+    })
+
+    await retry.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload(),
+    })
+
+    expect(retry.sendMessage).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      'Bereits reservierte Antwort',
+      55,
+      'answer',
+    )
+    expect(retry.autoSend.reserve).toHaveBeenCalledOnce()
   })
 
   it('bindet Werkzeuge an die signierte Chatwoot-Kontaktadresse', async () => {
@@ -707,7 +833,7 @@ describe('MessageProcessor auto-send', () => {
     await off.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
 
     expect(off.sendMessage).not.toHaveBeenCalled()
-    expect(off.autoSend.record).not.toHaveBeenCalled()
+    expect(off.autoSend.reserve).not.toHaveBeenCalled()
     expect(off.saveDraft).toHaveBeenCalledWith(tenants[0], 77, SAFE_ANSWER.text)
     // Der Grund steht in der internen Notiz, damit ein Mensch es einordnet.
     expect(off.sendPrivateNote).toHaveBeenCalledWith(
@@ -748,7 +874,7 @@ describe('MessageProcessor auto-send', () => {
       reason: 'human_reply',
     })
     expect(afterHuman.sendMessage).not.toHaveBeenCalled()
-    expect(afterHuman.autoSend.record).not.toHaveBeenCalled()
+    expect(afterHuman.autoSend.reserve).not.toHaveBeenCalled()
     expect(afterHuman.saveDraft).toHaveBeenCalledWith(tenants[0], 77, SAFE_ANSWER.text)
     // Neues Thema: gefragt wird die aktuelle Nachricht, der Verlauf ist Kontext.
     expect(afterHuman.answer).toHaveBeenCalledWith(
@@ -765,7 +891,7 @@ describe('MessageProcessor auto-send', () => {
     await afterRestart.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
     expect(afterRestart.autoSend.blockConversation).not.toHaveBeenCalled()
     expect(afterRestart.sendMessage).not.toHaveBeenCalled()
-    expect(afterRestart.autoSend.record).not.toHaveBeenCalled()
+    expect(afterRestart.autoSend.reserve).toHaveBeenCalledOnce()
     expect(afterRestart.sendPrivateNote).toHaveBeenCalledWith(
       tenants[0],
       77,
@@ -830,7 +956,11 @@ describe('MessageProcessor auto-send', () => {
       const limited = setup({ autoSendEnabled: true, answer: SAFE_ANSWER, ...options })
       await limited.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
       expect(limited.sendMessage).not.toHaveBeenCalled()
-      expect(limited.autoSend.record).not.toHaveBeenCalled()
+      if (verdict === 'text_too_long') {
+        expect(limited.autoSend.reserve).not.toHaveBeenCalled()
+      } else {
+        expect(limited.autoSend.reserve).toHaveBeenCalledOnce()
+      }
       expect(limited.sendPrivateNote).toHaveBeenCalledWith(
         tenants[0],
         77,
@@ -860,27 +990,34 @@ describe('MessageProcessor auto-send', () => {
     const audited = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
     await audited.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
 
-    expect(audited.autoSend.record).toHaveBeenCalledWith({
-      tenantKey: 'saas',
-      conversationId: 77,
-      messageId: 55,
-      contactHash: CONTACT_HASH,
-      questionHash: questionFingerprint('saas', 'Wie funktioniert das Onboarding?'),
-      confidence: SAFE_ANSWER.confidence,
-      sourceIds: ['https://hilfe.example.invalid/onboarding'],
-      sentText: SAFE_ANSWER.text,
-    })
+    expect(audited.autoSend.reserve).toHaveBeenCalledWith(
+      {
+        tenantKey: 'saas',
+        conversationId: 77,
+        messageId: 55,
+        contactHash: CONTACT_HASH,
+        questionHash: questionFingerprint(
+          PSEUDONYMIZATION_KEY,
+          'saas',
+          'Wie funktioniert das Onboarding?',
+        ),
+        confidence: SAFE_ANSWER.confidence,
+        sourceIds: ['https://hilfe.example.invalid/onboarding'],
+        sentText: SAFE_ANSWER.text,
+      },
+      LIMITS,
+    )
     // Der Fragetext selbst wird nie auditiert, nur sein Fingerabdruck.
-    expect(JSON.stringify(audited.autoSend.record.mock.calls[0])).not.toContain(
+    expect(JSON.stringify(audited.autoSend.reserve.mock.calls[0])).not.toContain(
       'Wie funktioniert das Onboarding',
     )
     // Audit-Versuch vor dem Send; `sent_at` erst NACH bestaetigtem Send.
-    expect(audited.sequence).toEqual(['record', 'send', 'mark-sent'])
+    expect(audited.sequence).toEqual(['reserve', 'send', 'mark-sent'])
     expect(audited.autoSend.markSent).toHaveBeenCalledWith('saas', 55)
 
     // Ohne Audit-Zeile geht nichts raus.
     const auditFailure = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
-    auditFailure.autoSend.record.mockRejectedValueOnce(new Error('audit log unavailable'))
+    auditFailure.autoSend.reserve.mockRejectedValueOnce(new Error('audit log unavailable'))
     await expect(
       auditFailure.processor.process({ tenant: tenants[0]!, payload: incomingPayload() }),
     ).rejects.toThrow(/audit log unavailable/)
@@ -895,7 +1032,7 @@ describe('MessageProcessor auto-send', () => {
     await expect(
       failed.processor.process({ tenant: tenants[0]!, payload: incomingPayload() }),
     ).rejects.toThrow(/chatwoot timeout/)
-    expect(failed.autoSend.record).toHaveBeenCalledOnce()
+    expect(failed.autoSend.reserve).toHaveBeenCalledOnce()
     expect(failed.autoSend.markSent).not.toHaveBeenCalled()
   })
 })

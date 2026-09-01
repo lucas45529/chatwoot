@@ -57,7 +57,7 @@ payload="$(jq -cn \
   --argjson account "$account_id" \
   --argjson conversation "$conversation_id" \
   --argjson message "$message_id" \
-  '{event:"message_created",id:$message,created_at:$created_at,content:"Ich möchte mit einem Menschen sprechen.",message_type:"incoming",private:false,account:{id:$account},conversation:{id:$conversation}}')"
+  '{event:"message_created",id:$message,created_at:$created_at,content:"Ich möchte mit einem Menschen sprechen.",message_type:"incoming",private:false,content_attributes:{myinvest_agent_action:"draft"},account:{id:$account},conversation:{id:$conversation}}')"
 timestamp="$(date +%s)"
 delivery_id="local-e2e-${message_id}"
 signature="$(TENANT_KEY=saas TIMESTAMP="$timestamp" RAW_BODY="$payload" TENANTS_PATH="$deployment_dir/runtime/tenants.json" \
@@ -116,6 +116,24 @@ cross_tenant_status="$(curl --insecure --silent --output /dev/null --write-out '
   exit 1
 }
 
+# Auto-Send remains off by default. Compose gives exported variables precedence
+# over env files, so override the sourced kill switch only for this recreation.
+restore_default_agent() {
+  local e2e_status=$?
+  local restore_status=0
+  trap - EXIT
+  if ((e2e_status != 0)); then
+    "${compose[@]}" logs --no-color --tail 200 claude-agent >&2 || true
+  fi
+  "${compose[@]}" up -d --no-deps --wait --force-recreate claude-agent >/dev/null 2>&1 || restore_status=$?
+  if ((e2e_status != 0)); then
+    exit "$e2e_status"
+  fi
+  exit "$restore_status"
+}
+trap restore_default_agent EXIT
+AUTO_SEND_ENABLED=true "${compose[@]}" up -d --no-deps --wait --force-recreate claude-agent >/dev/null
+
 # Seed one synthetic source, then exercise Chatwoot's actual message callback,
 # AgentBot listener, SafeFetch, HMAC signing, queue, worker, and reply API.
 # The one-off Rails process alone permits the internal test URL; production
@@ -143,21 +161,26 @@ SQL
   -e E2E_AGENT_URL=http://claude-agent:8080/webhooks/chatwoot \
   rails bundle exec rails runner /bootstrap/e2e_real_path.rb >/dev/null
 
+[[ -n "${LOCAL_FAKE_BRAIN_ANSWER:-}" ]] || {
+  printf 'LOCAL_FAKE_BRAIN_ANSWER is required for the real-path E2E test.\n' >&2
+  exit 1
+}
 real_conversation_id="$(jq -r '.conversation_id' "$deployment_dir/runtime/e2e-real.json")"
 real_message_id="$(jq -r '.message_id' "$deployment_dir/runtime/e2e-real.json")"
 deadline=$((SECONDS + 60))
 until "${compose[@]}" exec -T \
   -e E2E_CONVERSATION_ID="$real_conversation_id" -e E2E_MESSAGE_ID="$real_message_id" \
+  -e E2E_EXPECTED_REPLY="$LOCAL_FAKE_BRAIN_ANSWER" \
   rails bundle exec rails runner '
     conversation = Account.where("custom_attributes ->> ? = ?", "myinvest_tenant_key", "saas")
                           .first!.conversations.find(Integer(ENV.fetch("E2E_CONVERSATION_ID")))
     marker = ENV.fetch("E2E_MESSAGE_ID")
     # Chatwoot uses ActiveRecord::Store for this JSON column, so PostgreSQL sees
     # the serialized JSON string while the model exposes the decoded hash.
-    replies = conversation.messages.outgoing.select do |message|
+    replies = conversation.messages.outgoing.where(private: false).select do |message|
       message.content_attributes["myinvest_agent_delivery_id"] == marker
     end
-    exit(replies.one? && replies.first.content.include?("Lokaler E2E-Antwortpfad erfolgreich.") ? 0 : 1)
+    exit(replies.one? && replies.first.content == ENV.fetch("E2E_EXPECTED_REPLY") ? 0 : 1)
   ' >/dev/null 2>&1; do
   (( SECONDS < deadline )) || {
     printf 'Timed out waiting for the real AgentBot reply path.\n' >&2

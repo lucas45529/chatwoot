@@ -1,10 +1,11 @@
 import {
   autoSendDecision,
   questionFingerprint,
+  supportBrainRequestId,
   type AutoSendLimits,
   type AutoSendLog,
-  type AutoSendUsage,
   type AutoSendVerdict,
+  type ConversationProcessingLock,
 } from './auto-send.js'
 import type { ChatwootPort } from './chatwoot-client.js'
 import type { ChatwootConversationContextStore } from './chatwoot-delivery-repository.js'
@@ -45,6 +46,8 @@ export class MessageProcessor {
       context: ChatwootConversationContextStore
       state: AgentState
       autoSend: AutoSendLog
+      conversationLock: ConversationProcessingLock
+      pseudonymizationKey: string
       autoSendEnabled: boolean
       autoSendLimits: AutoSendLimits
       whatsappInboxIds: ReadonlySet<number>
@@ -52,6 +55,18 @@ export class MessageProcessor {
   ) {}
 
   async process(input: {
+    tenant: TenantConfig
+    payload: ChatwootWebhookPayload
+    isFinalAttempt?: boolean
+  }): Promise<void> {
+    await this.dependencies.conversationLock.runExclusive(
+      input.tenant.key,
+      input.payload.conversation.id,
+      () => this.processExclusive(input),
+    )
+  }
+
+  private async processExclusive(input: {
     tenant: TenantConfig
     payload: ChatwootWebhookPayload
     isFinalAttempt?: boolean
@@ -111,6 +126,11 @@ export class MessageProcessor {
     const question = payload.content.trim()
     const outcome = triage(question)
     const handoff = async (reason: string, detail?: string, draft?: string) => {
+      await this.dependencies.autoSend.blockConversation({
+        tenantKey: tenant.key,
+        conversationId,
+        reason: 'agent_handoff',
+      })
       console.log(
         JSON.stringify({
           event: 'agent_handoff',
@@ -146,11 +166,15 @@ export class MessageProcessor {
       conversationContext.humanEverReplied ||
       conversationContext.turns.some((turn) => turn.role === 'human')
     const humanOwned = humanInConversation || wasHandedOff || humanOnlyLabel
-    if (humanInConversation || humanOnlyLabel) {
+    if (humanInConversation || humanOnlyLabel || wasHandedOff) {
       await this.dependencies.autoSend.blockConversation({
         tenantKey: tenant.key,
         conversationId,
-        reason: humanInConversation ? 'human_reply' : 'human_only_label',
+        reason: humanInConversation
+          ? 'human_reply'
+          : humanOnlyLabel
+            ? 'human_only_label'
+            : 'agent_handoff',
       })
     }
     if (outcome.humanOnly && !humanOwned) {
@@ -176,6 +200,11 @@ export class MessageProcessor {
     } else {
       try {
         answer = await this.dependencies.brain.answer({
+          requestId: supportBrainRequestId(
+            this.dependencies.pseudonymizationKey,
+            tenant.accountId,
+            payload.id,
+          ),
           question,
           history: conversationContext.turns.map(
             (turn): SupportBrainHistoryTurn => ({
@@ -189,10 +218,10 @@ export class MessageProcessor {
             this.dependencies.whatsappInboxIds.has(payload.inboxId)
               ? 'whatsapp'
               : 'web',
-          contact: conversationContext.contactEmail
-            ? { email: conversationContext.contactEmail }
-            : undefined,
-          reviewOnly: reviewOnly || undefined,
+          ...(conversationContext.contactEmail
+            ? { contact: { email: conversationContext.contactEmail } }
+            : {}),
+          ...(reviewOnly ? { reviewOnly: true } : {}),
         })
       } catch (error) {
         console.error(
@@ -225,24 +254,15 @@ export class MessageProcessor {
       }
     }
 
-
     if (answer.action === 'handoff' && !humanOwned) {
       await handoff('brain_handoff', answer.reason, answer.text)
       return
     }
 
-    const usage = await this.dependencies.autoSend.usage({
-      tenantKey: tenant.key,
-      conversationId,
-      messageId: payload.id,
-      contactHash: conversationContext.contactHash,
-    })
     const verdict = autoSendDecision({
       enabled: this.dependencies.autoSendEnabled,
       humanInConversation: humanOwned,
       answer,
-      usage,
-      limits: this.dependencies.autoSendLimits,
     })
     if (verdict === 'auto_send') {
       // Ein Fehler der Chatwoot-API laeuft hier bewusst in den Job-Retry und
@@ -254,8 +274,8 @@ export class MessageProcessor {
         deliveryId: payload.id,
         question,
         answer,
-        usage,
         contactHash: conversationContext.contactHash,
+        previousAgentDraft: conversationContext.previousAgentDraft,
       })
       return
     }
@@ -282,9 +302,8 @@ export class MessageProcessor {
   }
 
   /**
-   * Die automatisch gesendete Antwort. Die Audit-Zeile wird bewusst vor dem
-   * Senden geschrieben: bricht der Sendeversuch danach ab, ist die Obergrenze
-   * lieber zu streng als zu weit.
+   * Eine atomare Reservierung beansprucht genau einen Slot. Erst danach wird
+   * die live Chatwoot-/AgentState-Autorisierung direkt vor dem Send erneuert.
    */
   private async autoAnswer(input: {
     tenant: TenantConfig
@@ -292,25 +311,90 @@ export class MessageProcessor {
     deliveryId: number
     question: string
     answer: SupportBrainAnswer
-    usage: AutoSendUsage
     contactHash?: string
+    previousAgentDraft?: string
   }): Promise<void> {
-    const { tenant, conversationId, deliveryId, answer, usage } = input
-    await this.dependencies.state.markSending(tenant.key, deliveryId)
-    await this.dependencies.autoSend.record({
-      tenantKey: tenant.key,
-      conversationId,
-      messageId: deliveryId,
-      contactHash: input.contactHash,
-      questionHash: questionFingerprint(tenant.key, input.question),
-      confidence: answer.confidence,
-      sourceIds: answer.sources.map((source) => source.url),
-      sentText: answer.text,
+    const { tenant, conversationId, deliveryId, answer } = input
+    const reservation = await this.dependencies.autoSend.reserve(
+      {
+        tenantKey: tenant.key,
+        conversationId,
+        messageId: deliveryId,
+        contactHash: input.contactHash,
+        questionHash: questionFingerprint(
+          this.dependencies.pseudonymizationKey,
+          tenant.key,
+          input.question,
+        ),
+        confidence: answer.confidence,
+        sourceIds: answer.sources.map((source) => source.url),
+        sentText: answer.text,
+      },
+      this.dependencies.autoSendLimits,
+    )
+    if (!reservation.reserved) {
+      await this.prepareDraft({
+        tenant,
+        conversationId,
+        deliveryId,
+        answer,
+        verdict: reservation.verdict,
+        previousAgentDraft: input.previousAgentDraft,
+      })
+      await this.dependencies.state.completeHandoff(tenant.key, deliveryId, conversationId)
+      return
+    }
+
+    const liveContext = await this.dependencies.context.loadContext({
+      accountId: tenant.accountId,
+      conversationDisplayId: conversationId,
+      currentMessageId: deliveryId,
     })
+    if (!liveContext) throw new Error('Chatwoot conversation context is unavailable before send')
+    const liveHandedOff = await this.dependencies.state.isHandedOff(
+      tenant.key,
+      conversationId,
+    )
+    const liveHuman =
+      liveContext.humanEverReplied ||
+      liveContext.turns.some((turn) => turn.role === 'human')
+    const liveHumanOnlyLabel = hasHumanOnlyLabel(liveContext.labels)
+    if (liveHuman || liveHumanOnlyLabel || liveHandedOff) {
+      await this.dependencies.autoSend.blockConversation({
+        tenantKey: tenant.key,
+        conversationId,
+        reason: liveHuman
+          ? 'human_reply'
+          : liveHumanOnlyLabel
+            ? 'human_only_label'
+            : 'agent_handoff',
+      })
+    }
+    const liveVerdict = autoSendDecision({
+      enabled: this.dependencies.autoSendEnabled,
+      humanInConversation: liveHuman || liveHumanOnlyLabel || liveHandedOff,
+      answer,
+    })
+    if (liveVerdict !== 'auto_send') {
+      await this.prepareDraft({
+        tenant,
+        conversationId,
+        deliveryId,
+        answer,
+        verdict: liveVerdict,
+        previousAgentDraft: liveContext.previousAgentDraft,
+      })
+      await this.dependencies.state.completeHandoff(tenant.key, deliveryId, conversationId)
+      return
+    }
+
+    const reservedEntry = reservation.entry
+    const usage = reservation.usage
+    await this.dependencies.state.markSending(tenant.key, deliveryId)
     await this.dependencies.chatwoot.sendMessage(
       tenant,
       conversationId,
-      answer.text,
+      reservedEntry.sentText,
       deliveryId,
       'answer',
     )
@@ -319,7 +403,7 @@ export class MessageProcessor {
     const deterministic = answer.reason === 'deterministic_presence'
     const sourceLine = deterministic
       ? 'Quellen: nicht erforderlich (deterministische Präsenzantwort)'
-      : `Quellen: ${brainSources(answer)}`
+      : `Quellen: ${reservedEntry.sourceIds.join(', ') || 'keine'}`
     const approval = deterministic
       ? 'Freigabe: deterministische Präsenzantwort'
       : `Freigabe: Gehirn safeToAutoSend${answer.reason ? ` (${answer.reason})` : ''}`
@@ -327,7 +411,7 @@ export class MessageProcessor {
       tenant,
       conversationId,
       [
-        `KI-Antwort automatisch gesendet · Confidence ${answer.confidence.toFixed(2)}`,
+        `KI-Antwort automatisch gesendet · Confidence ${reservedEntry.confidence.toFixed(2)}`,
         sourceLine,
         approval +
           ` · Konversation ${usage.conversationCount + 1}/${limits.maxPerConversation}` +
@@ -344,8 +428,8 @@ export class MessageProcessor {
         event: 'agent_auto_answer_sent',
         tenant: tenant.key,
         conversationId,
-        confidence: answer.confidence,
-        sources: answer.sources.length,
+        confidence: reservedEntry.confidence,
+        sources: reservedEntry.sourceIds.length,
       }),
     )
   }

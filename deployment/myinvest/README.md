@@ -140,11 +140,16 @@ The `claude-agent` service builds from `../../integrations/myinvest-claude-agent
 
 Antwortwissen lebt ausschließlich im Website-Gehirn
 `https://www.myinvest-pro.de/api/support/answer`. Der Agent signiert
-`${timestamp}.${rawBody}` mit `SUPPORT_ANSWER_SECRET`; eigenes Modell und
+`${timestamp}.${requestId}.${rawBody}` mit `SUPPORT_ANSWER_SECRET`; die
+Website bindet jede UUID an den Request-Hash und liefert bei bestätigten
+Wiederholungen die dauerhaft gespeicherte Antwort. Eigenes Modell und
 Runtime-Retrieval sind entfernt. Der Tenant steht in jedem signierten Request.
 Das Transportbudget beträgt 65 Sekunden und liegt damit bewusst oberhalb der
 60-Sekunden-Grenze des Website-Endpunkts; ein gültiger Review-Retry wird nicht
 vorzeitig vom Agenten abgebrochen.
+Kontakt- und Fragepseudonyme verwenden ausschließlich den separaten,
+domain-separierten HMAC-Schlüssel `PSEUDONYMIZATION_KEY`; Roh-IDs und
+Kundenangaben landen nicht in Auto-Send- oder Lernmetriken.
 
 Sicherheits-, Datenschutz-, Beschwerde-, Zahlungs-, Vertrags-, Rechts-,
 Steuer- und explizite Menschenanliegen gehen deterministisch zum Team.
@@ -175,14 +180,13 @@ spätere Updates ihn sicher erkennen. Anhangsnachrichten mit `content: null`
 werden zu einem internen Klärungsentwurf normalisiert; ein kurzfristig
 fehlender Chatwoot-Kontext läuft in BullMQ-Retry statt still zu verschwinden.
 
-`AGENT_LEARNING_CHATWOOT_DATABASE_URL` ist eine verpflichtende Read-only-Rolle.
-Sie braucht `SELECT` auf `messages`, `conversations` und `contacts`; der
-Container-Healthcheck prüft alle drei Tabellen. Minimaler Grant:
-
-```sql
-GRANT SELECT ON TABLE public.messages, public.conversations, public.contacts
-TO agent_learning_ro;
-```
+`AGENT_LEARNING_CHATWOOT_DATABASE_URL` nutzt eine eigene PostgreSQL-Rolle.
+`setup-env.sh` erzeugt ihre Zugangsdaten; Initialisierung und `prepare.sh`
+legen die Rolle idempotent an, erzwingen `default_transaction_read_only` und
+vergeben `CONNECT`, Schema-`USAGE` sowie `SELECT` auf bestehende und künftige
+Chatwoot-Tabellen. Sie ist von `POSTGRES_USER` verschieden. Der
+Container-Healthcheck prüft `messages`, `conversations` und `contacts` über
+diese Read-only-Verbindung.
 
 Der Kontaktwert verlässt Chatwoot nur als E-Mail im HMAC-signierten
 Gehirn-Request (für identitätsgebundene Lese-Werkzeuge) und als Hash für
@@ -202,16 +206,20 @@ nachweislich gesendete Zeilen (`sent_at IS NOT NULL`) werden bewertet.
 ./scripts/backup.sh
 ```
 
-Set `BACKUP_GPG_RECIPIENT` to the offline recovery key and `BACKUP_OFFSITE_REMOTE` to a configured rclone destination such as `recovery:MyInvest/Backups/Chatwoot`. Schedule the script from the host, for example daily at 02:30 UTC. Local retention defaults to 14 days. The adjacent `*.offsite-receipt.json` records the immutable remote path and ciphertext SHA-256 without secrets; the only retained local payload is `*.tar.gpg`.
+Set `BACKUP_GPG_RECIPIENT` to the offline recovery key, `BACKUP_GPG_SIGNING_KEY` to the dedicated backup-origin signing key, and `BACKUP_OFFSITE_REMOTE` to a configured rclone destination such as `recovery:MyInvest/Backups/Chatwoot`. Schedule the script from the host, for example daily at 02:30 UTC. Local retention defaults to 14 days. The adjacent signed `*.offsite-receipt.json` and `*.asc` bind the immutable remote path and ciphertext SHA-256 to the origin key; the encrypted archive, receipt, and signature are uploaded immutably.
 
 `backup.sh` holds a host-user-wide `flock` under `$XDG_STATE_HOME` (or `~/.local/state`) for its complete lifetime. A second invocation fails before it pauses a service or creates plaintext staging, including when the two invocations originate from different immutable release directories.
 
-Run a real non-destructive recovery proof regularly on an isolated recovery host that has the offline private key. Use the remote and checksum from that receipt; the command downloads the ciphertext, verifies its SHA-256, authenticates/decrypts the AEAD archive, and checks every inner snapshot file before discarding its temporary directory:
+Run a real non-destructive recovery proof at least weekly on an isolated recovery host that has the offline decryption key and the pinned backup-origin public key. `report-restore-probe.sh` verifies the receipt signature against the exact fingerprint, downloads the immutable remote ciphertext, verifies its SHA-256, authenticates/decrypts the AEAD archive, checks every inner snapshot file and both PostgreSQL dump catalogs, discards its temporary directory, then signs and reports only the snapshot identifier, result, and timestamp to the support canary. It reports failed proofs too and preserves their non-zero exit:
 
 ```bash
-./scripts/verify-offsite-backup.sh \
-  ./backups/20260816T023000Z.offsite-receipt.json
+BACKUP_GPG_SIGNER_FINGERPRINT='full-origin-signing-key-fingerprint' \
+SUPPORT_RESTORE_PROBE_SECRET='shared-secret-from-secure-store' \
+  ./scripts/report-restore-probe.sh \
+  ./backups/20260816T023000Z.offsite-receipt.json \
+  https://www.myinvest-pro.de/api/internal/support-restore-probe
 ```
+Schedule this command on the isolated recovery host after syncing each receipt together with its `.asc` signature. The canary alarms when the latest proof failed or is older than eight days. `SUPPORT_RESTORE_PROBE_SECRET` exists only on the isolated recovery host and the website verifier—never on the protected Chatwoot host—and is never reused as an AgentBot or backup-origin key.
 
 Only after this proof should a restore be approved. Materialize plaintext only inside the isolated recovery root, using the same receipt; the recovery script refuses an existing target and needs an exact confirmation:
 

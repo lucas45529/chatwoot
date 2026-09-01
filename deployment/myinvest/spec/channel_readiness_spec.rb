@@ -293,7 +293,7 @@ class ChannelReadinessSpec < Minitest::Test
           previous="$argument"
         done
         [ "$selected_env" != "$ENV_FILE" ]
-        [ "$(stat -c %a "$selected_env")" = 600 ]
+        ruby -e 'exit((File.stat(ARGV.fetch(0)).mode & 0o777) == 0o600 ? 0 : 1)' "$selected_env"
         for forbidden in ADMIN_PASSWORD POSTGRES_ADMIN_PASSWORD MINIO_ROOT_PASSWORD ANTHROPIC_API_KEY \
           AWS_SECRET_ACCESS_KEY BACKUP_GPG_RECIPIENT CLAUDE_AGENT_DATABASE_PASSWORD \
           ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY \

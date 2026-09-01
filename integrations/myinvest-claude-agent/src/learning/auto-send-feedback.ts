@@ -136,6 +136,22 @@ export async function runAutoSendFeedbackSweep(input: {
     else if (rating === 'none') result.undecided += 1
     else result.corrected += 1
   }
+  // Delivery-Idempotenz muss nur das Replay-/Retry-Fenster ueberleben. Der
+  // bestehende periodische Sweep entfernt hoechstens 1.000 Altzeilen je Lauf,
+  // statt eine ungebremste Loeschung in eine Migration zu legen.
+  await input.agentPool.query(
+    `WITH expired AS (
+       SELECT tenant_key, message_id
+         FROM agent_delivery_ledger
+        WHERE updated_at < now() - interval '120 days'
+        ORDER BY updated_at
+        LIMIT 1000
+     )
+     DELETE FROM agent_delivery_ledger AS ledger
+      USING expired
+      WHERE ledger.tenant_key = expired.tenant_key
+        AND ledger.message_id = expired.message_id`,
+  )
   return result
 }
 

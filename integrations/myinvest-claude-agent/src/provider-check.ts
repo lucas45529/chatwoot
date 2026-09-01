@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { loadConfig } from './config.js'
 import { SupportBrainClient } from './support-brain.js'
 
@@ -9,6 +10,7 @@ const client = new SupportBrainClient({
 })
 
 await client.answer({
+  requestId: randomUUID(),
   question: 'Ist die Support-Antwort-API erreichbar?',
   history: [],
   tenant: 'saas',

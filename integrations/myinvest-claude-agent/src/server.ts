@@ -2,7 +2,10 @@ import express from 'express'
 import { Queue, Worker } from 'bullmq'
 import { Redis } from 'ioredis'
 import pg from 'pg'
-import { PostgresAutoSendLog } from './auto-send-repository.js'
+import {
+  PostgresAutoSendLog,
+  PostgresConversationProcessingLock,
+} from './auto-send-repository.js'
 import { ChatwootClient } from './chatwoot-client.js'
 import { PostgresChatwootDeliveryStore } from './chatwoot-delivery-repository.js'
 import { loadConfig } from './config.js'
@@ -18,7 +21,10 @@ const config = loadConfig()
 const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null })
 const pool = new pg.Pool({ connectionString: config.DATABASE_URL, max: 10 })
 const chatwootPool = new pg.Pool({ connectionString: config.CHATWOOT_DATABASE_URL, max: 4 })
-const deliveryStore = new PostgresChatwootDeliveryStore(chatwootPool)
+const deliveryStore = new PostgresChatwootDeliveryStore(
+  chatwootPool,
+  config.PSEUDONYMIZATION_KEY,
+)
 await deliveryStore.healthCheck()
 const queue = new Queue<DeliveryJob>(QUEUE_NAME, { connection: redis })
 const deliveryQueue = new DeliveryQueue(queue, {
@@ -26,6 +32,7 @@ const deliveryQueue = new DeliveryQueue(queue, {
 })
 const state = new PostgresAgentState(pool)
 const autoSendLog = new PostgresAutoSendLog(pool)
+const conversationLock = new PostgresConversationProcessingLock(pool)
 const brain: SupportBrainPort = config.LOCAL_FAKE_BRAIN_ANSWER
   ? {
       async answer() {
@@ -54,6 +61,8 @@ const processor = new MessageProcessor({
     maxPerConversation: config.AUTO_SEND_MAX_PER_CONVERSATION,
     maxPerContactPerHour: config.AUTO_SEND_MAX_PER_CONTACT_PER_HOUR,
   },
+  conversationLock,
+  pseudonymizationKey: config.PSEUDONYMIZATION_KEY,
   whatsappInboxIds: config.whatsappInboxIds,
 })
 const controller = new WebhookController({

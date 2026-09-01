@@ -1,6 +1,7 @@
 class Webhooks::Trigger
   SUPPORTED_ERROR_HANDLE_EVENTS = %w[message_created message_updated].freeze
-  RETRYABLE_AGENT_BOT_STATUSES = [429, 500].freeze
+  RETRYABLE_TRANSIENT_STATUSES = [408, 425, 429].freeze
+  SIGNED_DELIVERY_TYPES = %i[account_webhook api_inbox_webhook].freeze
 
   class RetryableError < StandardError
     attr_reader :status
@@ -26,7 +27,7 @@ class Webhooks::Trigger
   def execute
     perform_request
   rescue StandardError => e
-    raise RetryableError.new(status: http_status(e), message: e.message) if retryable_agent_bot_error?(e)
+    raise RetryableError.new(status: http_status(e), message: e.message) if retryable_webhook_error?(e)
 
     handle_failure(e)
   end
@@ -122,8 +123,21 @@ class Webhooks::Trigger
     timeout&.positive? ? timeout : 5
   end
 
-  def retryable_agent_bot_error?(error)
-    @webhook_type == :agent_bot_webhook && RETRYABLE_AGENT_BOT_STATUSES.include?(http_status(error))
+  def retryable_webhook_error?(error)
+    retryable_delivery? && transient_error?(error)
+  end
+
+  def retryable_delivery?
+    return true if @webhook_type == :agent_bot_webhook
+
+    SIGNED_DELIVERY_TYPES.include?(@webhook_type) && @secret.present?
+  end
+
+  def transient_error?(error)
+    return true if error.is_a?(SafeFetch::FetchError)
+
+    status = http_status(error)
+    RETRYABLE_TRANSIENT_STATUSES.include?(status) || status&.between?(500, 599)
   end
 
   def http_status(error)

@@ -31,6 +31,7 @@ begin
     sender: contact,
     message_type: :incoming,
     content: 'Kontoeinrichtung',
+    content_attributes: { 'myinvest_agent_action' => 'draft' },
     private: false
   )
 ensure

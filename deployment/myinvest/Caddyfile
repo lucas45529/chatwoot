@@ -27,12 +27,13 @@
 	}
 
 	# Das eingebettete Chat-Widget lebt davon, in fremden Seiten zu laufen:
-	# `widgets_controller` loescht X-Frame-Options bewusst. Ein globaler
-	# Caddy-Header setzt ihn danach wieder und laesst das Chatfenster auf
-	# www.myinvest-pro.de leer, waehrend der Launcher normal erscheint —
-	# ein Fehlerbild, das erst beim echten Einbetten auffaellt.
-	# Alles andere, insbesondere /app, bleibt klickjacking-geschuetzt.
-	@protected not path /widget /widget/* /packs/* /api/v1/widget /api/v1/widget/*
+	# `widgets_controller` loescht X-Frame-Options bewusst. Die Mitarbeiter-App
+	# unter /app darf zusaetzlich nur in den beiden produktiven Intern-Urspruengen
+	# laufen. Caddy entfernt dafuer den SAMEORIGIN-Header von Rails und ersetzt
+	# ihn durch eine enge CSP; alle anderen Routen bleiben geschuetzt.
+	@app path /app /app/*
+
+	@protected not path /widget /widget/* /packs/* /api/v1/widget /api/v1/widget/* /app /app/*
 	header @protected X-Frame-Options "SAMEORIGIN"
 
 	@root path /
@@ -46,6 +47,21 @@
 	handle /_agent/webhooks/chatwoot {
 		uri strip_prefix /_agent
 		reverse_proxy claude-agent:8080
+	}
+
+	handle @app {
+		reverse_proxy rails:3000 {
+			header_up X-Forwarded-Proto https
+			header_down -X-Frame-Options
+			header_down Content-Security-Policy "frame-ancestors 'self' https://www.myinvest-pro.de https://app.myinvest-pro.de"
+			import {$INGRESS_MODE:direct}
+			health_uri /health
+			health_interval 30s
+			health_timeout 5s
+			health_headers {
+				X-Forwarded-Proto https
+			}
+		}
 	}
 
 	handle {
