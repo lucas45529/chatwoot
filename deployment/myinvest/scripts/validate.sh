@@ -196,7 +196,11 @@ else
   done
 fi
 
-if command -v jq >/dev/null 2>&1 && ! jq -e '
+if [[ "${ALLOW_UNBOOTSTRAPPED_TENANTS:-false}" == true &&
+      "$TENANTS_JSON" == '[]' &&
+      "$AUTO_SEND_ENABLED" == false ]]; then
+  :
+elif command -v jq >/dev/null 2>&1 && ! jq -e '
   type == "array" and
   ((map(.key) | sort) == ["legacy_academy", "new_academy", "saas"]) and
   all(.[];

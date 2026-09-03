@@ -16,7 +16,7 @@ Prerequisites are a dedicated EU host (minimum 4 vCPU/8 GB RAM), Docker Engine w
 ./scripts/setup-env.sh
 chmod 600 .env
 ${EDITOR:-vi} .env
-./scripts/validate.sh
+ALLOW_UNBOOTSTRAPPED_TENANTS=true ./scripts/validate.sh
 ./scripts/prepare.sh
 ./scripts/bootstrap.sh
 ./scripts/smoke.sh

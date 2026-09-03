@@ -8,7 +8,7 @@ if [[ -z "${CHATWOOT_BUILD_GIT_SHA:-}" ]]; then
 fi
 compose=(docker compose --project-directory "$deployment_dir" --env-file "$env_path" -f "$deployment_dir/compose.yaml")
 
-"$deployment_dir/scripts/validate.sh"
+ALLOW_UNBOOTSTRAPPED_TENANTS=true "$deployment_dir/scripts/validate.sh"
 "${compose[@]}" up -d postgres redis minio
 "${compose[@]}" run --rm minio-init
 # Chatwoot intentionally runs as a non-superuser; only this approved preparation
