@@ -38,6 +38,7 @@ done
 
 "${compose[@]}" exec -T \
   -e MYINVEST_ACCOUNT_NAME -e ACADEMY_NEW_ACCOUNT_NAME -e ACADEMY_LEGACY_ACCOUNT_NAME \
+  -e INTERN_SSO_EMAIL -e INTERN_SSO_RETURN_PATH \
   rails bundle exec rails runner '
   expected = [ENV.fetch("MYINVEST_ACCOUNT_NAME"), ENV.fetch("ACADEMY_NEW_ACCOUNT_NAME"), ENV.fetch("ACADEMY_LEGACY_ACCOUNT_NAME")]
   missing = expected - Account.where(name: expected).pluck(:name)
@@ -48,6 +49,20 @@ done
     routing_valid = !inbox.enable_auto_assignment? && inbox.agent_bot_inbox&.active?
     abort("Invalid AgentBot routing for #{inbox.name}") unless routing_valid
   end
+  target = ENV.fetch("INTERN_SSO_RETURN_PATH").match(%r{\A/app/accounts/([1-9][0-9]*)/inbox/([1-9][0-9]*)\z})
+  abort("Invalid Intern SSO target") unless target
+  target_account_id = Integer(target[1], 10)
+  target_inbox_id = Integer(target[2], 10)
+  user = User.from_email(ENV.fetch("INTERN_SSO_EMAIL"))
+  abort("Missing dedicated Intern SSO user") unless user
+  abort("Intern SSO user must not be a SuperAdmin") if user.is_a?(SuperAdmin)
+  account_ids = AccountUser.where(user: user).distinct.order(:account_id).pluck(:account_id)
+  abort("Intern SSO user must belong to exactly one account") unless account_ids == [target_account_id]
+  inbox = Inbox.find_by(id: target_inbox_id, account_id: target_account_id)
+  abort("Intern SSO target inbox is invalid") unless inbox
+  abort("Intern SSO user is not assigned to the target inbox") unless InboxMember.exists?(user: user, inbox: inbox)
+  foreign_inbox = InboxMember.joins(:inbox).where(user: user).where.not(inboxes: { account_id: target_account_id }).exists?
+  abort("Intern SSO user has a foreign inbox membership") if foreign_inbox
 '
 
 "${compose[@]}" exec -T rails ruby -rsocket -e \

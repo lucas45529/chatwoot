@@ -6,7 +6,7 @@ require 'securerandom'
 require_relative 'rebooking_bridge'
 
 required = %w[
-  ADMIN_NAME ADMIN_EMAIL MYINVEST_ACCOUNT_NAME
+  ADMIN_NAME ADMIN_EMAIL INTERN_SSO_EMAIL INTERN_SSO_PASSWORD MYINVEST_ACCOUNT_NAME
   ACADEMY_NEW_ACCOUNT_NAME ACADEMY_LEGACY_ACCOUNT_NAME
   MYINVEST_WEBSITE_URL ACADEMY_NEW_WEBSITE_URL ACADEMY_LEGACY_WEBSITE_URL
   MYINVEST_REBOOKING_WEBHOOK_URL
@@ -65,6 +65,15 @@ ActiveRecord::Base.transaction do
     admin.skip_confirmation!
     admin.save!
   end
+  intern_sso_user = User.from_email(ENV.fetch('INTERN_SSO_EMAIL')) || User.new
+  intern_sso_user.name = ENV.fetch('ADMIN_NAME')
+  intern_sso_user.email = ENV.fetch('INTERN_SSO_EMAIL')
+  intern_sso_user.password = ENV.fetch('INTERN_SSO_PASSWORD')
+  intern_sso_user.password_confirmation = ENV.fetch('INTERN_SSO_PASSWORD')
+  intern_sso_user.skip_confirmation!
+  intern_sso_user.save!
+  raise 'Intern SSO user must not be a SuperAdmin' if intern_sso_user.is_a?(SuperAdmin)
+
   integration_user = User.from_email('support-bridge@myinvest.internal')
   unless integration_user
     password = SecureRandom.urlsafe_base64(48)
@@ -91,6 +100,12 @@ ActiveRecord::Base.transaction do
     account.save!
     AccountUser.find_or_create_by!(account: account, user: admin) do |membership|
       membership.role = :administrator
+    end
+    if key == 'saas'
+      AccountUser.where(user: intern_sso_user).where.not(account: account).destroy_all
+      sso_membership = AccountUser.find_or_initialize_by(account: account, user: intern_sso_user)
+      sso_membership.role = :administrator
+      sso_membership.save!
     end
 
     managed_bots = AgentBot.where(
@@ -120,6 +135,13 @@ ActiveRecord::Base.transaction do
     inbox.update!(enable_auto_assignment: false)
 
     InboxMember.find_or_create_by!(inbox: inbox, user: admin)
+    if key == 'saas'
+      InboxMember.joins(:inbox)
+        .where(user: intern_sso_user)
+        .where.not(inboxes: { account_id: account.id })
+        .destroy_all
+      InboxMember.find_or_create_by!(inbox: inbox, user: intern_sso_user)
+    end
     bot_inbox = AgentBotInbox.find_or_initialize_by(inbox: inbox)
     bot_inbox.agent_bot = agent_bot
     bot_inbox.status = :active
@@ -143,6 +165,7 @@ ActiveRecord::Base.transaction do
     tenant_credentials << {
       key: key,
       accountId: account.id,
+      inboxId: inbox.id,
       webhookSecret: agent_bot.secret,
       handoffAssigneeId: admin.id,
       agentBotToken: agent_bot.access_token.token,

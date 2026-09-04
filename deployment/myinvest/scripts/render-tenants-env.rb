@@ -13,6 +13,7 @@ abort 'Tenant credentials do not contain the exact three canonical keys' unless 
 
 tenants.each do |tenant|
   abort 'Invalid tenant account ID' unless tenant.fetch('accountId').is_a?(Integer) && tenant.fetch('accountId').positive?
+  abort 'Invalid tenant inbox ID' unless tenant.fetch('inboxId').is_a?(Integer) && tenant.fetch('inboxId').positive?
   %w[webhookSecret agentBotToken].each do |key|
     abort "Invalid tenant credential: #{key}" unless tenant.fetch(key).is_a?(String) && tenant.fetch(key).length >= 24
   end
@@ -25,6 +26,11 @@ lines = File.readlines(env_path, chomp: true)
 replacement = "TENANTS_JSON='#{json}'"
 index = lines.index { |line| line.start_with?('TENANTS_JSON=') }
 index ? lines[index] = replacement : lines << replacement
+
+support = tenants.find { |tenant| tenant.fetch('key') == 'saas' }
+return_path = "INTERN_SSO_RETURN_PATH=/app/accounts/#{support.fetch('accountId')}/inbox/#{support.fetch('inboxId')}"
+return_path_index = lines.index { |line| line.start_with?('INTERN_SSO_RETURN_PATH=') }
+return_path_index ? lines[return_path_index] = return_path : lines << return_path
 
 temporary_path = "#{env_path}.tmp.#{Process.pid}"
 File.open(temporary_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|

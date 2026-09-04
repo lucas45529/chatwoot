@@ -10,6 +10,8 @@ interface TokenPayload {
   iat: number
   exp: number
   nonce: string
+  accountId: number
+  inboxId: number
 }
 
 export interface InternSsoConfig {
@@ -86,7 +88,11 @@ export function verifyInternSsoToken(
     !Number.isSafeInteger((payload as Partial<TokenPayload>).iat) ||
     !Number.isSafeInteger((payload as Partial<TokenPayload>).exp) ||
     typeof (payload as Partial<TokenPayload>).nonce !== 'string' ||
-    !NONCE_PATTERN.test((payload as Partial<TokenPayload>).nonce ?? '')
+    !NONCE_PATTERN.test((payload as Partial<TokenPayload>).nonce ?? '') ||
+    !Number.isSafeInteger((payload as Partial<TokenPayload>).accountId) ||
+    ((payload as Partial<TokenPayload>).accountId ?? 0) <= 0 ||
+    !Number.isSafeInteger((payload as Partial<TokenPayload>).inboxId) ||
+    ((payload as Partial<TokenPayload>).inboxId ?? 0) <= 0
   ) {
     throw new InternSsoError(401, 'invalid ticket')
   }
@@ -129,6 +135,16 @@ export class InternSsoService {
       this.config.audience,
       now,
     )
+    const target = this.config.returnPath.match(
+      /^\/app\/accounts\/([1-9][0-9]*)\/inbox\/([1-9][0-9]*)$/,
+    )
+    if (!target) throw new InternSsoError(503, 'invalid support target')
+    if (
+      payload.accountId !== Number(target[1]) ||
+      payload.inboxId !== Number(target[2])
+    ) {
+      throw new InternSsoError(401, 'invalid ticket target')
+    }
     const nonceKey = createHash('sha256').update(payload.nonce).digest('hex')
     let claimed: 'OK' | null
     try {

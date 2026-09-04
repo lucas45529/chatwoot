@@ -4,6 +4,7 @@ import { tenantKeySchema, type TenantKey } from './domain.js'
 const tenantSchema = z.object({
   key: tenantKeySchema,
   accountId: z.number().int().positive(),
+  inboxId: z.number().int().positive(),
   webhookSecret: z.string().min(24),
   agentBotToken: z.string().min(24),
   // Chatwoot-User dieses Accounts, der uebergebene Gespraeche bekommt.
@@ -169,6 +170,16 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     )
   ) {
     throw new Error('SUPPORT_CHATWOOT_SSO_SECRET must be independent')
+  }
+  const support = tenants.requireByKey('saas')
+  const configuredSsoTarget = env.INTERN_SSO_RETURN_PATH.match(
+    /^\/app\/accounts\/([1-9][0-9]*)\/inbox\/([1-9][0-9]*)$/,
+  )
+  if (
+    Number(configuredSsoTarget?.[1]) !== support.accountId ||
+    Number(configuredSsoTarget?.[2]) !== support.inboxId
+  ) {
+    throw new Error('INTERN_SSO_RETURN_PATH must target the saas account inbox')
   }
   return {
     ...env,

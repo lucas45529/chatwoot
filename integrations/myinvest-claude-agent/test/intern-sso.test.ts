@@ -20,6 +20,8 @@ function ticket(overrides: Record<string, unknown> = {}, secret = SECRET): strin
       iat: NOW,
       exp: NOW + 45,
       nonce: 'abcdefghijklmnopqrstuvwx',
+      accountId: 1,
+      inboxId: 1,
       ...overrides,
     }),
     'utf8',
@@ -102,6 +104,22 @@ describe('Intern-SSO', () => {
     expect(session.cookie).toContain('cw_d_session_info=')
     expect(session.cookie).toContain('Secure; SameSite=Lax')
     expect(session.cookie).not.toContain(config.password)
+  })
+
+  it('bindet das Ticket an genau den konfigurierten Account und die Inbox', async () => {
+    const service = new InternSsoService(
+      config,
+      { set: vi.fn().mockResolvedValue('OK') },
+      vi.fn().mockResolvedValue(authResponse()),
+      () => NOW,
+    )
+
+    await expect(
+      service.createSession(ticket({ accountId: 2 })),
+    ).rejects.toMatchObject({ status: 401 })
+    await expect(
+      service.createSession(ticket({ inboxId: 2 })),
+    ).rejects.toMatchObject({ status: 401 })
   })
 
   it('weist Wiederholung, Redis-Ausfall, MFA und Session-Limit fail-closed ab', async () => {

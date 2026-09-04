@@ -12,13 +12,16 @@ command -v openssl >/dev/null 2>&1 || {
 
 if [[ -e "$env_path" ]]; then
   if grep '__GENERATE' "$env_path" |
-    grep -Ev '^(IMPORT_ID_HMAC_KEY=__GENERATE_IMPORT_ID_HMAC_KEY__|SUPPORT_CHATWOOT_SSO_SECRET=__GENERATE_SUPPORT_CHATWOOT_SSO_SECRET__|AGENT_LEARNING_DATABASE_PASSWORD=__GENERATE_AGENT_LEARNING_DATABASE_PASSWORD__|AGENT_LEARNING_CHATWOOT_DATABASE_URL=__GENERATE_CHATWOOT_READONLY_DATABASE_URL__|MINIO_ROOT_USER=__GENERATE_MINIO_ROOT_USER__|MINIO_ROOT_PASSWORD=__GENERATE_MINIO_ROOT_PASSWORD__|STORAGE_ACCESS_KEY_ID=__GENERATE_STORAGE_ACCESS_KEY_ID__|STORAGE_SECRET_ACCESS_KEY=__GENERATE_STORAGE_SECRET_ACCESS_KEY__)$' |
+    grep -Ev '^(IMPORT_ID_HMAC_KEY=__GENERATE_IMPORT_ID_HMAC_KEY__|SUPPORT_CHATWOOT_SSO_SECRET=__GENERATE_SUPPORT_CHATWOOT_SSO_SECRET__|INTERN_SSO_PASSWORD=__GENERATE_INTERN_SSO_PASSWORD__|AGENT_LEARNING_DATABASE_PASSWORD=__GENERATE_AGENT_LEARNING_DATABASE_PASSWORD__|AGENT_LEARNING_CHATWOOT_DATABASE_URL=__GENERATE_CHATWOOT_READONLY_DATABASE_URL__|MINIO_ROOT_USER=__GENERATE_MINIO_ROOT_USER__|MINIO_ROOT_PASSWORD=__GENERATE_MINIO_ROOT_PASSWORD__|STORAGE_ACCESS_KEY_ID=__GENERATE_STORAGE_ACCESS_KEY_ID__|STORAGE_SECRET_ACCESS_KEY=__GENERATE_STORAGE_SECRET_ACCESS_KEY__)$' |
     grep -q .; then
     printf 'Refusing to use environment file with unknown unresolved placeholders: %s\n' "$env_path" >&2
     exit 1
   fi
   if ! grep -Eq '^IMPORT_ID_HMAC_KEY=.+$' "$env_path" ||
      ! grep -Eq '^SUPPORT_CHATWOOT_SSO_SECRET=.+$' "$env_path" ||
+     ! grep -Eq '^INTERN_SSO_EMAIL=.+$' "$env_path" ||
+     ! grep -Eq '^INTERN_SSO_PASSWORD=.+$' "$env_path" ||
+     ! grep -Eq '^INTERN_SSO_RETURN_PATH=.+$' "$env_path" ||
      ! grep -Eq '^AGENT_LEARNING_DATABASE_USER=.+$' "$env_path" ||
      ! grep -Eq '^AGENT_LEARNING_DATABASE_PASSWORD=.+$' "$env_path" ||
      ! grep -Eq '^AGENT_LEARNING_CHATWOOT_DATABASE_URL=.+$' "$env_path" ||
@@ -26,7 +29,7 @@ if [[ -e "$env_path" ]]; then
      ! grep -Eq '^MINIO_ROOT_PASSWORD=.+$' "$env_path" ||
      ! grep -Eq '^STORAGE_ACCESS_KEY_ID=.+$' "$env_path" ||
      ! grep -Eq '^STORAGE_SECRET_ACCESS_KEY=.+$' "$env_path" ||
-     grep -Eq '^(SUPPORT_CHATWOOT_SSO_SECRET=__GENERATE_SUPPORT_CHATWOOT_SSO_SECRET__|MINIO_ROOT_USER=__GENERATE_MINIO_ROOT_USER__|MINIO_ROOT_PASSWORD=__GENERATE_MINIO_ROOT_PASSWORD__|STORAGE_ACCESS_KEY_ID=__GENERATE_STORAGE_ACCESS_KEY_ID__|STORAGE_SECRET_ACCESS_KEY=__GENERATE_STORAGE_SECRET_ACCESS_KEY__)$' "$env_path"; then
+     grep -Eq '^(SUPPORT_CHATWOOT_SSO_SECRET=__GENERATE_SUPPORT_CHATWOOT_SSO_SECRET__|INTERN_SSO_PASSWORD=__GENERATE_INTERN_SSO_PASSWORD__|MINIO_ROOT_USER=__GENERATE_MINIO_ROOT_USER__|MINIO_ROOT_PASSWORD=__GENERATE_MINIO_ROOT_PASSWORD__|STORAGE_ACCESS_KEY_ID=__GENERATE_STORAGE_ACCESS_KEY_ID__|STORAGE_SECRET_ACCESS_KEY=__GENERATE_STORAGE_SECRET_ACCESS_KEY__)$' "$env_path"; then
     umask 077
     temporary_path="${env_path}.tmp.$$"
     trap 'rm -f -- "$temporary_path"' EXIT
@@ -41,6 +44,15 @@ if [[ -e "$env_path" ]]; then
     fi
     import_id_hmac_key="$(openssl rand -hex 32)"
     support_chatwoot_sso_secret="$(openssl rand -hex 32)"
+    intern_sso_email_line="$(grep -E '^INTERN_SSO_EMAIL=' "$env_path" | tail -n 1 || true)"
+    intern_sso_email="${intern_sso_email_line#*=}"
+    [[ -n "$intern_sso_email" ]] || intern_sso_email='support-intern@myinvest.internal'
+    intern_sso_password_line="$(grep -E '^INTERN_SSO_PASSWORD=' "$env_path" | tail -n 1 || true)"
+    intern_sso_password="${intern_sso_password_line#*=}"
+    if [[ -z "$intern_sso_password" ||
+          "$intern_sso_password" == '__GENERATE_INTERN_SSO_PASSWORD__' ]]; then
+      intern_sso_password="Mw-$(openssl rand -hex 18)!S9"
+    fi
     minio_root_user="root-$(openssl rand -hex 12)"
     minio_root_password="$(openssl rand -hex 32)"
     storage_access_key_id="app-$(openssl rand -hex 12)"
@@ -50,6 +62,8 @@ if [[ -e "$env_path" ]]; then
       case "$line" in
         IMPORT_ID_HMAC_KEY=|IMPORT_ID_HMAC_KEY=__GENERATE_IMPORT_ID_HMAC_KEY__) line="IMPORT_ID_HMAC_KEY=$import_id_hmac_key" ;;
         SUPPORT_CHATWOOT_SSO_SECRET=|SUPPORT_CHATWOOT_SSO_SECRET=__GENERATE_SUPPORT_CHATWOOT_SSO_SECRET__) line="SUPPORT_CHATWOOT_SSO_SECRET=$support_chatwoot_sso_secret" ;;
+        INTERN_SSO_EMAIL=) line="INTERN_SSO_EMAIL=$intern_sso_email" ;;
+        INTERN_SSO_PASSWORD=|INTERN_SSO_PASSWORD=__GENERATE_INTERN_SSO_PASSWORD__) line="INTERN_SSO_PASSWORD=$intern_sso_password" ;;
         AGENT_LEARNING_DATABASE_USER=) line="AGENT_LEARNING_DATABASE_USER=$agent_learning_database_user" ;;
         AGENT_LEARNING_DATABASE_PASSWORD=* ) line="AGENT_LEARNING_DATABASE_PASSWORD=$agent_learning_database_password" ;;
         AGENT_LEARNING_CHATWOOT_DATABASE_URL=* ) line="AGENT_LEARNING_CHATWOOT_DATABASE_URL=postgresql://${agent_learning_database_user}:${agent_learning_database_password}@postgres:5432/chatwoot" ;;
@@ -64,6 +78,12 @@ if [[ -e "$env_path" ]]; then
       printf 'IMPORT_ID_HMAC_KEY=%s\n' "$import_id_hmac_key" >> "$temporary_path"
     grep -Eq '^SUPPORT_CHATWOOT_SSO_SECRET=.+$' "$temporary_path" ||
       printf 'SUPPORT_CHATWOOT_SSO_SECRET=%s\n' "$support_chatwoot_sso_secret" >> "$temporary_path"
+    grep -Eq '^INTERN_SSO_EMAIL=.+$' "$temporary_path" ||
+      printf 'INTERN_SSO_EMAIL=%s\n' "$intern_sso_email" >> "$temporary_path"
+    grep -Eq '^INTERN_SSO_PASSWORD=.+$' "$temporary_path" ||
+      printf 'INTERN_SSO_PASSWORD=%s\n' "$intern_sso_password" >> "$temporary_path"
+    grep -Eq '^INTERN_SSO_RETURN_PATH=.+$' "$temporary_path" ||
+      printf 'INTERN_SSO_RETURN_PATH=/app/accounts/1/inbox/1\n' >> "$temporary_path"
     grep -Eq '^AGENT_LEARNING_DATABASE_USER=.+$' "$temporary_path" ||
       printf 'AGENT_LEARNING_DATABASE_USER=%s\n' "$agent_learning_database_user" >> "$temporary_path"
     grep -Eq '^AGENT_LEARNING_DATABASE_PASSWORD=.+$' "$temporary_path" ||
@@ -105,6 +125,7 @@ admin_password="Mw-$(openssl rand -hex 18)!A7"
 agent_learning_database_password="$(openssl rand -hex 32)"
 import_id_hmac_key="$(openssl rand -hex 32)"
 support_chatwoot_sso_secret="$(openssl rand -hex 32)"
+intern_sso_password="Mw-$(openssl rand -hex 18)!S9"
 minio_root_user="root-$(openssl rand -hex 12)"
 minio_root_password="$(openssl rand -hex 32)"
 storage_access_key_id="app-$(openssl rand -hex 12)"
@@ -116,6 +137,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   case "$line" in
     IMPORT_ID_HMAC_KEY=__GENERATE_IMPORT_ID_HMAC_KEY__) line="IMPORT_ID_HMAC_KEY=$import_id_hmac_key" ;;
     SUPPORT_CHATWOOT_SSO_SECRET=__GENERATE_SUPPORT_CHATWOOT_SSO_SECRET__) line="SUPPORT_CHATWOOT_SSO_SECRET=$support_chatwoot_sso_secret" ;;
+    INTERN_SSO_PASSWORD=__GENERATE_INTERN_SSO_PASSWORD__) line="INTERN_SSO_PASSWORD=$intern_sso_password" ;;
     SECRET_KEY_BASE=__GENERATE__) line="SECRET_KEY_BASE=$secret_key_base" ;;
     ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=__GENERATE__) line="ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$encryption_primary" ;;
     ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=__GENERATE__) line="ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=$encryption_deterministic" ;;

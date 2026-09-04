@@ -36,7 +36,9 @@ required=(
   CLAUDE_AGENT_DATABASE_PASSWORD CLAUDE_AGENT_DATABASE_URL AGENT_LEARNING_DATABASE_USER
   AGENT_LEARNING_DATABASE_PASSWORD AGENT_LEARNING_CHATWOOT_DATABASE_URL
   CLAUDE_AGENT_REDIS_URL
-  TENANTS_JSON SUPPORT_ANSWER_URL SUPPORT_ANSWER_SECRET PSEUDONYMIZATION_KEY AUTO_SEND_ENABLED
+  TENANTS_JSON SUPPORT_ANSWER_URL SUPPORT_ANSWER_SECRET PSEUDONYMIZATION_KEY
+  SUPPORT_CHATWOOT_SSO_SECRET INTERN_SSO_EMAIL INTERN_SSO_PASSWORD INTERN_SSO_RETURN_PATH
+  AUTO_SEND_ENABLED
   AUTO_SEND_MAX_PER_CONVERSATION AUTO_SEND_MAX_PER_CONTACT_PER_HOUR STORAGE_LOCAL_MINIO
   WEBHOOK_REPLAY_WINDOW_SECONDS DELIVERY_RETENTION_SECONDS MAX_BODY_BYTES
   ADMIN_NAME ADMIN_EMAIL MYINVEST_ACCOUNT_NAME
@@ -196,20 +198,46 @@ else
   done
 fi
 
-if [[ "${ALLOW_UNBOOTSTRAPPED_TENANTS:-false}" == true &&
-      "$TENANTS_JSON" == '[]' &&
-      "$AUTO_SEND_ENABLED" == false ]]; then
-  :
-elif command -v jq >/dev/null 2>&1 && ! jq -e '
+tenant_configuration_pending=false
+if [[ "${ALLOW_UNBOOTSTRAPPED_TENANTS:-false}" == true && "$AUTO_SEND_ENABLED" == false ]]; then
+  if [[ "$TENANTS_JSON" == '[]' ]] || jq -e '
+    type == "array" and
+    ((map(.key) | sort) == ["legacy_academy", "new_academy", "saas"]) and
+    all(.[];
+      (.accountId | type == "number" and . > 0) and
+      (.handoffAssigneeId | type == "number" and . > 0)
+    )
+  ' >/dev/null <<<"$TENANTS_JSON"; then
+    tenant_configuration_pending=true
+  fi
+fi
+if [[ "$tenant_configuration_pending" != true ]] && command -v jq >/dev/null 2>&1 && ! jq -e '
   type == "array" and
   ((map(.key) | sort) == ["legacy_academy", "new_academy", "saas"]) and
   all(.[];
     (.accountId | type == "number" and . > 0) and
+    (.inboxId | type == "number" and . > 0) and
     (.handoffAssigneeId | type == "number" and . > 0)
   )
 ' >/dev/null <<<"$TENANTS_JSON"; then
   printf 'TENANTS_JSON must contain all canonical tenants with account and handoff assignee IDs.\n' >&2
   exit 1
+fi
+
+if [[ ! "$INTERN_SSO_RETURN_PATH" =~ ^/app/accounts/([1-9][0-9]*)/inbox/([1-9][0-9]*)$ ]]; then
+  printf 'INTERN_SSO_RETURN_PATH must target one exact Chatwoot account and inbox.\n' >&2
+  exit 1
+fi
+configured_sso_account_id="${BASH_REMATCH[1]}"
+configured_sso_inbox_id="${BASH_REMATCH[2]}"
+if [[ "$tenant_configuration_pending" != true ]]; then
+  support_account_id="$(jq -er '.[] | select(.key == "saas") | .accountId' <<<"$TENANTS_JSON")"
+  support_inbox_id="$(jq -er '.[] | select(.key == "saas") | .inboxId' <<<"$TENANTS_JSON")"
+  if [[ "$configured_sso_account_id" != "$support_account_id" ||
+        "$configured_sso_inbox_id" != "$support_inbox_id" ]]; then
+    printf 'INTERN_SSO_RETURN_PATH must target the saas account inbox.\n' >&2
+    exit 1
+  fi
 fi
 
 for variable in POSTGRES_ADMIN_USER POSTGRES_DATABASE POSTGRES_USERNAME CLAUDE_AGENT_DATABASE CLAUDE_AGENT_DATABASE_USER AGENT_LEARNING_DATABASE_USER; do
@@ -232,13 +260,22 @@ if [[ "$AGENT_LEARNING_CHATWOOT_DATABASE_URL" != "$expected_agent_learning_url" 
   exit 1
 fi
 
-for variable in IMPORT_ID_HMAC_KEY SECRET_KEY_BASE POSTGRES_ADMIN_PASSWORD POSTGRES_PASSWORD REDIS_PASSWORD CLAUDE_AGENT_DATABASE_PASSWORD AGENT_LEARNING_DATABASE_PASSWORD; do
+for variable in IMPORT_ID_HMAC_KEY SECRET_KEY_BASE POSTGRES_ADMIN_PASSWORD POSTGRES_PASSWORD REDIS_PASSWORD CLAUDE_AGENT_DATABASE_PASSWORD AGENT_LEARNING_DATABASE_PASSWORD SUPPORT_CHATWOOT_SSO_SECRET INTERN_SSO_PASSWORD; do
   value="${!variable}"
   if (( ${#value} < 32 )); then
     printf 'Secret is too short: %s\n' "$variable" >&2
     exit 1
   fi
 done
+if [[ "$INTERN_SSO_EMAIL" == "$ADMIN_EMAIL" || "$INTERN_SSO_PASSWORD" == "${ADMIN_PASSWORD:-}" ]]; then
+  printf 'Intern SSO must use a dedicated non-admin credential.\n' >&2
+  exit 1
+fi
+if [[ "$SUPPORT_CHATWOOT_SSO_SECRET" == "$SUPPORT_ANSWER_SECRET" ||
+      "$SUPPORT_CHATWOOT_SSO_SECRET" == "$PSEUDONYMIZATION_KEY" ]]; then
+  printf 'SUPPORT_CHATWOOT_SSO_SECRET must be independent.\n' >&2
+  exit 1
+fi
 if [[ "$LOCAL_SMOKE" != true && ${#STORAGE_SECRET_ACCESS_KEY} -lt 32 ]]; then
   printf 'Secret is too short: STORAGE_SECRET_ACCESS_KEY\n' >&2
   exit 1
