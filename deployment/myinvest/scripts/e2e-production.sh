@@ -282,7 +282,7 @@ create_external_api_path() {
     --header 'content-type: application/json' \
     --header "api_access_token: $api_token" \
     --data-binary "$(jq -cn --arg content "$content" --arg source_id "production-e2e:${kind}:${test_source_id}" \
-      '{content:$content,message_type:"incoming",source_id:$source_id}')" \
+      '{content:$content,message_type:"incoming",source_id:$source_id,content_attributes:{myinvest_agent_action:"draft"}}')" \
     "$external_base_url/conversations/$conversation_id/messages" > "$message_path"
   jq -e --arg content "$content" \
     '(.id | type == "number" and . > 0) and .message_type == 0 and .content == $content' \
