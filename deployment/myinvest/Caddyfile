@@ -49,6 +49,16 @@
 		reverse_proxy claude-agent:8080
 	}
 
+	# Einziger Mitarbeiter-Zugang: Das Portal uebergibt ein kurzlebiges,
+	# einmaliges Ticket per POST. Keine Zugangsdaten und kein Ticket landen in
+	# URL, Browserhistorie, Referrer oder Caddy-Log.
+	handle /_intern/sso {
+		@invalid_sso_method not method POST
+		respond @invalid_sso_method 405
+		uri strip_prefix /_intern
+		reverse_proxy claude-agent:8080
+	}
+
 	handle @app {
 		reverse_proxy rails:3000 {
 			header_up X-Forwarded-Proto https

@@ -19,6 +19,11 @@ const baseEnvironment = {
   SUPPORT_ANSWER_URL: 'https://www.myinvest.example',
   SUPPORT_ANSWER_SECRET: 'a-brain-signing-secret-with-32-chars',
   PSEUDONYMIZATION_KEY,
+  SUPPORT_CHATWOOT_SSO_SECRET: 'an-independent-sso-secret-with-32-chars',
+  INTERN_SSO_AUDIENCE: 'support.example.invalid',
+  INTERN_SSO_EMAIL: 'support@example.invalid',
+  INTERN_SSO_PASSWORD: 'a-strong-support-password',
+  INTERN_SSO_RETURN_PATH: '/app/accounts/1/inbox/1',
 }
 
 describe('tenant configuration', () => {
@@ -102,6 +107,21 @@ describe('tenant configuration', () => {
       loadConfig({
         ...baseEnvironment,
         PSEUDONYMIZATION_KEY: tenants[0]!.agentBotToken,
+      }),
+    ).toThrow(/independent/)
+  })
+
+  it('pins single-account SSO to one audience and one inbox', () => {
+    expect(loadConfig(baseEnvironment).INTERN_SSO_RETURN_PATH).toBe(
+      '/app/accounts/1/inbox/1',
+    )
+    expect(() =>
+      loadConfig({ ...baseEnvironment, INTERN_SSO_RETURN_PATH: '/app/accounts/2' }),
+    ).toThrow(/INTERN_SSO_RETURN_PATH/)
+    expect(() =>
+      loadConfig({
+        ...baseEnvironment,
+        SUPPORT_CHATWOOT_SSO_SECRET: baseEnvironment.SUPPORT_ANSWER_SECRET,
       }),
     ).toThrow(/independent/)
   })

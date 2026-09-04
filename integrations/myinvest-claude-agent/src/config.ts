@@ -82,6 +82,17 @@ const envSchema = z.object({
   SUPPORT_ANSWER_SECRET: z.string().min(32).max(512),
   /** Unabhaengiger HMAC-Schluessel fuer irreversible Laufzeit-Pseudonyme. */
   PSEUDONYMIZATION_KEY: z.string().min(32).max(512),
+  SUPPORT_CHATWOOT_SSO_SECRET: z.string().min(32).max(512),
+  INTERN_SSO_AUDIENCE: z
+    .string()
+    .min(1)
+    .max(253)
+    .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i),
+  INTERN_SSO_EMAIL: z.string().email().max(320),
+  INTERN_SSO_PASSWORD: z.string().min(12).max(1_024),
+  INTERN_SSO_RETURN_PATH: z
+    .string()
+    .regex(/^\/app\/accounts\/[1-9][0-9]*\/inbox\/[1-9][0-9]*$/),
   SUPPORT_ANSWER_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(65_000),
   // Scharfschalten ist eine bewusste Entscheidung, kein Nebeneffekt eines
   // Deployments: ohne dieses Flag entsteht weiterhin nur ein Entwurf.
@@ -140,6 +151,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   const tenants = buildTenantRegistry(parseTenantConfig(env.TENANTS_JSON))
   const unrelatedSecrets = [
     env.SUPPORT_ANSWER_SECRET,
+    env.SUPPORT_CHATWOOT_SSO_SECRET,
     ...tenants.all.flatMap(({ webhookSecret, agentBotToken }) => [
       webhookSecret,
       agentBotToken,
@@ -147,6 +159,16 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   ]
   if (unrelatedSecrets.includes(env.PSEUDONYMIZATION_KEY)) {
     throw new Error('PSEUDONYMIZATION_KEY must be independent from all other credentials')
+  }
+  if (env.SUPPORT_CHATWOOT_SSO_SECRET === env.SUPPORT_ANSWER_SECRET) {
+    throw new Error('SUPPORT_CHATWOOT_SSO_SECRET must be independent')
+  }
+  if (
+    tenants.all.some(({ webhookSecret, agentBotToken }) =>
+      [webhookSecret, agentBotToken].includes(env.SUPPORT_CHATWOOT_SSO_SECRET),
+    )
+  ) {
+    throw new Error('SUPPORT_CHATWOOT_SSO_SECRET must be independent')
   }
   return {
     ...env,

@@ -9,6 +9,7 @@ import {
 import { ChatwootClient } from './chatwoot-client.js'
 import { PostgresChatwootDeliveryStore } from './chatwoot-delivery-repository.js'
 import { loadConfig } from './config.js'
+import { InternSsoError, InternSsoService } from './intern-sso.js'
 import { runAutoSendFeedbackSweep } from './learning/auto-send-feedback.js'
 import { MessageProcessor } from './processor.js'
 import { DeliveryQueue, QUEUE_NAME, type DeliveryJob } from './queue.js'
@@ -70,6 +71,17 @@ const controller = new WebhookController({
   queue: deliveryQueue,
   replayWindowSeconds: config.WEBHOOK_REPLAY_WINDOW_SECONDS,
 })
+const internSso = new InternSsoService(
+  {
+    secret: config.SUPPORT_CHATWOOT_SSO_SECRET,
+    audience: config.INTERN_SSO_AUDIENCE,
+    email: config.INTERN_SSO_EMAIL,
+    password: config.INTERN_SSO_PASSWORD,
+    returnPath: config.INTERN_SSO_RETURN_PATH,
+    chatwootBaseUrl: config.CHATWOOT_BASE_URL,
+  },
+  redis,
+)
 
 const worker =
   config.RUN_MODE === 'web'
@@ -140,6 +152,24 @@ app.get('/health', async (_request, response) => {
     response.status(503).json({ status: 'unavailable' })
   }
 })
+
+app.post(
+  '/sso',
+  express.urlencoded({ extended: false, limit: '4kb' }),
+  async (request, response) => {
+    const token = typeof request.body?.token === 'string' ? request.body.token : ''
+    try {
+      const session = await internSso.createSession(token)
+      response.setHeader('Cache-Control', 'no-store')
+      response.setHeader('Referrer-Policy', 'no-referrer')
+      response.setHeader('Set-Cookie', session.cookie)
+      return response.redirect(303, session.location)
+    } catch (error) {
+      const status = error instanceof InternSsoError ? error.status : 503
+      return response.status(status).json({ error: 'support login unavailable' })
+    }
+  },
+)
 
 app.post(
   '/webhooks/chatwoot',

@@ -89,6 +89,13 @@ done
 webhook_status="$(timeout 5s docker exec "$edge_name" wget -S -T 2 -t 1 -O /dev/null \
   http://127.0.0.1/_agent/webhooks/chatwoot 2>&1 | sed -n 's/.*HTTP\/1\.[01] \([0-9][0-9][0-9]\).*/\1/p' | tail -n 1)"
 test "$webhook_status" = 202
+sso_status="$(timeout 5s docker exec "$edge_name" wget -S -T 2 -t 1 -O /dev/null \
+  --post-data='token=x' http://127.0.0.1/_intern/sso 2>&1 |
+  sed -n 's/.*HTTP\/1\.[01] \([0-9][0-9][0-9]\).*/\1/p' | tail -n 1)"
+test "$sso_status" = 202
+sso_get_status="$({ timeout 5s docker exec "$edge_name" wget -S -T 2 -t 1 -O /dev/null \
+  http://127.0.0.1/_intern/sso 2>&1 || true; } | sed -n 's/.*HTTP\/1\.[01] \([0-9][0-9][0-9]\).*/\1/p' | tail -n 1)"
+test "$sso_get_status" = 405
 
 for ingress_mode in direct cloudflare_tunnel; do
   timeout 20s docker run --rm \
