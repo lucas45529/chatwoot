@@ -14,9 +14,9 @@ printf '%s\n' 'TENANTS_JSON=[]' 'INTERN_SSO_RETURN_PATH=/app/accounts/1/inbox/1'
 
 "$deployment_dir/scripts/render-tenants-env.rb" "$runtime/tenants.json" "$runtime/env" >/dev/null
 
-grep -Fxq 'INTERN_SSO_RETURN_PATH=/app/accounts/7/inbox/11' "$runtime/env"
+grep -Fxq 'INTERN_SSO_RETURN_PATH=/app/accounts/7/dashboard?support_history=1' "$runtime/env"
 grep -Fq '"inboxId":11' "$runtime/env"
 permissions="$(stat -f '%Lp' "$runtime/env" 2>/dev/null || stat -c '%a' "$runtime/env")"
 [[ "$permissions" == 600 ]]
 
-printf 'Tenant renderer pins Intern SSO to the canonical support inbox.\n'
+printf 'Tenant renderer pins Intern SSO to the complete support history view.\n'

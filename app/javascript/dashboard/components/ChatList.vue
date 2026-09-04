@@ -52,6 +52,7 @@ import {
 import { matchesFilters } from '../store/modules/conversations/helpers/filterHelpers';
 import { CONVERSATION_EVENTS } from '../helper/AnalyticsHelper/events';
 import { ASSIGNEE_TYPE_TAB_PERMISSIONS } from 'dashboard/constants/permissions.js';
+import { getInitialConversationListFilters } from 'dashboard/helper/supportHistoryView';
 
 const props = defineProps({
   conversationInbox: { type: [String, Number], default: 0 },
@@ -379,14 +380,13 @@ const uniqueInboxes = computed(() => {
 
 // ---------------------- Methods -----------------------
 function setFiltersFromUISettings() {
-  const { conversations_filter_by: filterBy = {} } = uiSettings.value;
-  const { status, order_by: orderBy } = filterBy;
-  activeStatus.value = status || wootConstants.STATUS_TYPE.OPEN;
-  activeSortBy.value = Object.values(wootConstants.SORT_BY_TYPE).includes(
-    orderBy
-  )
-    ? orderBy
-    : wootConstants.SORT_BY_TYPE.LAST_ACTIVITY_AT_DESC;
+  const filters = getInitialConversationListFilters({
+    route,
+    uiSettings: uiSettings.value,
+  });
+  activeAssigneeTab.value = filters.assigneeType;
+  activeStatus.value = filters.status;
+  activeSortBy.value = filters.sortBy;
 }
 
 function emitConversationLoaded() {
@@ -806,8 +806,8 @@ useEmitter('fetch_conversation_stats', () => {
 });
 
 onMounted(() => {
-  store.dispatch('setChatListFilters', conversationFilters.value);
   setFiltersFromUISettings();
+  store.dispatch('setChatListFilters', conversationFilters.value);
   store.dispatch('setChatStatusFilter', activeStatus.value);
   store.dispatch('setChatSortFilter', activeSortBy.value);
   resetAndFetchData();

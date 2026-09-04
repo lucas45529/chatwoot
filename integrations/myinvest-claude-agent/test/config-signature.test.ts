@@ -23,7 +23,7 @@ const baseEnvironment = {
   INTERN_SSO_AUDIENCE: 'support.example.invalid',
   INTERN_SSO_EMAIL: 'support@example.invalid',
   INTERN_SSO_PASSWORD: 'a-strong-support-password',
-  INTERN_SSO_RETURN_PATH: '/app/accounts/101/inbox/17',
+  INTERN_SSO_RETURN_PATH: '/app/accounts/101/dashboard?support_history=1',
 }
 
 describe('tenant configuration', () => {
@@ -111,9 +111,9 @@ describe('tenant configuration', () => {
     ).toThrow(/independent/)
   })
 
-  it('pins single-account SSO to one audience and one inbox', () => {
+  it('pins single-account SSO to the complete support history view', () => {
     expect(loadConfig(baseEnvironment).INTERN_SSO_RETURN_PATH).toBe(
-      '/app/accounts/101/inbox/17',
+      '/app/accounts/101/dashboard?support_history=1',
     )
     expect(() =>
       loadConfig({ ...baseEnvironment, INTERN_SSO_RETURN_PATH: '/app/accounts/2' }),
@@ -121,15 +121,15 @@ describe('tenant configuration', () => {
     expect(() =>
       loadConfig({
         ...baseEnvironment,
-        INTERN_SSO_RETURN_PATH: '/app/accounts/202/inbox/17',
+        INTERN_SSO_RETURN_PATH: '/app/accounts/202/dashboard?support_history=1',
       }),
     ).toThrow(/saas account/)
     expect(() =>
       loadConfig({
         ...baseEnvironment,
-        INTERN_SSO_RETURN_PATH: '/app/accounts/101/inbox/18',
+        INTERN_SSO_RETURN_PATH: '/app/accounts/101/dashboard',
       }),
-    ).toThrow(/saas account inbox/)
+    ).toThrow(/INTERN_SSO_RETURN_PATH/)
     expect(() =>
       loadConfig({
         ...baseEnvironment,

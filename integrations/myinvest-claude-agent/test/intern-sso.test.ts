@@ -37,7 +37,9 @@ const config: InternSsoConfig = {
   audience: AUDIENCE,
   email: 'support@example.com',
   password: 'a-password-that-is-never-returned',
-  returnPath: '/app/accounts/1/inbox/1',
+  accountId: 1,
+  inboxId: 1,
+  returnPath: '/app/accounts/1/dashboard?support_history=1',
   chatwootBaseUrl: 'http://rails:3000',
 }
 
@@ -100,7 +102,7 @@ describe('Intern-SSO', () => {
       email: config.email,
       password: config.password,
     })
-    expect(session.location).toBe('/app/accounts/1/inbox/1')
+    expect(session.location).toBe('/app/accounts/1/dashboard?support_history=1')
     expect(session.cookie).toContain('cw_d_session_info=')
     expect(session.cookie).toContain('Secure; SameSite=Lax')
     expect(session.cookie).not.toContain(config.password)

@@ -28,7 +28,7 @@ index = lines.index { |line| line.start_with?('TENANTS_JSON=') }
 index ? lines[index] = replacement : lines << replacement
 
 support = tenants.find { |tenant| tenant.fetch('key') == 'saas' }
-return_path = "INTERN_SSO_RETURN_PATH=/app/accounts/#{support.fetch('accountId')}/inbox/#{support.fetch('inboxId')}"
+return_path = "INTERN_SSO_RETURN_PATH=/app/accounts/#{support.fetch('accountId')}/dashboard?support_history=1"
 return_path_index = lines.index { |line| line.start_with?('INTERN_SSO_RETURN_PATH=') }
 return_path_index ? lines[return_path_index] = return_path : lines << return_path
 

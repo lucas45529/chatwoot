@@ -77,6 +77,8 @@ const internSso = new InternSsoService(
     audience: config.INTERN_SSO_AUDIENCE,
     email: config.INTERN_SSO_EMAIL,
     password: config.INTERN_SSO_PASSWORD,
+    accountId: config.tenants.requireByKey('saas').accountId,
+    inboxId: config.tenants.requireByKey('saas').inboxId,
     returnPath: config.INTERN_SSO_RETURN_PATH,
     chatwootBaseUrl: config.CHATWOOT_BASE_URL,
   },

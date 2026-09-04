@@ -19,6 +19,8 @@ export interface InternSsoConfig {
   audience: string
   email: string
   password: string
+  accountId: number
+  inboxId: number
   returnPath: string
   chatwootBaseUrl: string
 }
@@ -135,13 +137,13 @@ export class InternSsoService {
       this.config.audience,
       now,
     )
-    const target = this.config.returnPath.match(
-      /^\/app\/accounts\/([1-9][0-9]*)\/inbox\/([1-9][0-9]*)$/,
-    )
-    if (!target) throw new InternSsoError(503, 'invalid support target')
+    const expectedTarget = `/app/accounts/${this.config.accountId}/dashboard?support_history=1`
+    if (this.config.returnPath !== expectedTarget) {
+      throw new InternSsoError(503, 'invalid support target')
+    }
     if (
-      payload.accountId !== Number(target[1]) ||
-      payload.inboxId !== Number(target[2])
+      payload.accountId !== this.config.accountId ||
+      payload.inboxId !== this.config.inboxId
     ) {
       throw new InternSsoError(401, 'invalid ticket target')
     }

@@ -27,7 +27,7 @@ grep -Fq "raise 'Intern SSO user must not be a SuperAdmin'" "$seed"
 grep -Fq 'AccountUser.where(user: intern_sso_user).where.not(account: account).destroy_all' "$seed"
 grep -Fq 'InboxMember.find_or_create_by!(inbox: inbox, user: intern_sso_user)' "$seed"
 grep -Fq 'inboxId: inbox.id' "$seed"
-grep -Fq 'INTERN_SSO_RETURN_PATH=/app/accounts/#{support.fetch('\''accountId'\'')}/inbox/#{support.fetch('\''inboxId'\'')}' "$renderer"
+grep -Fq 'INTERN_SSO_RETURN_PATH=/app/accounts/#{support.fetch('\''accountId'\'')}/dashboard?support_history=1' "$renderer"
 grep -Fq 'Intern SSO user must belong to exactly one account' "$smoke"
 grep -Fq 'tenant_configuration_pending=true' "$deployment_dir/scripts/validate.sh"
 grep -Fq 'ruby /bootstrap-scripts/render-tenants-env.rb /bootstrap-output/tenants.json' "$deployment_dir/scripts/bootstrap.sh"
@@ -36,4 +36,4 @@ grep -Fq 'chown "$HOST_DEPLOY_UID:$HOST_DEPLOY_GID"' "$deployment_dir/scripts/bo
 grep -Fq 'build claude-agent' "$deployment_dir/scripts/bootstrap.sh"
 grep -Fq 'up -d --no-deps --no-build --force-recreate claude-agent' "$deployment_dir/scripts/bootstrap.sh"
 
-printf 'Bootstrap routing contract passed: live inboxes stay assigned to active AgentBots.\n'
+printf 'Bootstrap routing contract passed: live inboxes stay assigned and Intern SSO opens history.\n'

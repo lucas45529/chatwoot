@@ -93,7 +93,7 @@ const envSchema = z.object({
   INTERN_SSO_PASSWORD: z.string().min(12).max(1_024),
   INTERN_SSO_RETURN_PATH: z
     .string()
-    .regex(/^\/app\/accounts\/[1-9][0-9]*\/inbox\/[1-9][0-9]*$/),
+    .regex(/^\/app\/accounts\/[1-9][0-9]*\/dashboard\?support_history=1$/),
   SUPPORT_ANSWER_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(65_000),
   // Scharfschalten ist eine bewusste Entscheidung, kein Nebeneffekt eines
   // Deployments: ohne dieses Flag entsteht weiterhin nur ein Entwurf.
@@ -173,13 +173,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   }
   const support = tenants.requireByKey('saas')
   const configuredSsoTarget = env.INTERN_SSO_RETURN_PATH.match(
-    /^\/app\/accounts\/([1-9][0-9]*)\/inbox\/([1-9][0-9]*)$/,
+    /^\/app\/accounts\/([1-9][0-9]*)\/dashboard\?support_history=1$/,
   )
-  if (
-    Number(configuredSsoTarget?.[1]) !== support.accountId ||
-    Number(configuredSsoTarget?.[2]) !== support.inboxId
-  ) {
-    throw new Error('INTERN_SSO_RETURN_PATH must target the saas account inbox')
+  if (Number(configuredSsoTarget?.[1]) !== support.accountId) {
+    throw new Error('INTERN_SSO_RETURN_PATH must target the saas account history')
   }
   return {
     ...env,
