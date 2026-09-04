@@ -224,18 +224,15 @@ if [[ "$tenant_configuration_pending" != true ]] && command -v jq >/dev/null 2>&
   exit 1
 fi
 
-if [[ ! "$INTERN_SSO_RETURN_PATH" =~ ^/app/accounts/([1-9][0-9]*)/inbox/([1-9][0-9]*)$ ]]; then
-  printf 'INTERN_SSO_RETURN_PATH must target one exact Chatwoot account and inbox.\n' >&2
+if [[ ! "$INTERN_SSO_RETURN_PATH" =~ ^/app/accounts/([1-9][0-9]*)/dashboard\?support_history=1$ ]]; then
+  printf 'INTERN_SSO_RETURN_PATH must target the complete support history view.\n' >&2
   exit 1
 fi
 configured_sso_account_id="${BASH_REMATCH[1]}"
-configured_sso_inbox_id="${BASH_REMATCH[2]}"
 if [[ "$tenant_configuration_pending" != true ]]; then
   support_account_id="$(jq -er '.[] | select(.key == "saas") | .accountId' <<<"$TENANTS_JSON")"
-  support_inbox_id="$(jq -er '.[] | select(.key == "saas") | .inboxId' <<<"$TENANTS_JSON")"
-  if [[ "$configured_sso_account_id" != "$support_account_id" ||
-        "$configured_sso_inbox_id" != "$support_inbox_id" ]]; then
-    printf 'INTERN_SSO_RETURN_PATH must target the saas account inbox.\n' >&2
+  if [[ "$configured_sso_account_id" != "$support_account_id" ]]; then
+    printf 'INTERN_SSO_RETURN_PATH must target the saas account history.\n' >&2
     exit 1
   fi
 fi

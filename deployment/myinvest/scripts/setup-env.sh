@@ -83,7 +83,7 @@ if [[ -e "$env_path" ]]; then
     grep -Eq '^INTERN_SSO_PASSWORD=.+$' "$temporary_path" ||
       printf 'INTERN_SSO_PASSWORD=%s\n' "$intern_sso_password" >> "$temporary_path"
     grep -Eq '^INTERN_SSO_RETURN_PATH=.+$' "$temporary_path" ||
-      printf 'INTERN_SSO_RETURN_PATH=/app/accounts/1/inbox/1\n' >> "$temporary_path"
+      printf 'INTERN_SSO_RETURN_PATH=/app/accounts/1/dashboard?support_history=1\n' >> "$temporary_path"
     grep -Eq '^AGENT_LEARNING_DATABASE_USER=.+$' "$temporary_path" ||
       printf 'AGENT_LEARNING_DATABASE_USER=%s\n' "$agent_learning_database_user" >> "$temporary_path"
     grep -Eq '^AGENT_LEARNING_DATABASE_PASSWORD=.+$' "$temporary_path" ||

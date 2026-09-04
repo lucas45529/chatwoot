@@ -38,7 +38,7 @@ done
 
 "${compose[@]}" exec -T \
   -e MYINVEST_ACCOUNT_NAME -e ACADEMY_NEW_ACCOUNT_NAME -e ACADEMY_LEGACY_ACCOUNT_NAME \
-  -e INTERN_SSO_EMAIL -e INTERN_SSO_RETURN_PATH \
+  -e INTERN_SSO_EMAIL -e INTERN_SSO_RETURN_PATH -e TENANTS_JSON \
   rails bundle exec rails runner '
   expected = [ENV.fetch("MYINVEST_ACCOUNT_NAME"), ENV.fetch("ACADEMY_NEW_ACCOUNT_NAME"), ENV.fetch("ACADEMY_LEGACY_ACCOUNT_NAME")]
   missing = expected - Account.where(name: expected).pluck(:name)
@@ -49,10 +49,13 @@ done
     routing_valid = !inbox.enable_auto_assignment? && inbox.agent_bot_inbox&.active?
     abort("Invalid AgentBot routing for #{inbox.name}") unless routing_valid
   end
-  target = ENV.fetch("INTERN_SSO_RETURN_PATH").match(%r{\A/app/accounts/([1-9][0-9]*)/inbox/([1-9][0-9]*)\z})
+  target = ENV.fetch("INTERN_SSO_RETURN_PATH").match(%r{\A/app/accounts/([1-9][0-9]*)/dashboard\?support_history=1\z})
   abort("Invalid Intern SSO target") unless target
   target_account_id = Integer(target[1], 10)
-  target_inbox_id = Integer(target[2], 10)
+  support = JSON.parse(ENV.fetch("TENANTS_JSON")).find { |tenant| tenant.fetch("key") == "saas" }
+  abort("Missing support tenant") unless support
+  abort("Intern SSO target account is invalid") unless Integer(support.fetch("accountId")) == target_account_id
+  target_inbox_id = Integer(support.fetch("inboxId"))
   user = User.from_email(ENV.fetch("INTERN_SSO_EMAIL"))
   abort("Missing dedicated Intern SSO user") unless user
   abort("Intern SSO user must not be a SuperAdmin") if user.is_a?(SuperAdmin)

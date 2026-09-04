@@ -252,7 +252,7 @@ services:
       INTERN_SSO_AUDIENCE: ${CADDY_SITE_ADDRESS:?CADDY_SITE_ADDRESS is required}
       INTERN_SSO_EMAIL: ${INTERN_SSO_EMAIL:?INTERN_SSO_EMAIL is required}
       INTERN_SSO_PASSWORD: ${INTERN_SSO_PASSWORD:?INTERN_SSO_PASSWORD is required}
-      INTERN_SSO_RETURN_PATH: ${INTERN_SSO_RETURN_PATH:-/app/accounts/1/inbox/1}
+      INTERN_SSO_RETURN_PATH: ${INTERN_SSO_RETURN_PATH:-/app/accounts/1/dashboard?support_history=1}
       SUPPORT_ANSWER_TIMEOUT_MS: ${SUPPORT_ANSWER_TIMEOUT_MS:-65000}
       # Kill-Switch. Standard AUS: Auto-Send wird bewusst eingeschaltet,
       # nie versehentlich durch ein fehlendes Env geerbt.
