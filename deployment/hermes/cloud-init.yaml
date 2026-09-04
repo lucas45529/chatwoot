@@ -1,19 +1,12 @@
 #cloud-config
-# Dedicated production host for the MyInvest Support Platform (Ubuntu 24.04 LTS).
-#
-# Rendered by `scripts/provision-host.sh user-data`, which replaces
-# __SSH_PUBLIC_KEY__ with the operator's public key. Pass the rendered file to
-# the cloud provider as user data (Hetzner: `--user-data-from-file`).
-#
-# The host ends up with: Docker Engine + Compose v2, GnuPG, rclone, fail2ban,
-# an unprivileged `deploy` user in the docker group, key-only SSH, ufw limited
-# to 22/80/443, unattended security upgrades, and 2 GiB of swap so the Chatwoot
-# image build does not OOM on an 8 GiB machine. The application itself is
-# shipped afterwards by `scripts/provision-host.sh install`.
+# Dedicated Hermes runtime host (Ubuntu 24.04 LTS).
 
 package_update: true
 package_upgrade: true
 package_reboot_if_required: false
+
+groups:
+  - docker
 
 packages:
   - ca-certificates
@@ -22,12 +15,9 @@ packages:
   - git
   - gnupg
   - jq
-  - rclone
+  - rsync
   - ufw
   - unattended-upgrades
-
-groups:
-  - docker
 
 users:
   - name: deploy
@@ -38,7 +28,6 @@ users:
     ssh_authorized_keys:
       - __SSH_PUBLIC_KEY__
 
-# Docker's own apt repository: Ubuntu's docker.io lags and ships no Compose v2.
 apt:
   sources:
     docker:
@@ -47,13 +36,14 @@ apt:
       keyserver: https://download.docker.com/linux/ubuntu/gpg
 
 write_files:
-  - path: /etc/ssh/sshd_config.d/90-myinvest-hardening.conf
+  - path: /etc/ssh/sshd_config.d/90-myinvest-hermes-hardening.conf
     permissions: "0644"
     content: |
       PasswordAuthentication no
       KbdInteractiveAuthentication no
       PermitRootLogin no
       X11Forwarding no
+      AllowTcpForwarding local
       MaxAuthTries 4
   - path: /etc/docker/daemon.json
     permissions: "0644"
@@ -72,21 +62,18 @@ write_files:
 
 swap:
   filename: /swapfile
-  size: 2G
-  maxsize: 2G
+  size: 8G
+  maxsize: 8G
 
 runcmd:
   - [apt-get, install, -y, docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]
   - [systemctl, enable, --now, docker]
   - [systemctl, enable, --now, fail2ban]
-  - [install, -d, -m, "0750", -o, deploy, -g, deploy, /opt/myinvest-support]
+  - [install, -d, -m, "0750", -o, deploy, -g, deploy, /opt/hermes-stack]
   - [ufw, default, deny, incoming]
   - [ufw, default, allow, outgoing]
   - [ufw, allow, "22/tcp"]
-  - [ufw, allow, "80/tcp"]
-  - [ufw, allow, "443/tcp"]
-  - [ufw, allow, "443/udp"]
   - [ufw, --force, enable]
   - [systemctl, restart, ssh]
 
-final_message: "myinvest-support host ready after $UPTIME seconds"
+final_message: "myinvest-hermes host ready after $UPTIME seconds"

@@ -14,6 +14,7 @@
 #   HCLOUD_TOKEN            Hetzner Cloud API token (create, wait without SUPPORT_HOST)
 #   CLOUDFLARE_API_TOKEN    zone DNS edit token for the support zone (dns)
 #   PRODUCTION_ENV_FILE     validated production .env to upload (install); never committed
+#   SSH_PROXY_COMMAND       optional OpenSSH ProxyCommand (for example, GCP IAP)
 #   RCLONE_CONFIG_FILE      optional rclone.conf holding the BACKUP_OFFSITE_REMOTE remote (install)
 #   SUPPORT_HOST            SSH target; defaults to the IPv4 recorded by `create`
 #   SUPPORT_HOSTNAME        public hostname, default support.myinvest-pro.de
@@ -33,12 +34,17 @@ HCLOUD_IMAGE="${HCLOUD_IMAGE:-ubuntu-24.04}"
 HCLOUD_SSH_KEY_NAME="${HCLOUD_SSH_KEY_NAME:-myinvest-support-operator}"
 SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-$HOME/.ssh/id_ed25519.pub}"
 REMOTE_USER="${REMOTE_USER:-deploy}"
+SSH_PROXY_COMMAND="${SSH_PROXY_COMMAND:-}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/myinvest-support}"
 REPOSITORY_URL="${REPOSITORY_URL:-$(git -C "$repository_root" remote get-url origin)}"
 REVISION="${REVISION:-$(git -C "$repository_root" rev-parse HEAD)}"
 host_record="$deployment_dir/runtime/host.json"
 hcloud_api='https://api.hetzner.cloud/v1'
 cloudflare_api='https://api.cloudflare.com/client/v4'
+ssh_options=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o StrictHostKeyChecking=accept-new)
+if [[ -n "$SSH_PROXY_COMMAND" ]]; then
+  ssh_options+=(-o "ProxyCommand=$SSH_PROXY_COMMAND")
+fi
 
 fail() {
   printf '%s\n' "$*" >&2
@@ -97,7 +103,7 @@ remote() {
   # remote <host> [ssh options...] -- command...
   local host="$1"
   shift
-  ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$REMOTE_USER@$host" "$@"
+  ssh "${ssh_options[@]}" "$REMOTE_USER@$host" "$@"
 }
 
 command_user_data() {
@@ -213,12 +219,14 @@ command_install() {
   fi
 
   remote "$host" -- "install -d -m 0700 '$REMOTE_DIR/incoming'"
-  scp -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$env_file" "$REMOTE_USER@$host:$REMOTE_DIR/incoming/env"
+  scp -q "${ssh_options[@]}" "$env_file" "$REMOTE_USER@$host:$REMOTE_DIR/incoming/env"
   rclone_file="${RCLONE_CONFIG_FILE:-}"
   if [[ -n "$rclone_file" ]]; then
     [[ -r "$rclone_file" ]] || fail "RCLONE_CONFIG_FILE is not readable: $rclone_file"
-    scp -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$rclone_file" "$REMOTE_USER@$host:$REMOTE_DIR/incoming/rclone.conf"
+    scp -q "${ssh_options[@]}" "$rclone_file" "$REMOTE_USER@$host:$REMOTE_DIR/incoming/rclone.conf"
   fi
+  scp -q "${ssh_options[@]}" "$deployment_dir/compose.yaml" "$REMOTE_USER@$host:$REMOTE_DIR/incoming/compose.yaml"
+  scp -q "${ssh_options[@]}" "$deployment_dir/scripts/validate.sh" "$REMOTE_USER@$host:$REMOTE_DIR/incoming/validate.sh"
 
   remote "$host" -- bash -s -- "$REMOTE_DIR" "$REPOSITORY_URL" "$REVISION" <<'REMOTE'
 set -Eeuo pipefail
@@ -231,6 +239,8 @@ if [[ ! -d "$source_dir/.git" ]]; then
 fi
 git -C "$source_dir" fetch --quiet origin "$revision"
 git -C "$source_dir" checkout --quiet --detach "$revision"
+install -m 0644 "$remote_dir/incoming/compose.yaml" "$deployment/compose.yaml"
+install -m 0755 "$remote_dir/incoming/validate.sh" "$deployment/scripts/validate.sh"
 
 install -m 0600 "$remote_dir/incoming/env" "$deployment/.env"
 if [[ -f "$remote_dir/incoming/rclone.conf" ]]; then
@@ -245,7 +255,7 @@ if ! grep -Eq '^BACKUP_GPG_SIGNING_KEY=.+$' "$deployment/.env"; then
   origin_uid='MyInvest Chatwoot Backup Origin <backup-origin@myinvest-pro.de>'
   fingerprint="$(gpg --batch --list-secret-keys --with-colons "$origin_uid" 2>/dev/null | awk -F: '/^fpr/ {print $10; exit}')"
   if [[ -z "$fingerprint" ]]; then
-    gpg --batch --quiet --pinentry-mode loopback --passphrase '' --quick-generate-key "$origin_uid" ed25519 sign never
+    gpg --batch --yes --pinentry-mode loopback --passphrase '' --quick-generate-key "$origin_uid" ed25519 sign never
     fingerprint="$(gpg --batch --list-secret-keys --with-colons "$origin_uid" | awk -F: '/^fpr/ {print $10; exit}')"
   fi
   sed -i "s/^BACKUP_GPG_SIGNING_KEY=.*$/BACKUP_GPG_SIGNING_KEY=$fingerprint/" "$deployment/.env"
@@ -255,9 +265,9 @@ fi
 cd "$deployment"
 export CHATWOOT_BUILD_GIT_SHA="$(git -C "$source_dir" rev-parse --verify HEAD)"
 docker compose --env-file .env -f compose.yaml build --pull rails claude-agent
-./scripts/prepare.sh
-./scripts/bootstrap.sh
-./scripts/smoke.sh
+./scripts/prepare.sh </dev/null
+./scripts/bootstrap.sh </dev/null
+./scripts/smoke.sh </dev/null
 
 # Nightly application-consistent backup with offsite copy; the script serialises itself.
 crontab -l 2>/dev/null | grep -v 'scripts/backup.sh' >"$HOME/.crontab.new" || true
@@ -274,8 +284,8 @@ command_verify() {
   remote "$host" -- bash -s -- "$REMOTE_DIR/src/deployment/myinvest" "$SUPPORT_HOSTNAME" <<'REMOTE'
 set -Eeuo pipefail
 cd "$1"
-./scripts/smoke.sh
-PRODUCTION_E2E_CONFIRMATION="test:$2" ./scripts/e2e-production.sh
+./scripts/smoke.sh </dev/null
+PRODUCTION_E2E_CONFIRMATION="test:$2" ./scripts/e2e-production.sh </dev/null
 REMOTE
 }
 

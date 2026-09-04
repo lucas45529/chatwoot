@@ -1,0 +1,108 @@
+name: myinvest-hermes
+
+x-hermes-service: &hermes-service
+  build:
+    context: ./hermes-agent
+  image: myinvest/hermes-agent:server
+  restart: unless-stopped
+  env_file:
+    - ./secrets/hermes.env
+  environment:
+    HERMES_UID: "10000"
+    HERMES_GID: "10000"
+    HERMES_DISABLE_LAZY_INSTALLS: "1"
+    HERMES_DASHBOARD: "true"
+    HERMES_DASHBOARD_HOST: 0.0.0.0
+    HERMES_DASHBOARD_PORT: "9119"
+  volumes:
+    - ./data/hermes:/opt/data
+    - ./memory-mcp:/opt/memory-mcp:ro
+    - ./secrets/memory_http_token:/run/secrets/memory_http_token:ro
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - internal
+    - egress
+
+services:
+  ollama:
+    image: ollama/ollama@sha256:9e7d782e99880c70f9563c51633da875ca605518a8f8d95c2532bda70a027b7a
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  memory:
+    build:
+      context: .
+      dockerfile: Dockerfile.memory
+    image: myinvest/memory-bridge:server
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      MEMORY_HTTP_HOST: 0.0.0.0
+      MEMORY_HTTP_PORT: "8787"
+      MEMORY_HTTP_TOKEN_FILE: /run/secrets/memory_http_token
+      MEMORY_INDEX_NAME: memory-local-eu
+      MEMORY_PINECONE_MODE: local-vectors
+      MEMORY_LOCAL_EMBED: bge-m3
+      MEMORY_LOCAL_EMBED_TIMEOUT_MS: "180000"
+      MEMORY_ROOT: /data
+      NODE_OPTIONS: --max-old-space-size=24576
+      OLLAMA_URL: http://ollama:11434
+    volumes:
+      - ./data/memory:/data
+      - ./secrets/memory_http_token:/run/secrets/memory_http_token:ro
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+  gateway:
+    <<: *hermes-service
+    depends_on:
+      memory:
+        condition: service_healthy
+    command: ["gateway", "run"]
+    ports:
+      - "127.0.0.1:9119:9119"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "pgrep -f '[h]ermes.*gateway' >/dev/null && curl -fsS http://127.0.0.1:9119/health >/dev/null"
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+
+networks:
+  internal:
+    driver: bridge
+    internal: true
+  egress:
+    driver: bridge
+
+volumes:
+  ollama:

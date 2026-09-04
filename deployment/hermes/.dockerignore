@@ -1,0 +1,12 @@
+data
+hermes-agent
+runtime
+secrets
+memory-mcp/.backup
+memory-mcp/.git
+memory-mcp/.recovery
+memory-mcp/.state
+memory-mcp/dist.bak-*
+memory-mcp/node_modules
+**/__pycache__
+**/*.log

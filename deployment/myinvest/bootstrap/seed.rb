@@ -117,6 +117,7 @@ ActiveRecord::Base.transaction do
       inbox = Inbox.create!(account: account, channel: channel, name: inbox_name)
     end
     raise "Managed inbox is not a website inbox: #{inbox_name}" unless inbox.channel.is_a?(Channel::WebWidget)
+    inbox.update!(enable_auto_assignment: false)
 
     InboxMember.find_or_create_by!(inbox: inbox, user: admin)
     bot_inbox = AgentBotInbox.find_or_initialize_by(inbox: inbox)

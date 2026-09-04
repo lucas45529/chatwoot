@@ -1,0 +1,35 @@
+FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS build
+
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends g++ make python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN npm install --global pnpm@10.17.1
+WORKDIR /app
+COPY memory-mcp/package.json memory-mcp/pnpm-lock.yaml ./
+COPY memory-mcp/pnpm-workspace.yaml /tmp/pnpm-workspace.yaml
+RUN printf 'packages:\n  - \".\"\n' > pnpm-workspace.yaml && \
+    cat /tmp/pnpm-workspace.yaml >> pnpm-workspace.yaml
+RUN pnpm install --frozen-lockfile
+COPY memory-mcp/tsconfig.json ./
+COPY memory-mcp/src ./src
+RUN pnpm build && pnpm prune --prod
+
+FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73
+
+ENV NODE_ENV=production
+WORKDIR /app
+RUN useradd --uid 10000 --create-home --home-dir /home/memory memory && \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'set -eu' \
+      'MEMORY_HTTP_TOKEN="$(cat "${MEMORY_HTTP_TOKEN_FILE:?MEMORY_HTTP_TOKEN_FILE is required}")"' \
+      'export MEMORY_HTTP_TOKEN' \
+      'exec node dist/http-server.js' \
+      > /usr/local/bin/start-memory && \
+    chmod 0755 /usr/local/bin/start-memory
+COPY --from=build --chown=memory:memory /app/package.json /app/pnpm-lock.yaml ./
+COPY --from=build --chown=memory:memory /app/node_modules ./node_modules
+COPY --from=build --chown=memory:memory /app/dist ./dist
+USER memory
+ENTRYPOINT ["/usr/local/bin/start-memory"]

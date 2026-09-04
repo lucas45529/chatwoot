@@ -329,8 +329,8 @@ channel-readiness|chatwoot/chatwoot:v4.16.2@sha256:f9b071ffe678031ee6d51bf591ddd
 postgres|pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
 redis|redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
 caddy|caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
-minio|minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f
-minio-init|minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:37d109dddbbb2c95873f5fc81ac93f37023264770fc580a7564148892087b1b7
+minio|minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+minio-init|minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
 IMAGES
   for service in rails sidekiq; do
     initializer_source="$(jq -r --arg service "$service" '.services[$service].volumes[] | select(.target == "/app/config/initializers/myinvest_security.rb") | .source' <<<"$rendered")"

@@ -42,6 +42,12 @@ done
   expected = [ENV.fetch("MYINVEST_ACCOUNT_NAME"), ENV.fetch("ACADEMY_NEW_ACCOUNT_NAME"), ENV.fetch("ACADEMY_LEGACY_ACCOUNT_NAME")]
   missing = expected - Account.where(name: expected).pluck(:name)
   abort("Missing account boundaries: #{missing.join(", ")}") if missing.any?
+  expected.each do |account_name|
+    account = Account.find_by!(name: account_name)
+    inbox = account.inboxes.find_by!(name: "#{account_name} Website")
+    routing_valid = !inbox.enable_auto_assignment? && inbox.agent_bot_inbox&.active?
+    abort("Invalid AgentBot routing for #{inbox.name}") unless routing_valid
+  end
 '
 
 "${compose[@]}" exec -T rails ruby -rsocket -e \
