@@ -33,5 +33,12 @@ bootstrap_environment=(
     chown "$HOST_DEPLOY_UID:$HOST_DEPLOY_GID" "/bootstrap-env/$RENDER_ENV_NAME" \
       /bootstrap-output/tenants.json /bootstrap-output/rebooking-bridge.json
   '
-"${compose[@]}" up -d --build --force-recreate claude-agent
+# Docker-Compose gives the already-exported shell values precedence over the
+# updated env file. Reload the rendered tenant and target values before start.
+set -a
+# shellcheck disable=SC1090
+source "$env_path"
+set +a
+"${compose[@]}" build claude-agent
+"${compose[@]}" up -d --no-deps --no-build --force-recreate claude-agent
 printf 'Three account boundaries, website inboxes, scoped Agent Bots, and the Claude agent are present.\n'

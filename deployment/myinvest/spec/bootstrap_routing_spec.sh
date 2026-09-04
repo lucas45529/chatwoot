@@ -18,5 +18,8 @@ grep -Fq 'Intern SSO user must belong to exactly one account' "$smoke"
 grep -Fq 'tenant_configuration_pending=true' "$deployment_dir/scripts/validate.sh"
 grep -Fq 'ruby /bootstrap-scripts/render-tenants-env.rb /bootstrap-output/tenants.json' "$deployment_dir/scripts/bootstrap.sh"
 grep -Fq 'chown "$HOST_DEPLOY_UID:$HOST_DEPLOY_GID"' "$deployment_dir/scripts/bootstrap.sh"
+[[ "$(grep -Fc 'source "$env_path"' "$deployment_dir/scripts/bootstrap.sh")" -eq 2 ]]
+grep -Fq 'build claude-agent' "$deployment_dir/scripts/bootstrap.sh"
+grep -Fq 'up -d --no-deps --no-build --force-recreate claude-agent' "$deployment_dir/scripts/bootstrap.sh"
 
 printf 'Bootstrap routing contract passed: live inboxes stay assigned to active AgentBots.\n'
