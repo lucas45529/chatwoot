@@ -232,81 +232,75 @@ account_id="$(jq -r '.account_id' "$context_path")"
   printf 'Production E2E account does not match the tenant registry.\n' >&2
   exit 1
 }
-website_token="$(jq -r '.website_token' "$context_path")"
-external_base_url="${FRONTEND_URL%/}/api/v1/widget"
+inbox_id="$(jq -er '.inbox_id | select(type == "number" and . > 0)' "$context_path")"
+api_token="$(jq -er '.api_token | select(type == "string" and length >= 24)' "$context_path")"
+external_base_url="${FRONTEND_URL%/}/api/v1/accounts/$account_id"
 e2e_runtime="$(mktemp -d)"
 
-create_external_widget_path() {
+create_external_api_path() {
   local kind="$1"
   local content="$2"
   local marker="Production E2E ${kind} ${test_source_id}"
-  local config_path="$e2e_runtime/${kind}-config.json"
+  local contact_path="$e2e_runtime/${kind}-contact.json"
   local conversation_path="$e2e_runtime/${kind}-conversation.json"
+  local message_path="$e2e_runtime/${kind}-message.json"
+  local contact_id source_id conversation_id display_id
 
   curl --fail --silent --show-error --max-time 30 \
     --header 'content-type: application/json' \
-    --data-binary "$(jq -cn --arg website_token "$website_token" '{website_token:$website_token}')" \
-    "$external_base_url/config" > "$config_path"
-  jq -e '
-    (.website_channel_config | type == "object") and
-    (.website_channel_config.auth_token | type == "string" and length > 0) and
-    (.website_channel_config.website_token | type == "string" and length > 0) and
-    (.contact | type == "object")
-  ' "$config_path" >/dev/null || {
-    printf 'External widget config response does not match the expected schema.\n' >&2
-    return 1
-  }
-  local auth_token
-  auth_token="$(jq -er '.website_channel_config.auth_token | select(type == "string" and length > 0)' "$config_path")"
+    --header "api_access_token: $api_token" \
+    --data-binary "$(jq -cn \
+      --argjson inbox_id "$inbox_id" --arg marker "$marker" --arg identifier "production-e2e:${kind}:${test_source_id}" \
+      '{inbox_id:$inbox_id,identifier:$identifier,name:$marker}')" \
+    "$external_base_url/contacts" > "$contact_path"
+  contact_id="$(jq -er '.payload.contact.id | select(type == "number" and . > 0)' "$contact_path")"
+  source_id="$(jq -er '.payload.contact.contact_inboxes[0].source_id | select(type == "string" and length > 0)' "$contact_path")"
   curl --fail --silent --show-error --max-time 30 \
     --header 'content-type: application/json' \
-    --header "X-Auth-Token: $auth_token" \
+    --header "api_access_token: $api_token" \
     --data-binary "$(jq -cn \
-      --arg website_token "$website_token" --arg marker "$marker" --arg content "$content" --arg recovery "$test_run_marker" \
-      '{website_token:$website_token,contact:{name:$marker},message:{content:$content,referer_url:"https://support.myinvest-pro.de/production-e2e"},custom_attributes:{myinvest_production_e2e_recovery:$recovery}}')" \
+      --arg source_id "$source_id" --arg recovery "$test_run_marker" \
+      --argjson inbox_id "$inbox_id" --argjson contact_id "$contact_id" \
+      '{source_id:$source_id,inbox_id:$inbox_id,contact_id:$contact_id,custom_attributes:{myinvest_production_e2e_recovery:$recovery}}')" \
     "$external_base_url/conversations" > "$conversation_path"
-  jq -e --arg content "$content" '
-    (.id | type == "number") and
-    (.messages | type == "array") and
-    ([.messages[] | select(.message_type == 0 and .content == $content and (.id | type == "number"))] | length == 1) and
-    (.contact | type == "object")
-  ' "$conversation_path" >/dev/null || {
-    printf 'External widget conversation response does not match the expected schema.\n' >&2
-    return 1
-  }
-  local display_id
-  display_id="$(jq -er '.id | select(type == "number")' "$conversation_path")"
-  # Record the exact account/display tuple before the server-marker write. The
-  # EXIT trap can therefore resolve a conversation even if that write fails.
-  created_display_ids+=("$display_id")
-  "${compose[@]}" exec -T \
-    -e E2E_ACCOUNT_ID="$account_id" -e E2E_DISPLAY_ID="$display_id" -e E2E_RUN_MARKER="$test_run_marker" \
+  conversation_id="$(jq -er '.id | select(type == "number" and . > 0)' "$conversation_path")"
+  display_id="$("${compose[@]}" exec -T \
+    -e E2E_ACCOUNT_ID="$account_id" -e E2E_CONVERSATION_ID="$conversation_id" -e E2E_RUN_MARKER="$test_run_marker" \
     rails bundle exec rails runner '
       account_id = Integer(ENV.fetch("E2E_ACCOUNT_ID"))
-      display_id = Integer(ENV.fetch("E2E_DISPLAY_ID"))
+      conversation_id = Integer(ENV.fetch("E2E_CONVERSATION_ID"))
       marker = ENV.fetch("E2E_RUN_MARKER")
       raise "invalid Production E2E marker" unless marker.match?(/\Aproduction-e2e-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{32}\z/)
-      conversation = Conversation.find_by!(account_id: account_id, display_id: display_id)
+      conversation = Conversation.find_by!(id: conversation_id, account_id: account_id)
       conversation.update!(additional_attributes: conversation.additional_attributes.merge("myinvest_production_e2e_run" => marker))
-    ' >/dev/null
-  printf '%s' "$auth_token" > "$e2e_runtime/${kind}-auth-token"
-  chmod 600 "$e2e_runtime/${kind}-auth-token" "$config_path" "$conversation_path"
+      print conversation.display_id
+    ')"
+  # Record the exact account/display tuple before external message creation so
+  # the EXIT trap can resolve a conversation if the API step fails.
+  created_display_ids+=("$display_id")
+  curl --fail --silent --show-error --max-time 30 \
+    --header 'content-type: application/json' \
+    --header "api_access_token: $api_token" \
+    --data-binary "$(jq -cn --arg content "$content" --arg source_id "production-e2e:${kind}:${test_source_id}" \
+      '{content:$content,message_type:"incoming",source_id:$source_id}')" \
+    "$external_base_url/conversations/$conversation_id/messages" > "$message_path"
+  jq -e --arg content "$content" \
+    '(.id | type == "number" and . > 0) and .message_type == 0 and .content == $content' \
+    "$message_path" >/dev/null || {
+    printf 'External API message response does not match the expected schema.\n' >&2
+    return 1
+  }
+  chmod 600 "$contact_path" "$conversation_path" "$message_path"
 }
 
 handoff_content='Guten Morgen, mein Kunde wurde von einem fremden Finanzierer mit KI-Avatar angeschrieben. Es fehlen Telefonnummer und Datenschutzlink; Dokumente sollen auf ein Drittportal hochgeladen werden. Das wirkt maximal unseriös.'
 answer_content='Wie funktioniert die Finanzierungsvermittlung?'
-create_external_widget_path handoff "$handoff_content"
-create_external_widget_path answer "$answer_content"
-conversation_display_id="$(jq -r '.id' "$e2e_runtime/handoff-conversation.json")"
-message_id="$(jq -r --arg content "$handoff_content" '.messages[] | select(.message_type == 0 and .content == $content) | .id' "$e2e_runtime/handoff-conversation.json")"
-answer_conversation_display_id="$(jq -r '.id' "$e2e_runtime/answer-conversation.json")"
-answer_message_id="$(jq -r --arg content "$answer_content" '.messages[] | select(.message_type == 0 and .content == $content) | .id' "$e2e_runtime/answer-conversation.json")"
-conversation_id="$("${compose[@]}" exec -T -e E2E_ACCOUNT_ID="$account_id" -e E2E_DISPLAY_ID="$conversation_display_id" rails bundle exec rails runner '
-  print Conversation.find_by!(account_id: Integer(ENV.fetch("E2E_ACCOUNT_ID")), display_id: Integer(ENV.fetch("E2E_DISPLAY_ID"))).id
-')"
-answer_conversation_id="$("${compose[@]}" exec -T -e E2E_ACCOUNT_ID="$account_id" -e E2E_DISPLAY_ID="$answer_conversation_display_id" rails bundle exec rails runner '
-  print Conversation.find_by!(account_id: Integer(ENV.fetch("E2E_ACCOUNT_ID")), display_id: Integer(ENV.fetch("E2E_DISPLAY_ID"))).id
-')"
+create_external_api_path handoff "$handoff_content"
+create_external_api_path answer "$answer_content"
+conversation_id="$(jq -r '.id' "$e2e_runtime/handoff-conversation.json")"
+message_id="$(jq -r '.id' "$e2e_runtime/handoff-message.json")"
+answer_conversation_id="$(jq -r '.id' "$e2e_runtime/answer-conversation.json")"
+answer_message_id="$(jq -r '.id' "$e2e_runtime/answer-message.json")"
 deadline=$((SECONDS + ${E2E_TIMEOUT_SECONDS:-120}))
 # Die Uebergabe beweist den echten kritischen Fall: urgent, Sicherheitslabel,
 # Pflicht-Zuweisung und genau eine interne Notiz.
@@ -330,14 +324,12 @@ done
 
 # Die Uebergabe muss fuer den Kunden sichtbar sein: genau eine Bot-Nachricht mit
 # der Lieferkennung der Kundennachricht. Ein stiller Statuswechsel gilt als Fehler.
-handoff_auth_token="$(<"$e2e_runtime/handoff-auth-token")"
 handoff_ack_deadline=$((SECONDS + ${E2E_ACK_TIMEOUT_SECONDS:-60}))
 handoff_ack_visible=false
 while (( SECONDS < handoff_ack_deadline )); do
   curl --fail --silent --show-error --max-time 20 --get \
-    --header "X-Auth-Token: $handoff_auth_token" \
-    --data-urlencode "website_token=$website_token" \
-    "$external_base_url/messages" > "$e2e_runtime/handoff-messages.json"
+    --header "api_access_token: $api_token" \
+    "$external_base_url/conversations/$conversation_id/messages" > "$e2e_runtime/handoff-messages.json"
   if jq -e --arg marker "$message_id" \
     '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker) and ((.content_attributes.myinvest_agent_message_kind // "") == "handoff_ack") and (.content | type == "string") and (.content | length > 0))] | length == 1' \
     "$e2e_runtime/handoff-messages.json" >/dev/null; then
@@ -347,13 +339,12 @@ while (( SECONDS < handoff_ack_deadline )); do
   sleep 2
 done
 [[ "$handoff_ack_visible" == true ]] || {
-  printf 'The AgentBot handoff stayed silent: no acknowledgement was visible through the external widget API.\n' >&2
+  printf 'The AgentBot handoff stayed silent: no acknowledgement was visible through the external account API.\n' >&2
   exit 1
 }
 # Der Ack-Beweis ist Fortschritt: das Zeitbudget fuer die belegte Antwort neu setzen.
 deadline=$((SECONDS + ${E2E_TIMEOUT_SECONDS:-120}))
 
-answer_auth_token="$(<"$e2e_runtime/answer-auth-token")"
 until "${compose[@]}" exec -T \
   -e E2E_CONVERSATION_ID="$answer_conversation_id" -e E2E_MESSAGE_ID="$answer_message_id" \
   -e E2E_EXPECTED_SOURCE_URL='https://www.myinvest-pro.de/faq' \
@@ -385,9 +376,8 @@ until "${compose[@]}" exec -T \
   sleep 2
 done
 curl --fail --silent --show-error --max-time 20 --get \
-  --header "X-Auth-Token: $answer_auth_token" \
-  --data-urlencode "website_token=$website_token" \
-  "$external_base_url/messages" > "$e2e_runtime/answer-messages.json"
+  --header "api_access_token: $api_token" \
+  "$external_base_url/conversations/$answer_conversation_id/messages" > "$e2e_runtime/answer-messages.json"
 jq -e --arg marker "$answer_message_id" \
   '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker))] | length == 0' \
   "$e2e_runtime/answer-messages.json" >/dev/null || {
@@ -472,4 +462,4 @@ test_document_inserted=false
 find "$e2e_runtime" -depth -delete
 trap - EXIT
 
-printf 'Production E2E passed: external website ingress, critical AgentBot handoff, human-review AI draft without public leakage, HMAC, replay suppression, and tenant rejection.\n'
+printf 'Production E2E passed: external support API ingress, critical AgentBot handoff, human-review AI draft without public leakage, HMAC, replay suppression, and tenant rejection.\n'

@@ -123,15 +123,44 @@ ActiveRecord::Base.transaction do
     inbox_name = "#{name} Website"
     inbox = Inbox.find_by(account: account, name: inbox_name)
     unless inbox
-      channel = Channel::WebWidget.create!(
+      channel = Channel::Api.create!(
         account: account,
-        website_url: website_url,
-        welcome_title: "Willkommen beim #{name} Support",
-        welcome_tagline: 'Wie können wir helfen?'
+        webhook_url: nil,
+        hmac_mandatory: false,
+        additional_attributes: {
+          'managed_by' => 'myinvest-bootstrap',
+          'myinvest_support_bridge' => true,
+          'myinvest_website_url' => website_url
+        }
       )
       inbox = Inbox.create!(account: account, channel: channel, name: inbox_name)
     end
-    raise "Managed inbox is not a website inbox: #{inbox_name}" unless inbox.channel.is_a?(Channel::WebWidget)
+    unless inbox.channel.is_a?(Channel::Api)
+      previous_channel = inbox.channel
+      channel = Channel::Api.create!(
+        account: account,
+        webhook_url: nil,
+        hmac_mandatory: false,
+        additional_attributes: {
+          'managed_by' => 'myinvest-bootstrap',
+          'myinvest_support_bridge' => true,
+          'myinvest_website_url' => website_url,
+          'myinvest_replaced_channel_type' => previous_channel.class.name,
+          'myinvest_replaced_channel_id' => previous_channel.id
+        }
+      )
+      inbox.update!(channel: channel)
+    end
+    raise "Managed inbox is not an API inbox: #{inbox_name}" unless inbox.channel.is_a?(Channel::Api)
+    inbox.channel.update!(
+      webhook_url: nil,
+      hmac_mandatory: false,
+      additional_attributes: inbox.channel.additional_attributes.merge(
+        'managed_by' => 'myinvest-bootstrap',
+        'myinvest_support_bridge' => true,
+        'myinvest_website_url' => website_url
+      )
+    )
     inbox.update!(enable_auto_assignment: false)
 
     InboxMember.find_or_create_by!(inbox: inbox, user: admin)
@@ -168,8 +197,7 @@ ActiveRecord::Base.transaction do
       inboxId: inbox.id,
       webhookSecret: agent_bot.secret,
       handoffAssigneeId: admin.id,
-      agentBotToken: agent_bot.access_token.token,
-      websiteToken: inbox.channel.website_token
+      agentBotToken: agent_bot.access_token.token
     }
   end
 end
@@ -191,4 +219,4 @@ File.write(bridge_temporary_path, JSON.generate(rebooking_bridge_credentials), m
 File.rename(bridge_temporary_path, bridge_output_path)
 File.chmod(0o600, bridge_output_path)
 
-puts "Bootstrap complete: #{account_names.length} account boundaries, website inboxes, API bridge, and Agent Bots."
+puts "Bootstrap complete: #{account_names.length} account boundaries, API support inboxes, rebooking bridge, and Agent Bots."
