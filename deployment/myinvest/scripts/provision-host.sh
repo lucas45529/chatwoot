@@ -236,6 +236,32 @@ deployment="$source_dir/deployment/myinvest"
 
 if [[ ! -d "$source_dir/.git" ]]; then
   git clone --quiet "$repository_url" "$source_dir"
+elif [[ -n "$(git -C "$source_dir" status --porcelain --untracked-files=all)" ]]; then
+  # A prior emergency repair may have left the checkout dirty. Build a clean,
+  # pinned release beside it and swap paths only after the checkout is ready;
+  # the running containers retain their existing bind mounts until recreation.
+  releases_dir="$remote_dir/releases"
+  candidate_dir="$releases_dir/src-$revision-$$"
+  previous_source_dir="$releases_dir/previous-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  install -d -m 0700 "$releases_dir"
+  cleanup_candidate() {
+    [[ ! -e "$candidate_dir" ]] || find "$candidate_dir" -depth -delete
+  }
+  trap cleanup_candidate EXIT
+  git clone --quiet --no-checkout "$repository_url" "$candidate_dir"
+  git -C "$candidate_dir" fetch --quiet origin "$revision"
+  git -C "$candidate_dir" checkout --quiet --detach "$revision"
+  if [[ -d "$source_dir/deployment/myinvest/runtime" ]]; then
+    install -d -m 0700 "$candidate_dir/deployment/myinvest/runtime"
+    cp -a "$source_dir/deployment/myinvest/runtime/." "$candidate_dir/deployment/myinvest/runtime/"
+  fi
+  mv "$source_dir" "$previous_source_dir"
+  if ! mv "$candidate_dir" "$source_dir"; then
+    mv "$previous_source_dir" "$source_dir"
+    exit 1
+  fi
+  candidate_dir=''
+  trap - EXIT
 fi
 git -C "$source_dir" fetch --quiet origin "$revision"
 git -C "$source_dir" checkout --quiet --detach "$revision"
