@@ -23,7 +23,8 @@ grep -Fq 'install -m 0755 "$remote_dir/incoming/validate.sh" "$deployment/script
 
 # Dirty emergency hotfixes never block a pinned rollout or leak into it.
 grep -Fq 'status --porcelain --untracked-files=all' "$provision_script"
-grep -Fq 'cp -a "$source_dir/deployment/myinvest/runtime/." "$candidate_dir/deployment/myinvest/runtime/"' "$provision_script"
+grep -Fq 'sudo -n cp -a "$source_dir/deployment/myinvest/runtime/." "$candidate_dir/deployment/myinvest/runtime/"' "$provision_script"
+grep -Fq 'sudo -n chown -R "$(id -u):$(id -g)" "$candidate_dir/deployment/myinvest/runtime"' "$provision_script"
 grep -Fq 'mv "$source_dir" "$previous_source_dir"' "$provision_script"
 
 # All five remote child script calls must prevent stdin inheritance

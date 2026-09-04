@@ -253,7 +253,8 @@ elif [[ -n "$(git -C "$source_dir" status --porcelain --untracked-files=all)" ]]
   git -C "$candidate_dir" checkout --quiet --detach "$revision"
   if [[ -d "$source_dir/deployment/myinvest/runtime" ]]; then
     install -d -m 0700 "$candidate_dir/deployment/myinvest/runtime"
-    cp -a "$source_dir/deployment/myinvest/runtime/." "$candidate_dir/deployment/myinvest/runtime/"
+    sudo -n cp -a "$source_dir/deployment/myinvest/runtime/." "$candidate_dir/deployment/myinvest/runtime/"
+    sudo -n chown -R "$(id -u):$(id -g)" "$candidate_dir/deployment/myinvest/runtime"
   fi
   mv "$source_dir" "$previous_source_dir"
   if ! mv "$candidate_dir" "$source_dir"; then
