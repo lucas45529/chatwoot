@@ -29,7 +29,9 @@ test_source_id="$test_run_marker"
 expected_account_id="$(jq -er '.[] | select(.key == "saas") | .accountId | select(type == "number")' "$deployment_dir/runtime/tenants.json")"
 # Zuweisung ist Pflicht und je Mandant account-spezifisch.
 expected_handoff_assignee_id="$(jq -er '.[] | select(.key == "saas") | .handoffAssigneeId | select(type == "number" and . > 0)' "$deployment_dir/runtime/tenants.json")"
-test_content='Die Produktionspfadprüfung beginnt im Testbereich unter Einstellungen.'
+# Tenant-gebundener Recovery-Marker für abgebrochene Läufe. Die Zeile ist
+# absichtlich kein Antwortwissen: produktiv antwortet allein der Website-Korpus.
+test_content='Production E2E recovery registry marker.'
 test_content_hash="$(printf '%s' "$test_content" | shasum -a 256 | awk '{print $1}')"
 test_document_inserted=false
 created_display_ids=()
@@ -215,10 +217,10 @@ INSERT INTO agent_knowledge_documents
   (tenant_key, source_namespace, source_id, title, content, metadata, content_hash,
    publication_status, active, ingest_batch_id)
 VALUES
-  ('\''saas'\'', '\''production-e2e'\'', :'\''source_id'\'', '\''Production E2E Knowledge'\'', :'\''content'\'',
-   jsonb_build_object('\''synthetic'\'', true), :'\''content_hash'\'', '\''published'\'', true, :'\''source_id'\'')
+  ('\''saas'\'', '\''production-e2e'\'', :'\''source_id'\'', '\''Production E2E Recovery Registry'\'', :'\''content'\'',
+   jsonb_build_object('\''synthetic'\'', true), :'\''content_hash'\'', '\''retired'\'', false, :'\''source_id'\'')
 ON CONFLICT (tenant_key, source_namespace, source_id, content_hash)
-DO UPDATE SET publication_status = '\''published'\'', active = true, updated_at = now();
+DO UPDATE SET publication_status = '\''retired'\'', active = false, updated_at = now();
 SQL' >/dev/null
 test_document_inserted=true
 
@@ -292,7 +294,7 @@ create_external_widget_path() {
 }
 
 handoff_content='Guten Morgen, mein Kunde wurde von einem fremden Finanzierer mit KI-Avatar angeschrieben. Es fehlen Telefonnummer und Datenschutzlink; Dokumente sollen auf ein Drittportal hochgeladen werden. Das wirkt maximal unseriös.'
-answer_content='Wo beginnt die Produktionspfadprüfung?'
+answer_content='Wie funktioniert die Finanzierungsvermittlung?'
 create_external_widget_path handoff "$handoff_content"
 create_external_widget_path answer "$answer_content"
 conversation_display_id="$(jq -r '.id' "$e2e_runtime/handoff-conversation.json")"
@@ -354,23 +356,26 @@ deadline=$((SECONDS + ${E2E_TIMEOUT_SECONDS:-120}))
 answer_auth_token="$(<"$e2e_runtime/answer-auth-token")"
 until "${compose[@]}" exec -T \
   -e E2E_CONVERSATION_ID="$answer_conversation_id" -e E2E_MESSAGE_ID="$answer_message_id" \
-  -e E2E_SOURCE_ID="$test_source_id" -e E2E_ASSIGNEE_ID="$expected_handoff_assignee_id" \
+  -e E2E_EXPECTED_SOURCE_URL='https://www.myinvest-pro.de/faq' \
+  -e E2E_ASSIGNEE_ID="$expected_handoff_assignee_id" \
   rails bundle exec rails runner '
     conversation = Conversation.find(Integer(ENV.fetch("E2E_CONVERSATION_ID")))
     marker = ENV.fetch("E2E_MESSAGE_ID")
-    source_id = ENV.fetch("E2E_SOURCE_ID")
+    expected_source_url = ENV.fetch("E2E_EXPECTED_SOURCE_URL")
     draft_key = format(Redis::Alfred::CONVERSATION_DRAFT_MESSAGE, id: conversation.id)
     draft = Redis::Alfred.get(draft_key).to_s
     notes = conversation.messages.outgoing.select do |message|
       message.private? && message.content_attributes["myinvest_agent_delivery_id"] == marker &&
         message.content_attributes["myinvest_agent_message_kind"] == "draft_note" &&
         message.content.to_s.include?("Antwortvorschlag:") &&
-        message.content.to_s.include?("Quellen:") && message.content.to_s.include?(source_id)
+        message.content.to_s.include?("Quellen:") &&
+        message.content.to_s.include?(expected_source_url)
     end
     ready = conversation.open? &&
             conversation.assignee_id == Integer(ENV.fetch("E2E_ASSIGNEE_ID"), 10) &&
             conversation.label_list.include?("ki-entwurf") &&
-            draft.include?("Einstellungen") && notes.one?
+            conversation.label_list.include?("beratung") &&
+            draft.strip.length >= 20 && notes.one?
     exit(ready ? 0 : 1)
   ' >/dev/null 2>&1; do
   (( SECONDS < deadline )) || {
