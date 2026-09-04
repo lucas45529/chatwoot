@@ -18,6 +18,7 @@ grep -Fq 'api_token: intern_sso_user.access_token.token' "$production_e2e_contex
 grep -Fq -- '-e FRONTEND_URL -e LOCAL_SMOKE -e INTERN_SSO_EMAIL' "$production_e2e"
 grep -Fq 'api_access_token: $api_token' "$production_e2e"
 grep -Fq 'content_attributes:{myinvest_agent_action:"draft"}' "$production_e2e"
+grep -Fq '((.private // false) == false)' "$production_e2e"
 grep -Fq '/api/v1/accounts/$account_id' "$production_e2e"
 ! grep -Fq '/api/v1/widget' "$production_e2e"
 grep -Fq 'routing_valid = !inbox.enable_auto_assignment? && inbox.agent_bot_inbox&.active?' "$smoke"

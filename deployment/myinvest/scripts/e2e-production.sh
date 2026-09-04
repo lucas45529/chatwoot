@@ -379,7 +379,7 @@ curl --fail --silent --show-error --max-time 20 --get \
   --header "api_access_token: $api_token" \
   "$external_base_url/conversations/$answer_conversation_id/messages" > "$e2e_runtime/answer-messages.json"
 jq -e --arg marker "$answer_message_id" \
-  '[.payload[] | select(.message_type == 1 and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker))] | length == 0' \
+  '[.payload[] | select(.message_type == 1 and ((.private // false) == false) and ((.content_attributes.myinvest_agent_delivery_id // "") == $marker))] | length == 0' \
   "$e2e_runtime/answer-messages.json" >/dev/null || {
   printf 'The AI draft leaked into the customer-visible widget conversation.\n' >&2
   exit 1
