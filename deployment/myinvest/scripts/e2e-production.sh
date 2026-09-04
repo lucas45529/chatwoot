@@ -428,14 +428,18 @@ signature="$("${compose[@]}" exec -T \
   ')"
 e2e_url="${FRONTEND_URL%/}/_agent/webhooks/chatwoot"
 for suffix in first replay; do
-  status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 20 \
+  status="$(curl --silent --output "$e2e_runtime/replay-${suffix}.json" --write-out '%{http_code}' --max-time 20 \
     --header 'content-type: application/json' \
     --header "x-chatwoot-delivery: production-e2e-${message_id}-${suffix}" \
     --header "x-chatwoot-timestamp: $timestamp" \
     --header "x-chatwoot-signature: $signature" \
     --data-binary "$payload" "$e2e_url")"
-  [[ "$status" == 202 ]] || {
-    printf 'Expected signed production webhook status 202, got %s.\n' "$status" >&2
+  [[ "$status" == 200 ]] || {
+    printf 'Expected replayed production webhook status 200, got %s.\n' "$status" >&2
+    exit 1
+  }
+  jq -e '.accepted == false' "$e2e_runtime/replay-${suffix}.json" >/dev/null || {
+    printf 'Replayed production webhook was not explicitly deduplicated.\n' >&2
     exit 1
   }
 done

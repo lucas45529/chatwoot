@@ -9,6 +9,8 @@ grep -Fq "E2E_EXPECTED_SOURCE_URL='https://www.myinvest-pro.de/faq'" "$e2e_scrip
 grep -Fq 'conversation.label_list.include?("beratung")' "$e2e_script"
 grep -Fq "Production E2E Recovery Registry" "$e2e_script"
 grep -Fq "'\''retired'\'', false" "$e2e_script"
+grep -Fq 'Expected replayed production webhook status 200' "$e2e_script"
+grep -Fq "jq -e '.accepted == false'" "$e2e_script"
 if grep -Fq 'draft.include?("Einstellungen")' "$e2e_script"; then
   printf 'Production E2E still depends on agent-local synthetic answer knowledge.\n' >&2
   exit 1
