@@ -77,7 +77,13 @@ function cleanInput(value: string): { text: string; redactionCount: number } {
   // Reuse the miner's content perimeter for manual review too. Generic reset
   // navigation is reusable; an actual password or an individual entitlement
   // remains prohibited even when a reviewer attempts to publish it.
-  const reusableProcessText = value.replace(/\b(?:passwort|kennwort)\s+(?:zurücksetzen|zuruecksetzen|ändern|aendern|vergessen)\b/giu, '')
+  const credentialText = value.replace(/[„“”"'«»‘’]/gu, '')
+  if (/\b(?:passwort|kennwort)\s+(?:zurücksetzen|zuruecksetzen|ändern|aendern)\s*(?:(?:auf|zu)\b|[=:])/iu.test(credentialText)) {
+    throw new LearningRequestError(422, 'credentials_not_allowed')
+  }
+  // Only a closed button label or generic reset instruction is exempt. Do
+  // not erase the credential marker in "Passwort zurücksetzen auf <value>".
+  const reusableProcessText = value.replace(/\b(?:passwort|kennwort)\s+(?:zurücksetzen|zuruecksetzen|ändern|aendern|vergessen)\b(?=\s*(?:$|[.!?„“”"'«»‘’]|und\s+(?:folge|befolge)\b))/giu, '')
   const individualGrant = /\b(?:leads?|gutschrift|rabatt|sonderkonditionen|zusatzleistungen)\b[^.!?\n]{0,100}\b(?:freigegeben|zugesagt|versprochen|bewilligt|gewährt|gewaehrt|reserviert)\b/iu
   if (sensitiveTopic.test(reusableProcessText) || directPersonalization.test(value) || individualGrant.test(value)) {
     throw new LearningRequestError(422, 'non_reusable_learning_content')

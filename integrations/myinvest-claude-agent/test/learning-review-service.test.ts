@@ -53,6 +53,10 @@ describe('existing learning candidate review', () => {
     'Sein persönliches Kennwort ist Sommerregen2026!.',
     'Für Max Mustermann sind zwei zusätzliche Leads freigegeben.',
     'Dir wurden fünf Leads zugesagt und zwei weitere freigegeben.',
+    'Bitte das Passwort zurücksetzen auf Sommerregen2026! und anschließend anmelden.',
+    'Bitte das Kennwort ändern zu Sonnenschein und anschließend anmelden.',
+    'Das Passwort zurücksetzen = Sommerregen2026!.',
+    'Bitte auf „Passwort zurücksetzen“ klicken und das Passwort auf Sonnenschein setzen.',
   ])('rejects personal credentials and individual promises in both save and publish: %s', async (answer) => {
     const save = database()
     await expect(save.service.execute({ action: 'save', tenant: 'saas', question: 'Wie funktioniert der Zugang?', answer, reason: 'Bessere Antwort' })).rejects.toMatchObject({ status: 422 })
@@ -65,6 +69,14 @@ describe('existing learning candidate review', () => {
   it('allows generic password reset process advice without a credential or individual promise', async () => {
     const { service } = database()
     await expect(service.execute({ action: 'save', tenant: 'saas', question: 'Wie kann ich mein Passwort zurücksetzen?', answer: 'Klicke im Anmeldefenster auf Passwort vergessen und folge den Hinweisen.', reason: 'Den allgemeinen Ablauf erklären.' })).resolves.toHaveProperty('candidate')
+  })
+
+  it.each([
+    'Klicke im Anmeldefenster auf „Passwort zurücksetzen“.',
+    'Wähle den Button "Passwort vergessen" und folge den Hinweisen.',
+    'Klicke auf Passwort zurücksetzen.',
+  ])('allows a generic reset navigation instruction: %s', async (answer) => {
+    await expect(database().service.execute({ action: 'save', tenant: 'saas', question: 'Wie kann ich mein Passwort zurücksetzen?', answer, reason: 'Allgemeinen Ablauf erklären.' })).resolves.toHaveProperty('candidate')
   })
 
   it('versions pending edits too, so an older review tab cannot approve new text', async () => {
