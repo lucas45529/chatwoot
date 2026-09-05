@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Prepare an authenticated, loopback-only SSH endpoint for Hermes recovery.
+
+Cloud design (not activated by this script): after the local endpoint is
+validated, an outgoing IAP reverse Unix-socket tunnel from this Mac should
+terminate at /opt/hermes-stack/mac-access/ssh.sock, shared privately with the
+Hermes gateway.  This avoids exposing a Mac port publicly.  The dedicated
+client private key is transported only after cloud authentication; it is
+never printed here.  macOS TCC/Full Disk Access remains a separate OS-level
+permission and is not changed by this script.
+
+Only ``prepare`` creates files.  ``serve`` and ``probe`` merely invoke the
+system OpenSSH tools; no launchd job, tunnel, cloud resource, install, or
+privileged operation is started or changed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import pwd
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+
+
+DEFAULT_PORT = 22022
+HOST_ALIAS = "hermes-mac"
+LOOPBACK = "127.0.0.1"
+USERNAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+
+class MacAccessError(ValueError):
+    """A safe, user-actionable configuration error."""
+
+
+def current_username() -> str:
+    uid = os.geteuid()
+    try:
+        username = pwd.getpwuid(uid).pw_name
+    except KeyError as error:
+        raise MacAccessError("cannot resolve the current system user") from error
+    if uid == 0 or username == "root":
+        raise MacAccessError("refusing to prepare an endpoint for root")
+    if not USERNAME_RE.fullmatch(username):
+        raise MacAccessError("current username contains unsupported characters")
+    return username
+
+
+def validate_port(port: int) -> int:
+    if not 1024 <= port <= 65535:
+        raise MacAccessError("port must be between 1024 and 65535")
+    return port
+
+
+def _new_output(path: str | os.PathLike[str]) -> Path:
+    raw_path = os.fspath(path)
+    if not raw_path or any(char.isspace() or char in "\x00\r\n" for char in raw_path):
+        raise MacAccessError("--output path contains unsupported whitespace or control characters")
+    expanded = Path(path).expanduser()
+    if any(char.isspace() or char in "\x00\r\n" for char in str(expanded)):
+        raise MacAccessError("--output path contains unsupported whitespace or control characters")
+    if os.path.lexists(str(expanded)):
+        raise MacAccessError("--output must name a new directory")
+    output = expanded.resolve()
+    if any(char.isspace() or char in "\x00\r\n" for char in str(output)):
+        raise MacAccessError("--output path contains unsupported whitespace or control characters")
+    if output == output.parent or output.exists() or output.is_symlink():
+        raise MacAccessError("--output must name a new directory")
+    if not output.parent.is_dir():
+        raise MacAccessError("--output parent directory must already exist")
+    try:
+        output.mkdir(mode=0o700)
+    except FileExistsError as error:
+        raise MacAccessError("--output must name a new directory") from error
+    output.chmod(0o700)
+    return output
+
+
+def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, check=True, shell=False, text=True)
+
+
+def _generate_key(path: Path) -> Path:
+    _run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(path)])
+    private_key = path
+    public_key = path.with_name(path.name + ".pub")
+    if not private_key.is_file() or not public_key.is_file():
+        raise MacAccessError("ssh-keygen did not create the expected key pair")
+    private_key.chmod(0o600)
+    public_key.chmod(0o644)
+    return public_key
+
+
+def _public_key(path: Path) -> str:
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+    if len(lines) != 1:
+        raise MacAccessError(f"invalid generated public key: {path.name}")
+    fields = lines[0].split()
+    if len(fields) < 2 or fields[0] != "ssh-ed25519":
+        raise MacAccessError(f"invalid generated public key: {path.name}")
+    return lines[0]
+
+
+def prepare(output_arg: str | os.PathLike[str], port: int = DEFAULT_PORT) -> Path:
+    port = validate_port(port)
+    username = current_username()
+    output = _new_output(output_arg)
+    host_key = output / "ssh_host_ed25519_key"
+    client_key = output / "id_ed25519"
+    host_public = _public_key(_generate_key(host_key))
+    client_public = _public_key(_generate_key(client_key))
+
+    authorized_keys = output / "authorized_keys"
+    authorized_keys.write_text(
+        f'restrict,from="{LOOPBACK}" {client_public}\n', encoding="utf-8"
+    )
+    authorized_keys.chmod(0o600)
+
+    known_hosts = output / "known_hosts"
+    known_hosts.write_text(
+        f"{HOST_ALIAS} {host_public}\n", encoding="utf-8"
+    )
+    known_hosts.chmod(0o600)
+
+    config = output / "sshd_config"
+    config.write_text(
+        "\n".join(
+            [
+                "# Dedicated Hermes recovery endpoint; generated by mac-access.py.",
+                f"ListenAddress {LOOPBACK}",
+                f"Port {port}",
+                "PidFile none",
+                f"AllowUsers {username}",
+                "PermitRootLogin no",
+                "PasswordAuthentication no",
+                "KbdInteractiveAuthentication no",
+                "ChallengeResponseAuthentication no",
+                "UsePAM no",
+                "PubkeyAuthentication yes",
+                "PermitUserEnvironment no",
+                "PermitUserRC no",
+                "DisableForwarding yes",
+                "PermitTTY no",
+                f"HostKey {host_key}",
+                f"AuthorizedKeysFile {authorized_keys}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    return output
+
+
+def serve(config_arg: str | os.PathLike[str]) -> int:
+    config = Path(config_arg).expanduser().resolve()
+    if not config.is_file():
+        raise MacAccessError("sshd config does not exist")
+    _run(["/usr/sbin/sshd", "-D", "-e", "-f", str(config)])
+    return 0
+
+
+def probe(
+    output_arg: str | os.PathLike[str],
+    port: int = DEFAULT_PORT,
+    read_path: str | os.PathLike[str] | None = None,
+) -> int:
+    port = validate_port(port)
+    username = current_username()
+    output = Path(output_arg).expanduser().resolve()
+    client_key = output / "id_ed25519"
+    known_hosts = output / "known_hosts"
+    if not client_key.is_file() or not known_hosts.is_file():
+        raise MacAccessError("prepared client key or known_hosts is missing")
+    path = Path(read_path).expanduser() if read_path is not None else output / "sshd_config"
+    remote_path = str(path)
+    if "\x00" in remote_path or "\n" in remote_path or "\r" in remote_path:
+        raise MacAccessError("probe file path contains a forbidden character")
+    # ssh accepts one remote command string; quote the only user-controlled
+    # argument so diagnostic reads cannot turn into an additional command.
+    quoted_path = shlex.quote(remote_path)
+    remote_command = f"pwd && test -r {quoted_path} && wc -c < {quoted_path}"
+    _run(
+        [
+            "ssh",
+            "-F",
+            "/dev/null",
+            "-i",
+            str(client_key),
+            "-p",
+            str(port),
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            f"UserKnownHostsFile={known_hosts}",
+            "-o",
+            f"HostKeyAlias={HOST_ALIAS}",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "--",
+            f"{username}@{LOOPBACK}",
+            remote_command,
+        ]
+    )
+    return 0
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    prepare_parser = commands.add_parser("prepare")
+    prepare_parser.add_argument("--output", required=True)
+    prepare_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve_parser = commands.add_parser("serve")
+    serve_parser.add_argument("--config", required=True)
+    for name in ("probe", "diagnostic"):
+        probe_parser = commands.add_parser(name)
+        probe_parser.add_argument("--output", required=True)
+        probe_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+        probe_parser.add_argument("--read")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        if args.command == "prepare":
+            prepare(args.output, args.port)
+            return 0
+        if args.command == "serve":
+            return serve(args.config)
+        return probe(args.output, args.port, args.read)
+    except (MacAccessError, OSError, subprocess.CalledProcessError) as error:
+        print(f"mac-access: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
