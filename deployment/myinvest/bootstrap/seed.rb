@@ -196,7 +196,7 @@ ActiveRecord::Base.transaction do
       accountId: account.id,
       inboxId: inbox.id,
       webhookSecret: agent_bot.secret,
-      handoffAssigneeId: admin.id,
+      handoffAssigneeId: key == 'saas' ? intern_sso_user.id : admin.id,
       agentBotToken: agent_bot.access_token.token
     }
   end
