@@ -1,6 +1,7 @@
 <script setup>
 import { computed, reactive } from 'vue';
 import Message from './Message.vue';
+import { historyProvenance } from './history';
 import { MESSAGE_TYPES } from './constants.js';
 import { useCamelCase } from 'dashboard/composables/useTransformKeys';
 import { useMapGetter } from 'dashboard/composables/store.js';
@@ -103,6 +104,8 @@ const shouldGroupWithNext = (index, searchList) => {
   const next = searchList[index + 1];
 
   if (next.status === 'failed') return false;
+  // Each imported row keeps its own original date/author visible.
+  if (historyProvenance(current) || historyProvenance(next)) return false;
 
   const nextSenderId = next.senderId ?? next.sender?.id;
   const currentSenderId = current.senderId ?? current.sender?.id;

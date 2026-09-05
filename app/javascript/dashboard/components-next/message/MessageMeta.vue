@@ -8,6 +8,7 @@ import { useInbox } from 'dashboard/composables/useInbox';
 import { useMessageContext } from './provider.js';
 
 import { MESSAGE_STATUS, MESSAGE_TYPES } from './constants';
+import { historyProvenance } from './history';
 
 const {
   isAFacebookInbox,
@@ -32,12 +33,22 @@ const {
   contentAttributes,
 } = useMessageContext();
 
-const readableTime = computed(() =>
-  messageTimestamp(createdAt.value, 'LLL d, h:mm a')
+const history = computed(() =>
+  historyProvenance({
+    sourceId: sourceId.value,
+    contentAttributes: contentAttributes.value,
+    messageType: messageType.value,
+  })
 );
+const readableTime = computed(() => {
+  const timestamp = history.value?.originalCreatedAt
+    ? history.value.originalCreatedAt.getTime() / 1000
+    : createdAt.value;
+  return messageTimestamp(timestamp, 'LLL d, h:mm a');
+});
 
 const showStatusIndicator = computed(() => {
-  if (isPrivate.value) return false;
+  if (isPrivate.value || history.value) return false;
   // Don't show status for failed messages, we already show error message
   if (status.value === MESSAGE_STATUS.FAILED) return false;
   // Don't show status for deleted messages
@@ -132,10 +143,29 @@ const statusToShow = computed(() => {
 </script>
 
 <template>
-  <div class="text-xs flex items-center gap-1.5">
-    <div class="inline">
-      <time class="inline">{{ readableTime }}</time>
-    </div>
+  <div class="text-xs flex flex-wrap items-center gap-1.5">
+    <template v-if="history">
+      <Icon icon="i-lucide-history" class="size-3" />
+      <span>{{ $t('CONVERSATION.IMPORTED_HISTORY') }}</span>
+      <span v-if="history.author === 'customer'">
+        {{ $t('CONVERSATION.HISTORY_CUSTOMER') }}
+      </span>
+      <span v-else-if="history.author === 'bot'">
+        {{ $t('CONVERSATION.HISTORY_BOT') }}
+      </span>
+      <span v-else-if="history.author === 'agent'">
+        {{ $t('CONVERSATION.HISTORY_AGENT') }}
+      </span>
+      <span v-else>{{ $t('CONVERSATION.HISTORY_UNKNOWN') }}</span>
+    </template>
+    <time
+      v-if="!history || history.originalCreatedAt"
+      :datetime="history?.originalCreatedAt?.toISOString()"
+      class="inline"
+    >
+      {{ readableTime }}
+    </time>
+    <span v-else>{{ $t('CONVERSATION.HISTORY_TIME_UNKNOWN') }}</span>
     <Icon v-if="isPrivate" icon="i-lucide-lock-keyhole" class="size-3" />
     <MessageStatus v-if="showStatusIndicator" :status="statusToShow" />
   </div>
