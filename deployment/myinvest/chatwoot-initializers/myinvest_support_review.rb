@@ -7,9 +7,10 @@ require 'json'
 module MyinvestSupportReview
   TENANTS = %w[saas new_academy legacy_academy].freeze
   RETIRED_TEST = JSON.generate('myinvest_e2e_retired' => true).freeze
+  RECOVERY_MARKER = '^production-e2e-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{32}$'.freeze
   VISIBLE_CONVERSATIONS = <<~SQL.freeze
     NOT (COALESCE(conversations.custom_attributes @> ?::jsonb, FALSE)
-      AND COALESCE(conversations.custom_attributes ->> 'myinvest_production_e2e_recovery' LIKE ?, FALSE))
+      AND COALESCE(conversations.custom_attributes ->> 'myinvest_production_e2e_recovery' ~ ?, FALSE))
   SQL
 
   def self.managed?(account)
@@ -20,7 +21,33 @@ module MyinvestSupportReview
   def self.visible(relation, account)
     return relation unless managed?(account)
 
-    relation.where(VISIBLE_CONVERSATIONS, RETIRED_TEST, 'production-e2e-%')
+    relation.where(VISIBLE_CONVERSATIONS, RETIRED_TEST, RECOVERY_MARKER)
+  end
+
+  VISIBLE_MESSAGES = <<~SQL.freeze
+    NOT EXISTS (SELECT 1 FROM conversations
+      WHERE conversations.id = messages.conversation_id
+        AND conversations.account_id = messages.account_id
+        AND NOT (#{VISIBLE_CONVERSATIONS}))
+  SQL
+  VISIBLE_CONTACTS = <<~SQL.freeze
+    (NOT EXISTS (SELECT 1 FROM conversations
+      WHERE conversations.contact_id = contacts.id AND conversations.account_id = contacts.account_id)
+    OR EXISTS (SELECT 1 FROM conversations
+      WHERE conversations.contact_id = contacts.id AND conversations.account_id = contacts.account_id
+        AND #{VISIBLE_CONVERSATIONS}))
+  SQL
+
+  def self.visible_messages(relation, account)
+    return relation unless managed?(account)
+
+    relation.where(VISIBLE_MESSAGES, RETIRED_TEST, RECOVERY_MARKER)
+  end
+
+  def self.visible_contacts(relation, account)
+    return relation unless managed?(account)
+
+    relation.where(VISIBLE_CONTACTS, RETIRED_TEST, RECOVERY_MARKER)
   end
 
   module Finder
@@ -43,6 +70,22 @@ module MyinvestSupportReview
 
     def filter_conversations
       @conversations = MyinvestSupportReview.visible(super, current_account)
+    end
+
+    def message_base_query
+      MyinvestSupportReview.visible_messages(super, current_account)
+    end
+
+    def should_run_advanced_search?
+      # The search index does not carry retirement markers. Managed support
+      # uses the existing PostgreSQL GIN/LIKE path so withdrawal is immediate.
+      return false if MyinvestSupportReview.managed?(current_account)
+
+      super
+    end
+
+    def filter_contacts
+      @contacts = MyinvestSupportReview.visible_contacts(super, current_account)
     end
   end
 

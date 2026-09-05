@@ -78,9 +78,9 @@ class SupportReviewInitializerTest < Minitest::Test
     assert_same relation, MyinvestSupportReview.visible(relation, account)
     sql, retirement, recovery = relation.conditions
     assert_equal({ 'myinvest_e2e_retired' => true }, JSON.parse(retirement))
-    assert_equal 'production-e2e-%', recovery
+    assert_equal '^production-e2e-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{32}$', recovery
     assert_match(/NOT \(COALESCE\(conversations.custom_attributes @> \?::jsonb, FALSE\)\s+AND COALESCE/m, sql)
-    assert_includes sql, "conversations.custom_attributes ->> 'myinvest_production_e2e_recovery' LIKE ?, FALSE)"
+    assert_includes sql, "conversations.custom_attributes ->> 'myinvest_production_e2e_recovery' ~ ?, FALSE)"
     refute_match(/status|contacts|name/i, sql)
   end
 
@@ -129,4 +129,30 @@ class SupportReviewInitializerTest < Minitest::Test
     assert_raises(RuntimeError) { conversation.send(:myinvest_assign_support_reviewer) }
     assert_nil conversation.assignee
   end
+  def test_message_search_hides_only_matching_conversations_from_the_same_account
+    relation = Relation.new
+    MyinvestSupportReview.visible_messages(relation, account)
+    sql = relation.conditions.first
+    assert_includes sql, 'conversations.id = messages.conversation_id'
+    assert_includes sql, 'conversations.account_id = messages.account_id'
+    assert_includes sql, 'NOT EXISTS'
+  end
+
+  def test_contact_search_keeps_empty_and_mixed_histories
+    relation = Relation.new
+    MyinvestSupportReview.visible_contacts(relation, account)
+    sql = relation.conditions.first
+    assert_match(/NOT EXISTS.*OR EXISTS/m, sql)
+    assert_equal 2, sql.scan('conversations.contact_id = contacts.id').length
+    assert_equal 2, sql.scan('conversations.account_id = contacts.account_id').length
+  end
+
+  def test_unmanaged_message_and_contact_search_are_unchanged
+    [:visible_messages, :visible_contacts].each do |method|
+      relation = Relation.new
+      assert_same relation, MyinvestSupportReview.send(method, relation, account('saas', 'unrelated'))
+      assert_nil relation.conditions
+    end
+  end
+
 end
