@@ -98,10 +98,14 @@ class RenderServerStateTest(unittest.TestCase):
 
         self.assertEqual("openrouter", config["model"]["provider"])
         self.assertEqual(
-            "nvidia/nemotron-3-ultra-550b-a55b:free", config["model"]["default"]
+            "x-ai/grok-4.6", config["model"]["default"]
         )
         self.assertEqual("https://openrouter.ai/api/v1", config["model"]["base_url"])
         self.assertEqual("chat_completions", config["model"]["api_mode"])
+        profile_config = yaml.safe_load(
+            (self.output / "profiles/accounting-lead/config.yaml").read_text()
+        )
+        self.assertEqual(config["model"], profile_config["model"])
         self.assertEqual("medium", config["agent"]["reasoning_effort"])
         self.assertEqual(
             "nvidia/nemotron-3-super-120b-a12b:free",
@@ -152,6 +156,11 @@ class RenderServerStateTest(unittest.TestCase):
             script.index("ollama pull bge-m3 </dev/null"),
             script.index("docker compose up -d --force-recreate"),
         )
+
+    def test_live_verification_requires_the_rendered_primary_model(self) -> None:
+        script = PROVISION_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("c['model']['default'] == 'x-ai/grok-4.6'", script)
+        self.assertNotIn("nvidia/nemotron-3-ultra-550b-a55b:free", script)
 
     def test_dashboard_shares_gateway_supervision(self) -> None:
         compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))

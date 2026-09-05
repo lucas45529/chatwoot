@@ -13,7 +13,7 @@ from pathlib import Path
 import yaml
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_PRIMARY_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+OPENROUTER_PRIMARY_MODEL = "x-ai/grok-4.6"
 OPENROUTER_FALLBACK_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 DISABLED_MACOS_JOBS = {
     "office_pulse_push.py": "Requires the macOS Mail/Dropbox data sources",
