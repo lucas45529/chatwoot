@@ -73,7 +73,8 @@ async function retire(client: Client, candidate: LockedCandidate, reason: string
 }
 
 function cleanInput(value: string): { text: string; redactionCount: number } {
-  if (likelySecret.test(value)) throw new LearningRequestError(422, 'credentials_not_allowed')
+  const credentialAlias = /\b(?:passwords?|passcodes?|pins?|api[-_\s]*(?:keys?|schlüssel|schluessel)|(?:access|recovery|backup|verification|security)[-_\s]*(?:codes?|keys?|tokens?)|(?:zugangs|zugriffs|wiederherstellungs|sicherheits|verifizierungs|bestätigungs|bestaetigungs)codes?|(?:client|private|secret)[-_\s]*(?:keys?|secrets?))\b/iu
+  if (likelySecret.test(value) || credentialAlias.test(value)) throw new LearningRequestError(422, 'credentials_not_allowed')
   // Reuse the miner's content perimeter for manual review too. Generic reset
   // navigation is reusable; an actual password or an individual entitlement
   // remains prohibited even when a reviewer attempts to publish it.

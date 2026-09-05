@@ -57,6 +57,13 @@ describe('existing learning candidate review', () => {
     'Bitte das Kennwort ändern zu Sonnenschein und anschließend anmelden.',
     'Das Passwort zurücksetzen = Sommerregen2026!.',
     'Bitte auf „Passwort zurücksetzen“ klicken und das Passwort auf Sonnenschein setzen.',
+    'Your personal password is SummerRain2026!; use it to sign in.',
+    'Deine persönliche PIN lautet 4682. Damit kannst du dich anmelden.',
+    'Your passcode is 4682. Enter it to sign in.',
+    'Your access code is 4682 and your recovery code is abcd-efgh.',
+    'Dein Wiederherstellungscode lautet abcd-efgh.',
+    'Your API key is SummerRain2026! Use it for the integration.',
+    'Setze den API-Schlüssel auf Sommerregen2026! für die Integration.',
   ])('rejects personal credentials and individual promises in both save and publish: %s', async (answer) => {
     const save = database()
     await expect(save.service.execute({ action: 'save', tenant: 'saas', question: 'Wie funktioniert der Zugang?', answer, reason: 'Bessere Antwort' })).rejects.toMatchObject({ status: 422 })
