@@ -32,7 +32,7 @@ const ACTOR = 'intern-support-review'
 const COLUMNS = `c.id::text, c.target_tenant AS tenant, c.question_redacted AS question,
   c.answer_redacted AS answer, c.status, c.reviewed_by, c.updated_at AS "updatedAt",
   coalesce((SELECT details->>'reason' FROM agent_learning_audit_events a
-    WHERE a.candidate_id = c.id AND a.details ? 'reason' ORDER BY a.id DESC LIMIT 1), '') AS reason`
+    WHERE a.candidate_id = c.id AND a.action = 'feedback_recorded' AND a.details ? 'reason' ORDER BY a.id DESC LIMIT 1), '') AS reason`
 
 function present(row: ReviewCandidate): ReviewCandidate {
   const status = row.status === 'published' && row.reviewed_by !== ACTOR ? 'pending_review' : row.status
