@@ -11,6 +11,8 @@ import { PostgresChatwootDeliveryStore } from './chatwoot-delivery-repository.js
 import { loadConfig } from './config.js'
 import { InternSsoError, InternSsoService } from './intern-sso.js'
 import { runAutoSendFeedbackSweep } from './learning/auto-send-feedback.js'
+import { authorizeLearningRequest, LearningRequestError } from './learning/review-auth.js'
+import { learningCommandSchema, LearningReviewService } from './learning/review-service.js'
 import { MessageProcessor } from './processor.js'
 import { DeliveryQueue, QUEUE_NAME, type DeliveryJob } from './queue.js'
 import { PostgresAgentState } from './state.js'
@@ -146,6 +148,30 @@ const feedbackTimer = worker
 feedbackTimer?.unref()
 
 const app = express()
+const learningReview = new LearningReviewService(pool)
+app.post('/learning', express.raw({ type: 'application/json', limit: '16kb' }), async (request, response) => {
+  response.setHeader('Cache-Control', 'no-store')
+  if (!Buffer.isBuffer(request.body)) return response.status(415).json({ error: 'application_json_required' })
+  const rawBody = request.body.toString('utf8')
+  try {
+    await authorizeLearningRequest({
+      secret: config.SUPPORT_CHATWOOT_SSO_SECRET,
+      rawBody,
+      timestamp: request.get('x-support-timestamp') ?? '',
+      requestId: request.get('x-support-request-id') ?? '',
+      signature: request.get('x-support-signature') ?? '',
+      claim: async (key, ttl) => await redis.set(key, '1', 'EX', ttl, 'NX') === 'OK',
+    })
+    let decoded: unknown
+    try { decoded = JSON.parse(rawBody) } catch { throw new LearningRequestError(422, 'invalid_json') }
+    const command = learningCommandSchema.safeParse(decoded)
+    if (!command.success) throw new LearningRequestError(422, 'invalid_learning_command')
+    return response.json(await learningReview.execute(command.data))
+  } catch (error) {
+    const status = error instanceof LearningRequestError ? error.status : 503
+    return response.status(status).json({ error: error instanceof LearningRequestError ? error.message : 'learning_unavailable' })
+  }
+})
 app.get('/health', async (_request, response) => {
   try {
     await Promise.all([pool.query('SELECT 1'), deliveryStore.healthCheck(), redis.ping()])

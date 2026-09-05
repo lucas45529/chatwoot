@@ -49,6 +49,13 @@
 		reverse_proxy claude-agent:8080
 	}
 
+	handle /_agent/learning {
+		@invalid_learning_method not method POST
+		respond @invalid_learning_method 405
+		uri strip_prefix /_agent
+		reverse_proxy claude-agent:8080
+	}
+
 	# Einziger Mitarbeiter-Zugang: Das Portal uebergibt ein kurzlebiges,
 	# einmaliges Ticket per POST. Keine Zugangsdaten und kein Ticket landen in
 	# URL, Browserhistorie, Referrer oder Caddy-Log.

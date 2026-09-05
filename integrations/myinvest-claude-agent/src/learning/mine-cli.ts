@@ -3,17 +3,13 @@ import { parseTenantConfig } from '../config.js'
 import { tenantKeySchema, type TenantKey } from '../domain.js'
 import { extractLiveCandidates, type LiveConversation, type LiveMessage } from './mine-conversations.js'
 import { HANDED_OFF_DELIVERIES_SQL, LIVE_MESSAGES_SQL } from './live-queries.js'
-import {
-  approveCandidate,
-  publishCandidate,
-  storeExtractedCandidates,
-} from './repository.js'
+import { storeExtractedCandidates } from './repository.js'
 
 // Mining-Lauf: liest jede kuerzlich uebergebene Delivery, loest Chatwoots
 // account-gebundene display_id korrekt zur internen conversation.id auf und
 // lernt ausschliesslich aus Antworten, die ein Mensch wirklich gesendet hat.
-// Nach PII-/Risiko-Guards gilt der Sendeklick als Review: approve + publish
-// bleiben zwei getrennte, auditierte Transitionen.
+// Der Sendeklick beantwortet einen Kunden, er genehmigt kein allgemeines
+// Antwortwissen. Kandidaten warten auf explizite Freigabe im Lernbereich.
 //   node dist/learning/mine-cli.js [--days 7] [--tenant saas]
 const databaseUrl = process.env.DATABASE_URL || process.env.CLAUDE_AGENT_DATABASE_URL
 const chatwootDatabaseUrl = process.env.CHATWOOT_DATABASE_URL
@@ -63,7 +59,6 @@ try {
   let rejectedConversations = 0
   let inserted = 0
   let refreshed = 0
-  let published = 0
   const byTenant = new Map<TenantKey, string[]>()
   for (const row of handedOff.rows) {
     const list = byTenant.get(row.tenant_key) ?? []
@@ -108,26 +103,6 @@ try {
     const stored = await storeExtractedCandidates(agentPool, extraction.candidates)
     inserted += stored.inserted
     refreshed += stored.refreshed
-    const candidateKeys = extraction.candidates.map((candidate) => candidate.candidateKey)
-    const awaitingReview = await agentPool.query<
-      { id: string; target_tenant: TenantKey; status: 'pending_review' | 'approved' } &
-        Record<string, unknown>
-    >(
-      `SELECT id::text, target_tenant, status
-         FROM agent_knowledge_candidates
-        WHERE candidate_key = ANY($1::text[])
-          AND target_tenant = $2
-          AND status IN ('pending_review', 'approved')
-        ORDER BY id`,
-      [candidateKeys, tenant],
-    )
-    for (const candidate of awaitingReview.rows) {
-      if (candidate.status === 'pending_review') {
-        await approveCandidate(agentPool, candidate.id, candidate.target_tenant, 'chatwoot-human-send')
-      }
-      await publishCandidate(agentPool, candidate.id, 'chatwoot-human-send')
-      published += 1
-    }
   }
 
   console.log(
@@ -140,7 +115,7 @@ try {
       rejected_conversations: rejectedConversations,
       inserted,
       refreshed,
-      published,
+      published: 0,
     }),
   )
 } finally {
