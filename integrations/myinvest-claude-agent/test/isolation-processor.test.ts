@@ -191,6 +191,7 @@ describe('MessageProcessor', () => {
     // Die Gehirn-API darf selbst uebergeben. Der Fall geht sichtbar an einen
     // Menschen und dessen Composer bekommt denselben Text als Entwurf.
     const declined = setup({
+      autoSendEnabled: true,
       answer: { ...BRAIN_ANSWER, action: 'handoff', reason: 'kein Beleg im Wissen' },
     })
     await declined.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
@@ -555,7 +556,7 @@ describe('MessageProcessor', () => {
   })
 
   it('escalates a critical report with priority, labels, note, assignment and a visible reply', async () => {
-    const critical = setup()
+    const critical = setup({ autoSendEnabled: true })
     const content =
       'Mein Kunde wurde von einem fremden Finanzierer angeschrieben, der einen KI Avatar verwendet und keinen Datenschutzlink hat.'
     await critical.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
@@ -587,7 +588,7 @@ describe('MessageProcessor', () => {
   })
 
   it('attempts every escalation step but never records an incomplete handoff as terminal', async () => {
-    const flaky = setup()
+    const flaky = setup({ autoSendEnabled: true })
     flaky.setPriority.mockRejectedValueOnce(new Error('toggle_priority returned 404'))
     flaky.addLabels.mockRejectedValueOnce(new Error('labels returned 403'))
     flaky.handoff.mockRejectedValueOnce(new Error('toggle_status returned 404'))
@@ -617,7 +618,7 @@ describe('MessageProcessor', () => {
     ).rejects.toThrow(/escalation is incomplete/i)
     expect(retry.state.completeHandoff).not.toHaveBeenCalled()
 
-    const finalAttempt = setup()
+    const finalAttempt = setup({ autoSendEnabled: true })
     finalAttempt.setPriority.mockRejectedValueOnce(new Error('toggle_priority returned 403'))
     await finalAttempt.processor.process({
       tenant: tenants[0]!,
@@ -630,7 +631,7 @@ describe('MessageProcessor', () => {
   })
 
   it('falls back to a visible human handoff when draft preparation fails finally', async () => {
-    const draftFailure = setup()
+    const draftFailure = setup({ autoSendEnabled: true })
     draftFailure.saveDraft.mockRejectedValueOnce(new Error('draft endpoint unavailable'))
 
     await draftFailure.processor.process({
@@ -664,6 +665,63 @@ describe('MessageProcessor', () => {
     expect(ledgerFailure.saveDraft).toHaveBeenCalledWith(tenants[0], 77, BRAIN_ANSWER.text)
     expect(ledgerFailure.sendMessage).not.toHaveBeenCalled()
     expect(ledgerFailure.setPriority).not.toHaveBeenCalled()
+  })
+})
+
+describe('MessageProcessor mandatory human review', () => {
+  it.each([
+    { name: 'safe answer', content: 'Wie funktioniert das Onboarding?', answer: SAFE_ANSWER },
+    { name: 'presence', content: 'Ist jemand hier?' },
+    { name: 'greeting', content: 'Hallo!' },
+    { name: 'attachment', content: '' },
+    { name: 'critical triage', content: 'Mein Kunde wurde von einem fremden Finanzierer angeschrieben.' },
+    { name: 'explicit human request', content: 'Ich will mit einem Menschen sprechen.' },
+    { name: 'brain handoff', content: 'Wie funktioniert das Onboarding?', answer: { ...BRAIN_ANSWER, action: 'handoff' as const } },
+    { name: 'brain error', content: 'Wie funktioniert das Onboarding?', failure: 'brain' },
+    { name: 'draft error', content: 'Wie funktioniert das Onboarding?', failure: 'draft' },
+  ])('keeps $name internal and assigned with auto-send disabled', async ({ content, answer, failure }) => {
+    const review = setup({ autoSendEnabled: false, answer })
+    if (failure === 'brain') review.answer.mockRejectedValueOnce(new Error('brain unavailable'))
+    if (failure === 'draft') review.saveDraft.mockRejectedValueOnce(new Error('draft unavailable'))
+
+    await review.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
+
+    expect(review.sendMessage).not.toHaveBeenCalled()
+    expect(review.autoSend.reserve).not.toHaveBeenCalled()
+    expect(review.saveDraft).toHaveBeenCalledWith(tenants[0], 77, expect.any(String))
+    expect(review.sendPrivateNote).toHaveBeenCalledWith(
+      tenants[0], 77, expect.stringContaining('Antwortvorschlag:'), 55, expect.any(String),
+    )
+    expect(review.assign).toHaveBeenCalledWith(tenants[0], 77, tenants[0]!.handoffAssigneeId)
+    expect(review.handoff).toHaveBeenCalled()
+    expect(review.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
+  })
+
+  it('keeps the handoff proposal in a private note when the human composer is protected', async () => {
+    const review = setup({ answer: { ...BRAIN_ANSWER, action: 'handoff' } })
+    review.saveDraft.mockResolvedValueOnce({ written: false, message: 'Menschlich bearbeitet' })
+
+    await review.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+
+    const note = String(review.sendPrivateNote.mock.calls[0]?.[2])
+    expect(note).toContain('menschlich bearbeiteter Entwurf')
+    expect(note).toContain(BRAIN_ANSWER.text)
+    expect(note).not.toContain('Antwortvorschlag:\nMenschlich bearbeitet')
+    expect(review.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('retains retryability when the required review assignee cannot be assigned', async () => {
+    const review = setup()
+    review.assign.mockRejectedValueOnce(new Error('assignment rejected'))
+
+    await expect(review.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Ich will mit einem Menschen sprechen.' }),
+      isFinalAttempt: true,
+    })).rejects.toThrow(/escalation is incomplete/i)
+
+    expect(review.sendMessage).not.toHaveBeenCalled()
+    expect(review.state.completeHandoff).not.toHaveBeenCalled()
   })
 })
 

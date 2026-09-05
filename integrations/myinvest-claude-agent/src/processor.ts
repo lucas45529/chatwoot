@@ -247,7 +247,9 @@ export class MessageProcessor {
           await handoff(
             'brain_error',
             error instanceof Error ? error.message : undefined,
-            outcome.humanOnly ? outcome.customerAck : undefined,
+            outcome.humanOnly || !this.dependencies.autoSendEnabled
+              ? outcome.customerAck
+              : undefined,
           )
           return
         }
@@ -295,7 +297,11 @@ export class MessageProcessor {
       })
     } catch (error) {
       if (!(input.isFinalAttempt ?? true)) throw error
-      await handoff('draft_error', error instanceof Error ? error.message : undefined)
+      await handoff(
+        'draft_error',
+        error instanceof Error ? error.message : undefined,
+        !this.dependencies.autoSendEnabled ? answer.text : undefined,
+      )
       return
     }
     await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
@@ -536,6 +542,7 @@ export class MessageProcessor {
     }
     const draft = input.draft
     let writtenDraft: string | undefined
+    let humanDraftPreserved = false
     if (draft) {
       await run('draft', true, async () => {
         const result = await chatwoot.saveDraft(
@@ -544,6 +551,7 @@ export class MessageProcessor {
           draft,
         )
         if (result.written) writtenDraft = result.message
+        else humanDraftPreserved = true
       })
     }
     const labels = writtenDraft
@@ -556,7 +564,9 @@ export class MessageProcessor {
     })
     const noteContent = writtenDraft
       ? `${handoffContent}\n\nAntwortvorschlag:\n${writtenDraft}\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.`
-      : handoffContent
+      : draft
+        ? `${handoffContent}\n\n${humanDraftPreserved ? 'Im Composer liegt ein menschlich bearbeiteter Entwurf.\n\n' : ''}Vorschlag zur Referenz:\n${draft}`
+        : handoffContent
 
     await run('priority', false, () =>
       chatwoot.setPriority(tenant, conversationId, outcome.priority),
@@ -573,11 +583,12 @@ export class MessageProcessor {
         'handoff_note',
       ),
     )
-    await run('assign', false, () =>
+    await run('assign', !this.dependencies.autoSendEnabled, () =>
       chatwoot.assign(tenant, conversationId, tenant.handoffAssigneeId),
     )
     await run('open', true, () => chatwoot.handoff(tenant, conversationId))
-    if (input.notifyCustomer !== false) {
+    // Der Review-Schalter gilt auch fuer Uebergabe- und Fehlerbestaetigungen.
+    if (this.dependencies.autoSendEnabled && input.notifyCustomer !== false) {
       await run('customer_ack', true, () =>
         chatwoot.sendMessage(
           tenant,
