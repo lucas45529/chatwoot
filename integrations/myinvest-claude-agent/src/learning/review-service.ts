@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { tenantKeySchema } from '../domain.js'
-import { containsResidualPersonalData, likelySecret, redactSupportText } from './extractor.js'
+import { containsResidualPersonalData, directPersonalization, likelySecret, redactSupportText, sensitiveTopic } from './extractor.js'
 import type { LearningPool } from './repository.js'
 import { LearningRequestError } from './review-auth.js'
 
@@ -74,6 +74,14 @@ async function retire(client: Client, candidate: LockedCandidate, reason: string
 
 function cleanInput(value: string): { text: string; redactionCount: number } {
   if (likelySecret.test(value)) throw new LearningRequestError(422, 'credentials_not_allowed')
+  // Reuse the miner's content perimeter for manual review too. Generic reset
+  // navigation is reusable; an actual password or an individual entitlement
+  // remains prohibited even when a reviewer attempts to publish it.
+  const reusableProcessText = value.replace(/\b(?:passwort|kennwort)\s+(?:zurücksetzen|zuruecksetzen|ändern|aendern|vergessen)\b/giu, '')
+  const individualGrant = /\b(?:leads?|gutschrift|rabatt|sonderkonditionen|zusatzleistungen)\b[^.!?\n]{0,100}\b(?:freigegeben|zugesagt|versprochen|bewilligt|gewährt|gewaehrt|reserviert)\b/iu
+  if (sensitiveTopic.test(reusableProcessText) || directPersonalization.test(value) || individualGrant.test(value)) {
+    throw new LearningRequestError(422, 'non_reusable_learning_content')
+  }
   const clean = redactSupportText(value)
   if (containsResidualPersonalData(clean.text)) throw new LearningRequestError(422, 'personal_data_requires_removal')
   return clean

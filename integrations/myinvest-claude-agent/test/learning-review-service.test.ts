@@ -48,6 +48,25 @@ describe('existing learning candidate review', () => {
     expect(query).not.toHaveBeenCalled()
   })
 
+  it.each([
+    'Für Max Mustermann sind zwei zusätzliche Leads freigegeben. Sein persönliches Passwort lautet Sommerregen2026!.',
+    'Sein persönliches Kennwort ist Sommerregen2026!.',
+    'Für Max Mustermann sind zwei zusätzliche Leads freigegeben.',
+    'Dir wurden fünf Leads zugesagt und zwei weitere freigegeben.',
+  ])('rejects personal credentials and individual promises in both save and publish: %s', async (answer) => {
+    const save = database()
+    await expect(save.service.execute({ action: 'save', tenant: 'saas', question: 'Wie funktioniert der Zugang?', answer, reason: 'Bessere Antwort' })).rejects.toMatchObject({ status: 422 })
+    expect(save.query).not.toHaveBeenCalled()
+    const publish = database({ ...fixture('pending_review'), answer })
+    await expect(publish.service.execute({ action: 'publish', tenant: 'saas', id: '9' })).rejects.toMatchObject({ status: 422 })
+    expect(publish.query.mock.calls.some(([sql]) => /^(INSERT|UPDATE)/.test(sql))).toBe(false)
+  })
+
+  it('allows generic password reset process advice without a credential or individual promise', async () => {
+    const { service } = database()
+    await expect(service.execute({ action: 'save', tenant: 'saas', question: 'Wie kann ich mein Passwort zurücksetzen?', answer: 'Klicke im Anmeldefenster auf Passwort vergessen und folge den Hinweisen.', reason: 'Den allgemeinen Ablauf erklären.' })).resolves.toHaveProperty('candidate')
+  })
+
   it('versions pending edits too, so an older review tab cannot approve new text', async () => {
     const { service, query } = database(fixture('pending_review'))
     await service.execute({ action: 'save', tenant: 'saas', id: '9', question: 'Wie bearbeite ich Kontakte?', answer: 'Öffne Kontakte und wähle den Namen.', reason: 'Besserer Ablauf' })
