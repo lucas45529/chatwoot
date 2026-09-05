@@ -29,14 +29,32 @@ export interface KnowledgeRepository {
 }
 
 const SEARCH_BODY = `
-       SELECT source_id, title, content, metadata,
-              ts_rank_cd(search_vector, input.query)::float AS score
-       FROM agent_knowledge_documents, input
-       WHERE tenant_key = $1
-         AND publication_status = 'published'
-         AND active = true
-         AND search_vector @@ input.query
-       ORDER BY score DESC, source_id ASC
+       SELECT d.source_id, d.title, d.content, d.metadata,
+              ts_rank_cd(d.search_vector, input.query)::float AS score
+       FROM agent_knowledge_documents d, input
+       WHERE d.tenant_key = $1
+         AND d.publication_status = 'published'
+         AND d.active = true
+         AND (
+           d.learning_candidate_id IS NULL
+           OR EXISTS (
+             SELECT 1 FROM agent_knowledge_candidates c
+             WHERE c.id = d.learning_candidate_id
+               AND c.target_tenant = d.tenant_key
+               AND c.published_document_id = d.id
+               AND c.status = 'published'
+               AND c.reviewed_by = 'intern-support-review'
+               AND EXISTS (
+                 SELECT 1 FROM agent_learning_audit_events a
+                 WHERE a.candidate_id = c.id
+                   AND a.tenant_key = c.target_tenant
+                   AND a.action = 'published'
+                   AND a.actor = 'intern-support-review'
+               )
+           )
+         )
+         AND d.search_vector @@ input.query
+       ORDER BY score DESC, d.source_id ASC
        LIMIT $3`
 
 // websearch_to_tsquery AND-verknuepft alle Lexeme: ein einziges unbekanntes

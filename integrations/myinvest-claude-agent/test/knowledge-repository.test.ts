@@ -6,6 +6,28 @@ function row(title: string, score: number) {
 }
 
 describe('knowledge search', () => {
+  it('requires explicit human publication and a live tenant/document binding in both query paths', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] })
+    await new PostgresKnowledgeRepository({ query }).search('saas', 'Kontakt bearbeiten', 4)
+
+    expect(query).toHaveBeenCalledTimes(2)
+    for (const [sql, values] of query.mock.calls) {
+      expect(values).toEqual(['saas', 'Kontakt bearbeiten', 4])
+      expect(sql).toContain('d.learning_candidate_id IS NULL')
+      expect(sql).toContain('c.id = d.learning_candidate_id')
+      expect(sql).toContain('c.target_tenant = d.tenant_key')
+      expect(sql).toContain('c.published_document_id = d.id')
+      expect(sql).toContain("c.status = 'published'")
+      expect(sql).toContain("c.reviewed_by = 'intern-support-review'")
+      expect(sql).toContain('a.candidate_id = c.id')
+      expect(sql).toContain('a.tenant_key = c.target_tenant')
+      expect(sql).toContain("a.action = 'published'")
+      expect(sql).toContain("a.actor = 'intern-support-review'")
+      expect(sql).toContain("d.publication_status = 'published'")
+      expect(sql).toContain('d.active = true')
+    }
+  })
+
   it('returns strict AND matches without touching the relaxed fallback', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [row('Was-kostet-MyInvest-Pro', 0.3)] })
     const repository = new PostgresKnowledgeRepository({ query })
