@@ -16,6 +16,14 @@ function database(row = fixture()) {
 }
 
 describe('existing learning candidate review', () => {
+  it('shows automatic historical publications as awaiting explicit review', async () => {
+    const query = vi.fn(async (sql: string) => ({ rows: sql.includes('FROM agent_knowledge_candidates') ? [fixture(), { ...fixture(), id: '11', reviewed_by: 'intern-support-review' }] : [] }))
+    const service = new LearningReviewService({ connect: async () => ({ query, release: vi.fn() }) })
+    await expect(service.execute({ action: 'list', tenant: 'saas' })).resolves.toMatchObject({ candidates: [
+      { id: '9', status: 'pending_review' }, { id: '11', status: 'published' },
+    ] })
+  })
+
   it('cannot edit or publish a candidate through another tenant', async () => {
     const { service, query } = database()
     await expect(service.execute({ action: 'publish', tenant: 'new_academy', id: '9' }))

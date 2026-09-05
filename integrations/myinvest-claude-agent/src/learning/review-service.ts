@@ -30,12 +30,13 @@ interface LockedCandidate extends ReviewCandidate {
 type Client = Awaited<ReturnType<LearningPool['connect']>>
 const ACTOR = 'intern-support-review'
 const COLUMNS = `c.id::text, c.target_tenant AS tenant, c.question_redacted AS question,
-  c.answer_redacted AS answer, c.status, c.updated_at AS "updatedAt",
+  c.answer_redacted AS answer, c.status, c.reviewed_by, c.updated_at AS "updatedAt",
   coalesce((SELECT details->>'reason' FROM agent_learning_audit_events a
     WHERE a.candidate_id = c.id AND a.details ? 'reason' ORDER BY a.id DESC LIMIT 1), '') AS reason`
 
 function present(row: ReviewCandidate): ReviewCandidate {
-  return { id: row.id, tenant: row.tenant, question: row.question, answer: row.answer, status: row.status, reason: row.reason, updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt }
+  const status = row.status === 'published' && row.reviewed_by !== ACTOR ? 'pending_review' : row.status
+  return { id: row.id, tenant: row.tenant, question: row.question, answer: row.answer, status, reason: row.reason, updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt }
 }
 
 const STOP_WORDS = new Set('aber alle alles auch auf aus bei bin bitte das dass dem den der des die diese dieser doch du ein eine einem einen einer es etwas für habe haben hier ich im in ist kann kannst können machen man mein meine mich mir mit muss nach nicht noch nun oder schon sein sind so um und uns vom von vor wann warum was welche welcher welches wenn wer wie wird wir wo zu zum zur'.split(' '))
@@ -114,7 +115,7 @@ export class LearningReviewService {
       } else {
         let existing: LockedCandidate | undefined
         if (command.id) {
-          const locked = await client.query<LockedCandidate>(`SELECT ${COLUMNS}, c.published_document_id::text, c.reviewed_by FROM agent_knowledge_candidates c WHERE c.id = $1 AND c.target_tenant = $2 FOR UPDATE`, [command.id, command.tenant])
+          const locked = await client.query<LockedCandidate>(`SELECT ${COLUMNS}, c.published_document_id::text FROM agent_knowledge_candidates c WHERE c.id = $1 AND c.target_tenant = $2 FOR UPDATE`, [command.id, command.tenant])
           existing = locked.rows[0]
           if (!existing) throw new LearningRequestError(404, 'candidate_not_found')
         }
