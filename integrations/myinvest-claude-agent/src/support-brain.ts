@@ -9,6 +9,7 @@
 import { createHmac } from 'node:crypto'
 import { z } from 'zod'
 import type { TenantKey } from './domain.js'
+import { tenantKeySchema } from './domain.js'
 
 export type SupportChannel = 'web' | 'whatsapp'
 
@@ -36,10 +37,25 @@ const brainAnswerSchema = z.object({
     .array(z.object({ title: z.string().max(300), url: z.string().max(2_048) }))
     .max(10),
   safeToAutoSend: z.boolean(),
+  learningSources: z.array(z.object({
+    id: z.string().regex(/^[1-9]\d{0,18}$/),
+    tenant: tenantKeySchema,
+    question: z.string().min(1).max(1000),
+  }).strict()).max(3).optional(),
   reason: z.string().max(500).optional(),
 })
 
 export type SupportBrainAnswer = z.infer<typeof brainAnswerSchema>
+
+/** Internal provenance only; never merge these links into public sources or
+ * the auto-send evidence count. Link text is fixed, not customer supplied. */
+export function privateLearningReferences(answer: Pick<SupportBrainAnswer, 'learningSources'>, tenant: TenantKey): string {
+  const sources = answer.learningSources?.filter((source) => source.tenant === tenant) ?? []
+  if (!sources.length) return ''
+  return '\nBerücksichtigtes Wissen:\n' + sources.map((source) =>
+    `- [Lernbeispiel ${source.id}](https://www.myinvest-pro.de/intern/support/lernen?produkt=${tenant}#learning-example-${source.id})`,
+  ).join('\n')
+}
 
 export interface SupportBrainPort {
   answer(request: SupportBrainRequest): Promise<SupportBrainAnswer>

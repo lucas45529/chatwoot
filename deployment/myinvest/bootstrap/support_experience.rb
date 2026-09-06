@@ -29,7 +29,7 @@ class Myinvest::SupportExperience
         } catch (error) {}
 
         const draftsKey = 'draftMessages';
-        const routePattern = /\\/app\\/accounts\\/(\\d+)\\/conversations\\/(\\d+)/;
+        const routePattern = /\\/app\\/accounts\\/(\\d+)\\/(?:[^/]+\\/)*conversations\\/(\\d+)(?:\\/|$)/;
         let syncing = false;
         const request = (url, options = {}) =>
           window.axios({ url, ...options });
@@ -47,6 +47,93 @@ class Myinvest::SupportExperience
           await store.dispatch('draftMessages/set', { key, message });
           return true;
         };
+
+        // The portal supplies the authenticated review workflow. The child
+        // only hands over an explicit correction and immutable source IDs.
+        const learningHosts = new Set([
+          'https://www.myinvest-pro.de',
+          'https://app.myinvest-pro.de',
+        ]);
+        let learningHost = null;
+        const originalDraft = (note) => {
+          if (typeof note !== 'string') return '';
+          const marker = '\\n\\nAntwortvorschlag:\\n';
+          const start = note.indexOf(marker);
+          if (start < 0) return '';
+          const body = note.slice(start + marker.length);
+          const end = Math.max(body.lastIndexOf('\\nQuellen:'), body.lastIndexOf('\\nGrundlage:'));
+          return end < 0 ? '' : body.slice(0, end).trim();
+        };
+        const learningIntent = (box) => {
+          const route = window.location.pathname.match(routePattern);
+          if (!route || !learningHost) return null;
+          let component = box?.__vueParentComponent;
+          while (component && typeof component.proxy?.saveDraft !== 'function') component = component.parent;
+          const editor = component?.proxy;
+          if (!editor || editor.isPrivate || editor.isEditorDisabled || editor.replyType !== 'REPLY') return null;
+          const accountId = Number(route[1]);
+          const conversationId = Number(route[2]);
+          if (Number(editor.currentChat?.id) !== conversationId) return null;
+          const correctedAnswer = typeof editor.message === 'string' ? editor.message.trim() : '';
+          if (correctedAnswer.length < 10 || correctedAnswer.length > 4000) return null;
+          const notes = [...(editor.currentChat.messages || [])].sort((a, b) => b.id - a.id);
+          for (const note of notes) {
+            if (!note.private || (note.sender?.type !== 'agent_bot' && note.sender_type !== 'AgentBot')) continue;
+            let attributes = note.content_attributes;
+            if (typeof attributes === 'string') {
+              try { attributes = JSON.parse(attributes); } catch (error) { continue; }
+            }
+            if (!['draft_note', 'clarify_draft_note', 'handoff_note'].includes(attributes?.myinvest_agent_message_kind)) continue;
+            const previousDraft = originalDraft(note.content);
+            if (!previousDraft) continue;
+            if (correctedAnswer === previousDraft) return null;
+            const source = {
+              accountId, conversationId,
+              questionMessageId: Number(attributes.myinvest_agent_delivery_id),
+              draftMessageId: Number(note.id),
+            };
+            if (!Object.values(source).every(value => Number.isSafeInteger(value) && value > 0)) return null;
+            // The draft is written before its private note. Public replies
+            // consume it, and a later customer question makes it ambiguous.
+            if (notes.some(message => message.private === false &&
+              [0, 1, 'incoming', 'outgoing'].includes(message.message_type) &&
+              Number(message.id) > source.questionMessageId)) return null;
+            return { type: 'myinvest-support-learning', version: 1, source, correctedAnswer };
+          }
+          return null;
+        };
+        const updateLearningButton = () => {
+          const box = document.querySelector('.reply-box');
+          const actions = box?.querySelector('.right-wrap');
+          if (!actions || !learningHost) return;
+          let button = actions.querySelector('[data-myinvest-learning]');
+          if (!button) {
+            actions.classList.add('gap-2');
+            button = document.createElement('button');
+            button.type = 'button';
+            button.dataset.myinvestLearning = '1';
+            button.className = actions.querySelector('button')?.className || '';
+            button.textContent = 'Daraus lernen';
+            button.addEventListener('click', () => {
+              const intent = learningIntent(box);
+              if (intent) window.parent.postMessage(intent, learningHost);
+            });
+            actions.prepend(button);
+          }
+          button.disabled = !learningIntent(box);
+          button.title = button.disabled
+            ? 'Bearbeite zuerst einen KI-Antwortentwurf, um die Korrektur ins Lernen zu übernehmen.'
+            : 'Korrektur im internen Lernen prüfen';
+        };
+        window.addEventListener('message', (event) => {
+          const data = event.data;
+          if (window.parent === window || event.source !== window.parent || !learningHosts.has(event.origin)) return;
+          if (!data || Object.keys(data).length !== 2 || data.type !== 'myinvest-support-learning-host' || data.version !== 1) return;
+          learningHost = event.origin;
+          updateLearningButton();
+        });
+        document.addEventListener('input', updateLearningButton);
+        window.setInterval(updateLearningButton, 300);
         const syncDraft = async () => {
           if (syncing || !window.axios) return;
           const route = window.location.pathname.match(routePattern);

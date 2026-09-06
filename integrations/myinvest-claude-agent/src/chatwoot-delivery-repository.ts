@@ -233,7 +233,7 @@ export class PostgresChatwootDeliveryStore
   }
 }
 
-function extractAgentDraft(note: string | null): string | undefined {
+export function extractAgentDraft(note: string | null): string | undefined {
   if (!note) return undefined
   const marker = '\n\nAntwortvorschlag:\n'
   const start = note.indexOf(marker)

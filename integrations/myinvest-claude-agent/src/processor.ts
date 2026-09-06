@@ -17,6 +17,7 @@ import type {
   SupportBrainHistoryTurn,
   SupportBrainPort,
 } from './support-brain.js'
+import { privateLearningReferences } from './support-brain.js'
 import { directSupportReply, handoffNote, triage, type TriageOutcome } from './triage.js'
 
 /**
@@ -125,7 +126,7 @@ export class MessageProcessor {
 
     const question = payload.content.trim()
     const outcome = triage(question)
-    const handoff = async (reason: string, detail?: string, draft?: string) => {
+    const handoff = async (reason: string, detail?: string, draft?: string, learningSources?: SupportBrainAnswer['learningSources']) => {
       await this.dependencies.autoSend.blockConversation({
         tenantKey: tenant.key,
         conversationId,
@@ -151,6 +152,7 @@ export class MessageProcessor {
         detail,
         isFinalAttempt,
         draft,
+        learningSources,
         notifyCustomer: !wasHandedOff,
       })
       await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
@@ -257,7 +259,7 @@ export class MessageProcessor {
     }
 
     if (answer.action === 'handoff' && !humanOwned) {
-      await handoff('brain_handoff', answer.reason, answer.text)
+      await handoff('brain_handoff', answer.reason, answer.text, answer.learningSources)
       return
     }
 
@@ -470,9 +472,10 @@ export class MessageProcessor {
       answer.sources.length > 0
         ? `\nQuellen: ${brainSources(answer)}`
         : '\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.'
-    const noteContent = draftWrite.written
+    const draftNote = draftWrite.written
       ? `KI-Antwortentwurf wartet auf menschliche Freigabe (${verdict}).\n\nAntwortvorschlag:\n${draftWrite.message}${sourceNote}`
       : `KI-Vorschlag wurde nicht in den Composer übernommen, weil dort ein menschlich bearbeiteter Entwurf liegt.\n\nVorschlag zur Referenz:\n${answer.text}${sourceNote}`
+    const noteContent = draftNote + privateLearningReferences(answer, tenant.key)
     await this.dependencies.chatwoot.sendPrivateNote(
       tenant,
       conversationId,
@@ -513,6 +516,7 @@ export class MessageProcessor {
     detail?: string
     isFinalAttempt: boolean
     draft?: string
+    learningSources?: SupportBrainAnswer['learningSources']
     notifyCustomer?: boolean
   }): Promise<void> {
     const { tenant, conversationId, deliveryId, outcome } = input
@@ -562,11 +566,12 @@ export class MessageProcessor {
       reason: input.reason,
       detail: input.detail,
     })
-    const noteContent = writtenDraft
+    const draftNote = writtenDraft
       ? `${handoffContent}\n\nAntwortvorschlag:\n${writtenDraft}\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.`
       : draft
         ? `${handoffContent}\n\n${humanDraftPreserved ? 'Im Composer liegt ein menschlich bearbeiteter Entwurf.\n\n' : ''}Vorschlag zur Referenz:\n${draft}`
         : handoffContent
+    const noteContent = draftNote + privateLearningReferences(input, tenant.key)
 
     await run('priority', false, () =>
       chatwoot.setPriority(tenant, conversationId, outcome.priority),

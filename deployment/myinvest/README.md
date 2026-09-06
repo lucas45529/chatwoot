@@ -195,6 +195,25 @@ Ratengrenzen; nie in Logs oder Verlauf.
 Dashboard-Theme, Bot-Branding und Triage-/Draft-Labels bleiben idempotent über
 `./scripts/apply-support-experience.sh --apply`. Die lokale Knowledge- und
 Learning-Pipeline ist Review-/Evidenzspeicher, kein zweites Antwort-Retrieval.
+
+Für „Daraus lernen“ benötigt jeder Tenant die nicht geheime `agentBotId` in
+`runtime/tenants.json` und `TENANTS_JSON`. Neue Bootstraps schreiben sie mit.
+Bestehende, bewusst abgetrennte Bots werden ausschließlich mit
+`./scripts/pin-learning-source-identities.sh` nachgetragen: Der Helfer prüft
+die vorhandene Token-/Account-Zuordnung in einer Read-only-Transaktion und
+aktualisiert nur die Konfigurationsdateien. Er führt weder Seed noch DDL aus,
+verbindet keine Inbox, ändert keine Webhooks oder Sendeschalter und startet
+keinen Dienst neu. Das Agent-Recreate bleibt ein separater Rollout-Schritt.
+Fehlt diese Metadaten-ID, antwortet nur die Quellenoperation mit 503;
+bestehender Support und manuelles Lernen laufen weiter. Der Laufzeit-Leser
+benötigt weiterhin nur `messages`, `conversations` und `contacts`, niemals
+Zugriff auf `access_tokens`.
+Eine neue Kundenfrage oder eine bereits gesendete Antwort sperrt die frische
+Übernahme eines älteren Entwurfs, damit keine Korrektur der falschen Frage
+zugeordnet wird. Eine interne Referenznotiz allein sperrt sie nicht.
+Bereits gespeicherte Lernbeispiele bleiben mit ihrer geprüften Herkunft
+bearbeitbar; andernfalls steht die manuelle Lernmaske zur Verfügung.
+
 Der tägliche Miner und Auto-Send-Feedback-Nachlauf bleiben auditiert; nur
 nachweislich gesendete Zeilen (`sent_at IS NOT NULL`) werden bewertet.
 

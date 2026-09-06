@@ -13,12 +13,13 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('keeps human correction text 
       status text, reviewed_by text, updated_at timestamptz
     )`)
     await client.query(`CREATE TEMP TABLE agent_learning_audit_events (
-      id bigint, candidate_id bigint, action text, details jsonb
+      id bigint, candidate_id bigint, action text, details jsonb,
+      tenant_key text DEFAULT 'saas', actor text DEFAULT 'intern-support-review'
     )`)
     await client.query(`INSERT INTO agent_knowledge_candidates
       SELECT id, 'saas', 'Wie bearbeite ich Kontakte?', 'Öffne Kontakte und wähle Bearbeiten.',
         'rejected', 'intern-support-review', now() FROM generate_series(1, 3) id`)
-    await client.query(`INSERT INTO agent_learning_audit_events VALUES
+    await client.query(`INSERT INTO agent_learning_audit_events (id, candidate_id, action, details) VALUES
       (1, 1, 'feedback_recorded', '{"reason":"Der bisherige Knopf existiert nicht mehr."}'),
       (2, 1, 'rejected', '{"reason":"rejected_by_reviewer"}'),
       (3, 2, 'feedback_recorded', '{"reason":"Der Ablauf war unvollständig."}'),

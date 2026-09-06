@@ -4,11 +4,13 @@ import { tenantKeySchema } from '../domain.js'
 import { containsResidualPersonalData, directPersonalization, likelySecret, redactSupportText, sensitiveTopic } from './extractor.js'
 import type { LearningPool } from './repository.js'
 import { LearningRequestError } from './review-auth.js'
+import { learningSourceSchema, type LearningSource, type LearningSourceResolver } from './source.js'
 
 const id = z.string().regex(/^[1-9]\d{0,18}$/)
 export const learningCommandSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('source'), source: learningSourceSchema }).strict(),
   z.object({ action: z.literal('list'), tenant: tenantKeySchema }).strict(),
-  z.object({ action: z.literal('save'), tenant: tenantKeySchema, id: id.optional(), question: z.string().trim().min(8).max(1000), answer: z.string().trim().min(10).max(4000), reason: z.string().trim().min(3).max(1000) }).strict(),
+  z.object({ action: z.literal('save'), tenant: tenantKeySchema, id: id.optional(), source: learningSourceSchema.optional(), question: z.string().trim().min(8).max(1000), answer: z.string().trim().min(10).max(4000), reason: z.string().trim().min(3).max(1000) }).strict(),
   z.object({ action: z.enum(['publish', 'reject']), tenant: tenantKeySchema, id }).strict(),
   z.object({ action: z.literal('retrieve'), tenant: tenantKeySchema, question: z.string().trim().min(1).max(1000) }).strict(),
 ])
@@ -22,6 +24,7 @@ export interface ReviewCandidate extends Record<string, unknown> {
   status: string
   reason: string
   updatedAt: string | Date
+  source?: LearningSource
 }
 interface LockedCandidate extends ReviewCandidate {
   published_document_id: string | null
@@ -32,11 +35,15 @@ const ACTOR = 'intern-support-review'
 const COLUMNS = `c.id::text, c.target_tenant AS tenant, c.question_redacted AS question,
   c.answer_redacted AS answer, c.status, c.reviewed_by, c.updated_at AS "updatedAt",
   coalesce((SELECT details->>'reason' FROM agent_learning_audit_events a
-    WHERE a.candidate_id = c.id AND a.action = 'feedback_recorded' AND a.details ? 'reason' ORDER BY a.id DESC LIMIT 1), '') AS reason`
+    WHERE a.candidate_id = c.id AND a.action = 'feedback_recorded' AND a.details ? 'reason' ORDER BY a.id DESC LIMIT 1), '') AS reason,
+  (SELECT details->'source' FROM agent_learning_audit_events a
+    WHERE a.candidate_id = c.id AND a.tenant_key = c.target_tenant AND a.actor = 'intern-support-review'
+      AND a.action = 'feedback_recorded' AND a.details ? 'source' ORDER BY a.id DESC LIMIT 1) AS source`
 
 function present(row: ReviewCandidate): ReviewCandidate {
   const status = row.status === 'published' && row.reviewed_by !== ACTOR ? 'pending_review' : row.status
-  return { id: row.id, tenant: row.tenant, question: row.question, answer: row.answer, status, reason: row.reason, updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt }
+  const source = learningSourceSchema.safeParse(row.source)
+  return { id: row.id, tenant: row.tenant, question: row.question, answer: row.answer, status, reason: row.reason, updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt, ...(source.success ? { source: source.data } : {}) }
 }
 
 const STOP_WORDS = new Set('aber alle alles auch auf aus bei bin bitte das dass dem den der des die diese dieser doch du ein eine einem einen einer es etwas für habe haben hier ich im in ist kann kannst können machen man mein meine mich mir mit muss nach nicht noch nun oder schon sein sind so um und uns vom von vor wann warum was welche welcher welches wenn wer wie wird wir wo zu zum zur'.split(' '))
@@ -95,12 +102,22 @@ function cleanInput(value: string): { text: string; redactionCount: number } {
 }
 
 export class LearningReviewService {
-  constructor(private readonly pool: LearningPool) {}
+  constructor(private readonly pool: LearningPool, private readonly sourceResolver?: LearningSourceResolver) {}
+
+  private async resolveSource(source: LearningSource) {
+    if (!this.sourceResolver) throw new LearningRequestError(503, 'learning_source_unavailable')
+    return this.sourceResolver.resolve(source)
+  }
 
   async execute(input: LearningCommand): Promise<unknown> {
     const parsed = learningCommandSchema.safeParse(input)
     if (!parsed.success) throw new LearningRequestError(422, 'invalid_learning_command')
     const command = parsed.data
+    if (command.action === 'source') return this.resolveSource(command.source)
+    if (command.action === 'save' && command.source && !command.id) {
+      const resolved = await this.resolveSource(command.source)
+      if (resolved.tenant !== command.tenant) throw new LearningRequestError(422, 'learning_source_tenant_mismatch')
+    }
     const cleaned = command.action === 'save' ? {
       question: cleanInput(command.question), answer: cleanInput(command.answer), reason: cleanInput(command.reason).text,
     } : undefined
@@ -136,6 +153,19 @@ export class LearningReviewService {
         }
         let candidateId = command.id
         if (command.action === 'save' && cleaned) {
+          const storedSource = learningSourceSchema.safeParse(existing?.source)
+          const source = command.source ?? (storedSource.success ? storedSource.data : undefined)
+          // An existing audited example remains editable after the reply is
+          // sent. Only unchanged, verified provenance inherits that trust.
+          const inheritsSource = storedSource.success && source &&
+            source.accountId === storedSource.data.accountId &&
+            source.conversationId === storedSource.data.conversationId &&
+            source.questionMessageId === storedSource.data.questionMessageId &&
+            source.draftMessageId === storedSource.data.draftMessageId
+          if (command.id && source && !inheritsSource) {
+            const resolved = await this.resolveSource(source)
+            if (resolved.tenant !== command.tenant) throw new LearningRequestError(422, 'learning_source_tenant_mismatch')
+          }
           // Every edit creates a new ID, including pending drafts. An old tab
           // cannot publish text changed elsewhere: its old ID is rejected.
           if (existing) await retire(client, existing, 'superseded_by_correction')
@@ -147,7 +177,7 @@ export class LearningReviewService {
             VALUES ($1, 'intern-support-review-v1', $2, $1, $3, $4, $5, $6, $7, '{}', 'pending_review', 3) RETURNING id::text`, [key, nonce, command.tenant, cleaned.question.text, cleaned.answer.text, hash, cleaned.question.redactionCount + cleaned.answer.redactionCount])
           candidateId = created.rows[0]?.id
           if (!candidateId) throw new Error('Learning candidate insert failed')
-          await audit(client, candidateId, command.tenant, 'feedback_recorded', { reason: cleaned.reason, ...(existing ? { previous_candidate_id: existing.id } : {}) })
+          await audit(client, candidateId, command.tenant, 'feedback_recorded', { reason: cleaned.reason, ...(source ? { source } : {}), ...(existing ? { previous_candidate_id: existing.id } : {}) })
         } else if (command.action === 'reject' && existing) {
           await retire(client, existing, 'rejected_by_reviewer')
         } else if (command.action === 'publish' && existing) {

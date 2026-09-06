@@ -7,6 +7,9 @@ const tenantSchema = z.object({
   inboxId: z.number().int().positive(),
   webhookSecret: z.string().min(24),
   agentBotToken: z.string().min(24),
+  // Legacy deployments remain runnable; only source-linked learning needs
+  // this non-secret identity, resolved by the read-only rollout helper.
+  agentBotId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   // Chatwoot-User dieses Accounts, der uebergebene Gespraeche bekommt.
   // Pflicht pro Mandant: User-IDs sind nicht account-uebergreifend gueltig.
   handoffAssigneeId: z.number().int().positive(),

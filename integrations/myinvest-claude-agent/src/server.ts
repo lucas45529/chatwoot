@@ -13,6 +13,7 @@ import { InternSsoError, InternSsoService } from './intern-sso.js'
 import { runAutoSendFeedbackSweep } from './learning/auto-send-feedback.js'
 import { authorizeLearningRequest, LearningRequestError } from './learning/review-auth.js'
 import { learningCommandSchema, LearningReviewService } from './learning/review-service.js'
+import { PostgresLearningSourceResolver } from './learning/source.js'
 import { MessageProcessor } from './processor.js'
 import { DeliveryQueue, QUEUE_NAME, type DeliveryJob } from './queue.js'
 import { PostgresAgentState } from './state.js'
@@ -148,7 +149,7 @@ const feedbackTimer = worker
 feedbackTimer?.unref()
 
 const app = express()
-const learningReview = new LearningReviewService(pool)
+const learningReview = new LearningReviewService(pool, new PostgresLearningSourceResolver(chatwootPool, config.tenants))
 app.post('/learning', express.raw({ type: 'application/json', limit: '16kb' }), async (request, response) => {
   response.setHeader('Cache-Control', 'no-store')
   if (!Buffer.isBuffer(request.body)) return response.status(415).json({ error: 'application_json_required' })

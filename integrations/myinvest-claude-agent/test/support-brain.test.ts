@@ -10,6 +10,7 @@ import {
   SupportBrainError,
   type SupportBrainRequest,
   supportAnswerSignature,
+  privateLearningReferences,
 } from '../src/support-brain.js'
 
 // Offensichtlicher Dummy-Schluessel: nur fuer die HMAC-Rechnung im Test.
@@ -18,6 +19,25 @@ const FIXED_NOW_MS = 1_771_000_000_123
 const FIXED_TIMESTAMP = '1771000000'
 const REQUEST_ID = '550e8400-e29b-41d4-a716-446655440000'
 const ENDPOINT = 'https://myinvest.example.test/api/support/answer'
+
+describe('internal learning provenance', () => {
+  it('preserves validated examples separately from public sources and builds fixed same-tenant links', async () => {
+    const learningSources = [{ id: '19', tenant: 'saas' as const, question: 'Wie bearbeite ich Kontakte?' }]
+    const answer = await clientWith(respondingFetch(jsonResponse(brainPayload({ learningSources })))).answer(brainRequest())
+    expect(answer.learningSources).toEqual(learningSources)
+    expect(answer.sources).toHaveLength(1)
+    expect(privateLearningReferences(answer, 'saas')).toContain('https://www.myinvest-pro.de/intern/support/lernen?produkt=saas#learning-example-19')
+    expect(privateLearningReferences(answer, 'new_academy')).toBe('')
+  })
+
+  it.each([
+    { id: '1](https://evil.example)', tenant: 'saas', question: 'Frage' },
+    { id: '1', tenant: 'unknown', question: 'Frage' },
+    { id: '1', tenant: 'saas', question: 'x'.repeat(1001) },
+  ])('rejects malformed internal provenance before rendering: %j', async (source) => {
+    await expect(clientWith(respondingFetch(jsonResponse(brainPayload({ learningSources: [source] })))).answer(brainRequest())).rejects.toBeInstanceOf(SupportBrainError)
+  })
+})
 
 /** Genau das Bild des Bodys, das ueber die Leitung geht — ohne `any`. */
 const sentBodySchema = z.object({

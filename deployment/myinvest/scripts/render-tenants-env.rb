@@ -14,6 +14,8 @@ abort 'Tenant credentials do not contain the exact three canonical keys' unless 
 tenants.each do |tenant|
   abort 'Invalid tenant account ID' unless tenant.fetch('accountId').is_a?(Integer) && tenant.fetch('accountId').positive?
   abort 'Invalid tenant inbox ID' unless tenant.fetch('inboxId').is_a?(Integer) && tenant.fetch('inboxId').positive?
+  bot_id = tenant['agentBotId']
+  abort 'Invalid tenant agentBotId' unless !tenant.key?('agentBotId') || (bot_id.is_a?(Integer) && bot_id.positive? && bot_id <= 9_007_199_254_740_991)
   %w[webhookSecret agentBotToken].each do |key|
     abort "Invalid tenant credential: #{key}" unless tenant.fetch(key).is_a?(String) && tenant.fetch(key).length >= 24
   end

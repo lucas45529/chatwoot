@@ -47,6 +47,17 @@ const SAFE_ANSWER: SupportBrainAnswer = { ...BRAIN_ANSWER, safeToAutoSend: true 
 const CONTACT_HASH = 'f'.repeat(64)
 const LIMITS: AutoSendLimits = { maxPerConversation: 3, maxPerContactPerHour: 10 }
 
+describe('learning provenance in private drafts', () => {
+  it.each(['answer', 'handoff'] as const)('shows reviewed knowledge only in the private %s note', async (action) => {
+    const answer: SupportBrainAnswer = { ...BRAIN_ANSWER, action, learningSources: [{ id: '19', tenant: 'saas', question: 'Wie bearbeite ich Kontakte?' }] }
+    const flow = setup({ answer, autoSendEnabled: false })
+    await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(flow.sendPrivateNote.mock.calls.some((call) => String(call[2]).includes('Berücksichtigtes Wissen:'))).toBe(true)
+    expect(flow.saveDraft).toHaveBeenCalledWith(tenants[0], 77, answer.text)
+    expect(flow.sendMessage).not.toHaveBeenCalled()
+  })
+})
+
 function setup(
   options: {
     answer?: SupportBrainAnswer
