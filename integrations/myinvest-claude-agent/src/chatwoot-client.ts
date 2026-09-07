@@ -157,6 +157,16 @@ export class ChatwootClient implements ChatwootPort {
     return { written: true, message: content }
   }
 
+  async loadDraft(tenant: TenantConfig, conversationId: number): Promise<string | undefined> {
+    const current = asObject(await this.json(await this.fetchResponse(
+      tenant,
+      `/api/v1/accounts/${tenant.accountId}/conversations/${conversationId}/draft_messages`,
+      { method: 'GET' },
+    ), 'draft'))
+    return current?.has_draft === true && typeof current.message === 'string'
+      ? current.message : undefined
+  }
+
   async setPriority(
     tenant: TenantConfig,
     conversationId: number,

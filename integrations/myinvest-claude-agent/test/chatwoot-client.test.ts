@@ -3,6 +3,14 @@ import { ChatwootApiError, ChatwootClient } from '../src/chatwoot-client.js'
 import { tenants } from './fixtures.js'
 
 describe('ChatwootClient', () => {
+  it('reads a tenant draft without writing or exposing other conversation state', async () => {
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({ has_draft: true, message: 'Eigene Antwort' })))
+    const client = new ChatwootClient('https://chat.example.test', { exists: vi.fn() }, request)
+    await expect(client.loadDraft(tenants[0]!, 77)).resolves.toBe('Eigene Antwort')
+    expect(request).toHaveBeenCalledOnce()
+    expect(request).toHaveBeenCalledWith('https://chat.example.test/api/v1/accounts/101/conversations/77/draft_messages', expect.objectContaining({ method: 'GET' }))
+  })
+
   it('uses only the tenant AgentBot token and opens a handoff', async () => {
     const deliveryStore = { exists: vi.fn().mockResolvedValue(false) }
     const request = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))

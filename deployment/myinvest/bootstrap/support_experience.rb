@@ -55,6 +55,66 @@ class Myinvest::SupportExperience
           'https://app.myinvest-pro.de',
         ]);
         let learningHost = null;
+        let pendingDraft = null;
+        const attemptedDrafts = new Set();
+        const currentEditor = () => {
+          let component = document.querySelector('.reply-box')?.__vueParentComponent;
+          while (component && typeof component.proxy?.saveDraft !== 'function') component = component.parent;
+          return component?.proxy;
+        };
+        const currentConversation = () => {
+          const route = window.location.pathname.match(routePattern);
+          const editor = currentEditor();
+          if (!route || Number(editor?.currentChat?.id) !== Number(route[2])) return null;
+          return { accountId: Number(route[1]), conversationId: Number(route[2]), editor };
+        };
+        const hasEditorChanges = (editor, expected = '') => {
+          if (!editor) return false;
+          const normalized = typeof editor.toggleSignatureForDraft === 'function'
+            ? editor.toggleSignatureForDraft(expected) : expected;
+          return typeof editor.message === 'string' && editor.message !== normalized;
+        };
+        const draftStatus = (text) => {
+          const box = document.querySelector('.reply-box');
+          const actions = box?.querySelector('.right-wrap');
+          if (!actions) return;
+          let label = actions.querySelector('[data-myinvest-draft-status]');
+          if (!label) {
+            label = document.createElement('span');
+            label.dataset.myinvestDraftStatus = '1';
+            label.className = 'text-xs text-n-slate-11';
+            label.setAttribute('role', 'status');
+            actions.prepend(label);
+          }
+          label.textContent = text;
+          const button = box.querySelector('.i-ph-sparkle-fill')?.closest('button');
+          if (button) button.disabled = Boolean(pendingDraft);
+        };
+        const requestDraft = (automatic = false) => {
+          const current = currentConversation();
+          if (!learningHost || !current || pendingDraft || !window.crypto?.randomUUID) return;
+          const { accountId, conversationId, editor } = current;
+          if (editor.isPrivate || editor.isEditorDisabled || editor.replyType !== 'REPLY') return;
+          if (hasEditorChanges(editor)) {
+            if (!automatic) draftStatus('Dein Entwurf bleibt erhalten.');
+            return;
+          }
+          const latest = [...(editor.currentChat.messages || [])]
+            .filter(message => message.private === false && [0, 1, 'incoming', 'outgoing'].includes(message.message_type))
+            .sort((a, b) => b.id - a.id)[0];
+          const attemptKey = `${accountId}-${conversationId}-${latest?.id}`;
+          if (automatic && (!latest || ![0, 'incoming'].includes(latest.message_type) || attemptedDrafts.has(attemptKey))) return;
+          attemptedDrafts.add(attemptKey);
+          const requestId = window.crypto.randomUUID();
+          pendingDraft = { requestId, accountId, conversationId };
+          draftStatus('KI-Entwurf wird vorbereitet…');
+          window.parent.postMessage({ type: 'myinvest-support-draft', version: 1, requestId, accountId, conversationId }, learningHost);
+          window.setTimeout(() => {
+            if (pendingDraft?.requestId !== requestId) return;
+            pendingDraft = null;
+            draftStatus('Bitte KI-Entwurf erneut anfordern.');
+          }, 75000);
+        };
         const originalDraft = (note) => {
           if (typeof note !== 'string') return '';
           const marker = '\\n\\nAntwortvorschlag:\\n';
@@ -106,6 +166,17 @@ class Myinvest::SupportExperience
           const box = document.querySelector('.reply-box');
           const actions = box?.querySelector('.right-wrap');
           if (!actions || !learningHost) return;
+          const nativeAi = box.querySelector('.i-ph-sparkle-fill')?.closest('button');
+          if (nativeAi) {
+            nativeAi.title = 'KI-Entwurf erstellen';
+            nativeAi.setAttribute('aria-label', 'KI-Entwurf erstellen');
+            const current = currentConversation();
+            if (pendingDraft && (current?.conversationId !== pendingDraft.conversationId || current?.accountId !== pendingDraft.accountId)) {
+              pendingDraft = null;
+              draftStatus('');
+            }
+            nativeAi.disabled = Boolean(pendingDraft);
+          }
           let button = actions.querySelector('[data-myinvest-learning]');
           if (!button) {
             actions.classList.add('gap-2');
@@ -128,10 +199,36 @@ class Myinvest::SupportExperience
         window.addEventListener('message', (event) => {
           const data = event.data;
           if (window.parent === window || event.source !== window.parent || !learningHosts.has(event.origin)) return;
-          if (!data || Object.keys(data).length !== 2 || data.type !== 'myinvest-support-learning-host' || data.version !== 1) return;
-          learningHost = event.origin;
-          updateLearningButton();
+          if (!data || data.version !== 1) return;
+          if (Object.keys(data).length === 2 && data.type === 'myinvest-support-learning-host') {
+            learningHost = event.origin;
+            updateLearningButton();
+            return;
+          }
+          if (event.origin !== learningHost || Object.keys(data).length !== 4 || data.type !== 'myinvest-support-draft-result' ||
+            data.requestId !== pendingDraft?.requestId || !['ready', 'existing', 'preserved', 'already_answered', 'unavailable'].includes(data.status)) return;
+          const current = currentConversation();
+          const matches = current?.accountId === pendingDraft.accountId && current?.conversationId === pendingDraft.conversationId;
+          pendingDraft = null;
+          if (!matches) return;
+          const messages = {
+            ready: 'KI-Entwurf bereit. Vor dem Senden prüfen.',
+            existing: 'Entwurf bereit. Vor dem Senden prüfen.',
+            preserved: 'Dein Entwurf bleibt erhalten.',
+            already_answered: 'Diese Anfrage wurde bereits beantwortet.',
+            unavailable: 'Bitte KI-Entwurf erneut anfordern.',
+          };
+          draftStatus(messages[data.status]);
+          if (['ready', 'existing'].includes(data.status)) void syncDraft();
         });
+        document.addEventListener('click', (event) => {
+          const button = event.target?.closest('button');
+          if (!learningHost || !button?.querySelector('.i-ph-sparkle-fill') ||
+            button !== document.querySelector('.reply-box')?.querySelector('.i-ph-sparkle-fill')?.closest('button')) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          requestDraft();
+        }, true);
         document.addEventListener('input', updateLearningButton);
         window.setInterval(updateLearningButton, 300);
         const syncDraft = async () => {
@@ -158,11 +255,25 @@ class Myinvest::SupportExperience
             }
 
             const response = await request(endpoint);
+            if (window.location.pathname.match(routePattern)?.slice(1, 3).join('-') !== `${accountId}-${conversationId}`) return;
             const payload = response.data || {};
             const serverDraft =
               payload.has_draft && typeof payload.message === 'string' ? payload.message : '';
             if (!serverDraft) {
               window.localStorage.removeItem(clearedKey);
+              // A withdrawn AI proposal may already be visible in this tab.
+              // Clear only the unchanged synchronized text, never an edit.
+              if (syncedDraft && localDraft === syncedDraft && !hasEditorChanges(currentEditor(), localDraft)) {
+                const updatedStore = await writeDraftToStore(draftKey, '');
+                if (!updatedStore) {
+                  drafts[draftKey] = '';
+                  window.localStorage.setItem(draftsKey, JSON.stringify(drafts));
+                }
+                window.localStorage.removeItem(syncKey);
+                if (!updatedStore) window.location.reload();
+                return;
+              }
+              if (!localDraft) requestDraft(true);
               return;
             }
             if (localDraft) {
@@ -179,6 +290,7 @@ class Myinvest::SupportExperience
                 return;
               }
               if (serverDraft !== syncedDraft) {
+                if (hasEditorChanges(currentEditor(), localDraft)) return;
                 const updatedStore = await writeDraftToStore(draftKey, serverDraft);
                 if (!updatedStore) {
                   drafts[draftKey] = serverDraft;
@@ -186,7 +298,7 @@ class Myinvest::SupportExperience
                   window.localStorage.setItem(`${draftsKey}:ts`, String(Date.now()));
                 }
                 window.localStorage.setItem(syncKey, serverDraft);
-                window.location.reload();
+                if (!updatedStore) window.location.reload();
               }
               return;
             }
@@ -196,7 +308,9 @@ class Myinvest::SupportExperience
             const freshReply =
               typeof freshDrafts[draftKey] === 'string' ? freshDrafts[draftKey] : '';
             const freshNote = freshDrafts[`draft-${conversationId}-NOTE`] || '';
-            if (freshReply || freshNote) return;
+            const current = currentConversation();
+            if (!current || current.conversationId !== Number(conversationId) || current.accountId !== Number(accountId) ||
+              current.editor.isPrivate || hasEditorChanges(current.editor) || freshReply || freshNote) return;
             const updatedStore = await writeDraftToStore(draftKey, serverDraft);
             if (!updatedStore) {
               freshDrafts[draftKey] = serverDraft;
@@ -204,7 +318,7 @@ class Myinvest::SupportExperience
               window.localStorage.setItem(`${draftsKey}:ts`, String(Date.now()));
             }
             window.localStorage.setItem(syncKey, serverDraft);
-            window.location.reload();
+            if (!updatedStore) window.location.reload();
           } catch (error) {
             // The private answer-proposal note remains the fail-safe surface.
           } finally {

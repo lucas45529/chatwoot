@@ -14,6 +14,8 @@ import { runAutoSendFeedbackSweep } from './learning/auto-send-feedback.js'
 import { authorizeLearningRequest, LearningRequestError } from './learning/review-auth.js'
 import { learningCommandSchema, LearningReviewService } from './learning/review-service.js'
 import { PostgresLearningSourceResolver } from './learning/source.js'
+import { ManualDraftService, proposalSchema } from './manual-draft.js'
+import { manualDraftHandler } from './manual-draft-route.js'
 import { MessageProcessor } from './processor.js'
 import { DeliveryQueue, QUEUE_NAME, type DeliveryJob } from './queue.js'
 import { PostgresAgentState } from './state.js'
@@ -54,9 +56,10 @@ const brain: SupportBrainPort = config.LOCAL_FAKE_BRAIN_ANSWER
       secret: config.SUPPORT_ANSWER_SECRET,
       timeoutMs: config.SUPPORT_ANSWER_TIMEOUT_MS,
     })
+const chatwoot = new ChatwootClient(config.CHATWOOT_BASE_URL, deliveryStore)
 const processor = new MessageProcessor({
   brain,
-  chatwoot: new ChatwootClient(config.CHATWOOT_BASE_URL, deliveryStore),
+  chatwoot,
   context: deliveryStore,
   state,
   autoSend: autoSendLog,
@@ -149,6 +152,34 @@ const feedbackTimer = worker
 feedbackTimer?.unref()
 
 const app = express()
+const manualDraft = new ManualDraftService({
+  database: chatwootPool,
+  context: deliveryStore,
+  brain,
+  drafts: chatwoot,
+  proposals: {
+    load: async (key) => {
+      const raw = await redis.get(key)
+      return raw ? proposalSchema.parse(JSON.parse(raw)) : undefined
+    },
+    save: async (key, proposal) => {
+      await redis.set(key, JSON.stringify(proposalSchema.parse(proposal)), 'EX', 86400)
+    },
+    clear: async (key) => { await redis.del(key) },
+  },
+  chatwoot,
+  tenants: config.tenants,
+  pseudonymizationKey: config.PSEUDONYMIZATION_KEY,
+  whatsappInboxIds: config.whatsappInboxIds,
+})
+app.post('/draft', express.raw({ type: 'application/json', limit: '2kb' }), manualDraftHandler({
+  secret: config.SUPPORT_CHATWOOT_SSO_SECRET,
+  claim: async (key, ttl) => await redis.set(key, '1', 'EX', ttl, 'NX') === 'OK',
+  createDraft: async (input, signal) => {
+    const tenant = config.tenants.requireByAccountId(input.accountId)
+    return conversationLock.runExclusive(tenant.key, input.conversationId, () => manualDraft.createDraft(input, signal))
+  },
+}))
 const learningReview = new LearningReviewService(pool, new PostgresLearningSourceResolver(chatwootPool, config.tenants))
 app.post('/learning', express.raw({ type: 'application/json', limit: '16kb' }), async (request, response) => {
   response.setHeader('Cache-Control', 'no-store')

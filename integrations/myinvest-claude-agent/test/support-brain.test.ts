@@ -21,6 +21,20 @@ const REQUEST_ID = '550e8400-e29b-41d4-a716-446655440000'
 const ENDPOINT = 'https://myinvest.example.test/api/support/answer'
 
 describe('internal learning provenance', () => {
+  it('propagates the total manual-request deadline and does not retry after cancellation', async () => {
+    const controller = new AbortController()
+    const request = vi.fn<typeof fetch>((_url, options) => new Promise((_resolve, reject) => {
+      options?.signal?.addEventListener('abort', () => reject(new Error('cancelled')), { once: true })
+    }))
+    const answer = clientWith(request).answer(brainRequest(), controller.signal)
+    controller.abort()
+    await expect(answer).rejects.toThrow()
+    expect(request).toHaveBeenCalledOnce()
+    expect(request.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+    await expect(clientWith(request).answer(brainRequest(), controller.signal)).rejects.toThrow()
+    expect(request).toHaveBeenCalledOnce()
+  })
+
   it('preserves validated examples separately from public sources and builds fixed same-tenant links', async () => {
     const learningSources = [{ id: '19', tenant: 'saas' as const, question: 'Wie bearbeite ich Kontakte?' }]
     const answer = await clientWith(respondingFetch(jsonResponse(brainPayload({ learningSources })))).answer(brainRequest())

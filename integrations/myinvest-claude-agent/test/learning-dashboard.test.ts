@@ -26,7 +26,7 @@ function dashboard(pathname = '/app/accounts/101/inbox/17/conversations/77') {
     querySelector: (selector: string) => selector === 'button' ? { className: 'token-button' } : button,
     prepend(value: typeof button) { button = value },
   }
-  const box = { __vueParentComponent: { proxy: editor }, querySelector: () => actions }
+  const box = { __vueParentComponent: { proxy: editor }, querySelector: (selector: string) => selector === '.right-wrap' ? actions : null }
   const axios = vi.fn().mockResolvedValue({ data: { has_draft: false } })
   const window = {
     parent, location: { pathname, reload: vi.fn() }, axios,

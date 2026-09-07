@@ -58,7 +58,7 @@ export function privateLearningReferences(answer: Pick<SupportBrainAnswer, 'lear
 }
 
 export interface SupportBrainPort {
-  answer(request: SupportBrainRequest): Promise<SupportBrainAnswer>
+  answer(request: SupportBrainRequest, signal?: AbortSignal): Promise<SupportBrainAnswer>
 }
 
 /** Grenzen des Contracts: mehr nimmt die Gehirn-API nicht an. */
@@ -133,7 +133,8 @@ export class SupportBrainClient implements SupportBrainPort {
     this.endpoint = `${options.baseUrl.replace(/\/+$/, '')}/api/support/answer`
   }
 
-  async answer(request: SupportBrainRequest): Promise<SupportBrainAnswer> {
+  async answer(request: SupportBrainRequest, signal?: AbortSignal): Promise<SupportBrainAnswer> {
+    signal?.throwIfAborted()
     const requestId = z.string().uuid().safeParse(request.requestId)
     if (!requestId.success) {
       throw new SupportBrainError('Support brain request ID is invalid', 400)
@@ -154,21 +155,23 @@ export class SupportBrainClient implements SupportBrainPort {
       ...(request.reviewOnly ? { reviewOnly: true } : {}),
     })
     try {
-      return await this.send(rawBody, requestId.data)
+      return await this.send(rawBody, requestId.data, signal)
     } catch (error) {
+      signal?.throwIfAborted()
       // Genau ein Wiederholungsversuch, und nur bei Netzfehler (Status 0) oder
       // 5xx: ein abgelehnter oder unverstaendlicher Aufruf wird durch
       // Wiederholen nicht besser, kostet aber die Antwortzeit des Kunden.
       const retryable =
         error instanceof SupportBrainError && (error.status === 0 || error.status >= 500)
       if (!retryable) throw error
-      return this.send(rawBody, requestId.data)
+      return this.send(rawBody, requestId.data, signal)
     }
   }
 
   private async send(
     rawBody: string,
     requestId: string,
+    signal?: AbortSignal,
   ): Promise<SupportBrainAnswer> {
     const fetchImplementation = this.options.fetchImplementation ?? fetch
     const timestamp = Math.floor((this.options.now?.() ?? Date.now()) / 1000).toString()
@@ -188,7 +191,9 @@ export class SupportBrainClient implements SupportBrainPort {
           }),
         },
         redirect: 'error',
-        signal: AbortSignal.timeout(this.options.timeoutMs),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs)])
+          : AbortSignal.timeout(this.options.timeoutMs),
         body: rawBody,
       })
     } catch (error) {
