@@ -35,9 +35,27 @@ describe Messages::StatusUpdateService do
         expect(service.perform).to be false
       end
 
-      it 'prevents transition from read to delivered' do
+      [
+        %w[delivered sent],
+        %w[read sent],
+        %w[read delivered]
+      ].each do |current_status, requested_status|
+        it "prevents transition from #{current_status} back to #{requested_status}" do
+          message.update!(status: current_status)
+          service = described_class.new(message, requested_status)
+
+          expect(service.perform).to be false
+          expect(message.reload.status).to eq(current_status)
+        end
+      end
+
+      it 'reloads a stale message while locking before checking the transition' do
+        stale_message = Message.find(message.id)
         message.update!(status: 'read')
-        service = described_class.new(message, 'delivered')
+        expect(stale_message.status).to eq('sent')
+
+        service = described_class.new(stale_message, 'sent')
+
         expect(service.perform).to be false
         expect(message.reload.status).to eq('read')
       end

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import ReplyBox from '../ReplyBox.vue';
 
-const syncStoredDraft = ReplyBox.watch.storedDraftMessage;
+const syncStoredDraft = ReplyBox.watch.storedDraftState;
 const exposeMyinvestSupportBridge =
   ReplyBox.methods.exposeMyinvestSupportBridge;
 const removeMyinvestSupportBridge =
@@ -15,7 +15,11 @@ describe('ReplyBox external draft synchronization', () => {
       toggleSignatureForDraft: value => value,
     };
 
-    syncStoredDraft.call(context, 'Neuer Entwurf', 'Alter Entwurf');
+    syncStoredDraft.call(
+      context,
+      { key: 'draft-77-REPLY', message: 'Neuer Entwurf' },
+      { key: 'draft-77-REPLY', message: 'Alter Entwurf' }
+    );
 
     expect(context.message).toBe('Neuer Entwurf');
   });
@@ -26,7 +30,26 @@ describe('ReplyBox external draft synchronization', () => {
       toggleSignatureForDraft: value => value,
     };
 
-    syncStoredDraft.call(context, 'Neuer Entwurf', 'Alter Entwurf');
+    syncStoredDraft.call(
+      context,
+      { key: 'draft-77-REPLY', message: 'Neuer Entwurf' },
+      { key: 'draft-77-REPLY', message: 'Alter Entwurf' }
+    );
+
+    expect(context.message).toBe('Von Lucas bearbeitet');
+  });
+
+  it('preserves the editor while switching to another draft key', () => {
+    const context = {
+      message: 'Von Lucas bearbeitet',
+      toggleSignatureForDraft: value => value,
+    };
+
+    syncStoredDraft.call(
+      context,
+      { key: 'draft-77-NOTE', message: '' },
+      { key: 'draft-77-REPLY', message: 'Von Lucas bearbeitet' }
+    );
 
     expect(context.message).toBe('Von Lucas bearbeitet');
   });

@@ -76,6 +76,11 @@ class Myinvest::SupportExperience
             ? editor.normalizeDraft(expected) : expected;
           return typeof editor.message === 'string' && editor.message !== normalized;
         };
+        const draftButtonDisabled = () => {
+          const current = currentConversation();
+          return Boolean(pendingDraft) || !current || current.editor.isPrivate ||
+            current.editor.isEditorDisabled || current.editor.replyType !== 'REPLY';
+        };
         const draftStatus = (text) => {
           const box = document.querySelector('.reply-box');
           const actions = box?.querySelector('.right-wrap');
@@ -90,7 +95,7 @@ class Myinvest::SupportExperience
           }
           label.textContent = text;
           const button = box.querySelector('.i-ph-sparkle-fill')?.closest('button');
-          if (button) button.disabled = Boolean(pendingDraft);
+          if (button) button.disabled = draftButtonDisabled();
         };
         const requestDraft = (automatic = false) => {
           const current = currentConversation();
@@ -177,7 +182,7 @@ class Myinvest::SupportExperience
               pendingDraft = null;
               draftStatus('');
             }
-            nativeAi.disabled = Boolean(pendingDraft);
+            nativeAi.disabled = draftButtonDisabled();
           }
           let button = actions.querySelector('[data-myinvest-learning]');
           if (!button) {

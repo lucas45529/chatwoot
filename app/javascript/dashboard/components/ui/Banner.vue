@@ -81,10 +81,10 @@ export default {
 
 <template>
   <div
-    class="flex items-center justify-center h-12 gap-4 px-4 py-3 text-xs text-white banner dark:text-white woot-banner"
+    class="flex flex-wrap items-center justify-center min-h-12 gap-4 px-4 py-3 text-xs text-white banner dark:text-white woot-banner"
     :class="bannerClasses"
   >
-    <span class="banner-message">
+    <span class="banner-message min-w-0 basis-64 grow">
       {{ bannerMessage }}
       <a
         v-if="hrefLink"
@@ -95,7 +95,7 @@ export default {
         {{ hrefLinkText }}
       </a>
     </span>
-    <div class="actions">
+    <div class="actions max-w-full shrink-0 ml-auto">
       <NextButton
         v-if="hasActionButton"
         xs

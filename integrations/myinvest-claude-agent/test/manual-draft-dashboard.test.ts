@@ -51,6 +51,17 @@ function dashboard() {
 }
 
 describe('MyInvest draft composer bridge', () => {
+  it('disables draft creation outside the editable reply mode, including late request results', () => {
+    const ui = dashboard(); ui.host(); ui.click()
+    ui.editor.isPrivate = true; ui.editor.replyType = 'NOTE'; ui.tick()
+    ui.message({ type: 'myinvest-support-draft-result', version: 1, requestId, status: 'unavailable' })
+    expect(ui.native.disabled).toBe(true)
+    ui.editor.isPrivate = false; ui.editor.replyType = 'REPLY'; ui.tick()
+    expect(ui.native.disabled).toBe(false)
+    ui.editor.isEditorDisabled = true; ui.tick()
+    expect(ui.native.disabled).toBe(true)
+  })
+
   it('replaces the native AI menu only after the trusted portal handshake', () => {
     const ui = dashboard(); expect('__vueParentComponent' in ui.box).toBe(false); ui.click(); expect(ui.parent.postMessage).not.toHaveBeenCalled()
     ui.host(); const event = ui.click()
