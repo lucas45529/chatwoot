@@ -32,6 +32,7 @@ export interface ChatwootDeliveryStore {
 
 export interface ConversationContextRequest {
   accountId: number
+  inboxId: number
   conversationDisplayId: number
   currentMessageId: number
 }
@@ -47,6 +48,9 @@ interface ContextMetadataRow extends Record<string, unknown> {
   last_human_message_id: string | null
   last_agent_handoff_id: string | null
   last_agent_draft_note: string | null
+  conversation_tenant: string | null
+  conversation_channel: string | null
+  source_tenant: string | null
 }
 
 interface ContextMessageRow extends Record<string, unknown> {
@@ -116,11 +120,17 @@ export class PostgresChatwootDeliveryStore
               conversation.contact_id::text AS contact_id,
               contact.email AS contact_email,
               conversation.cached_label_list,
+              conversation.custom_attributes ->> 'myinvest_tenant' AS conversation_tenant,
+              conversation.custom_attributes ->> 'myinvest_channel' AS conversation_channel,
+              CASE WHEN json_typeof(source_message.content_attributes) = 'string'
+                   THEN (source_message.content_attributes #>> '{}')::json ->> 'myinvest_tenant'
+                   ELSE source_message.content_attributes ->> 'myinvest_tenant' END AS source_tenant,
               (
                 SELECT max(human_message.id)::text
                   FROM messages AS human_message
                  WHERE human_message.account_id = $1
                    AND human_message.conversation_id = conversation.id
+                   AND human_message.inbox_id = conversation.inbox_id
                    AND human_message.sender_type = 'User'
                    AND human_message.private = false
               ) AS last_human_message_id,
@@ -130,6 +140,7 @@ export class PostgresChatwootDeliveryStore
                  WHERE marker.account_id = $1
                    AND marker.sender_type = 'AgentBot'
                    AND marker.conversation_id = conversation.id
+                   AND marker.inbox_id = conversation.inbox_id
                    AND CASE WHEN json_typeof(marker.content_attributes) = 'string'
                             THEN (marker.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
                             ELSE marker.content_attributes ->> 'myinvest_agent_message_kind' END
@@ -141,6 +152,7 @@ export class PostgresChatwootDeliveryStore
                  WHERE draft_note.account_id = $1
                    AND draft_note.sender_type = 'AgentBot'
                    AND draft_note.conversation_id = conversation.id
+                   AND draft_note.inbox_id = conversation.inbox_id
                    AND draft_note.private = true
                    AND CASE WHEN json_typeof(draft_note.content_attributes) = 'string'
                             THEN (draft_note.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
@@ -151,12 +163,21 @@ export class PostgresChatwootDeliveryStore
                  LIMIT 1
               ) AS last_agent_draft_note
          FROM conversations AS conversation
+         JOIN messages AS source_message
+           ON source_message.id = $3
+          AND source_message.account_id = conversation.account_id
+          AND source_message.conversation_id = conversation.id
+          AND source_message.inbox_id = conversation.inbox_id
+          AND source_message.message_type = 0
+          AND source_message.private = false
+          AND (source_message.sender_type IS NULL OR source_message.sender_type = 'Contact')
          LEFT JOIN contacts AS contact
            ON contact.account_id = conversation.account_id
           AND contact.id = conversation.contact_id
         WHERE conversation.account_id = $1
-          AND conversation.display_id = $2`,
-      [input.accountId, input.conversationDisplayId],
+          AND conversation.display_id = $2
+          AND conversation.inbox_id = $4`,
+      [input.accountId, input.conversationDisplayId, input.currentMessageId, input.inboxId],
     )
     const conversation = metadata.rows[0]
     if (!conversation) return undefined
@@ -181,6 +202,7 @@ export class PostgresChatwootDeliveryStore
              FROM messages AS message
             WHERE message.account_id = $1
               AND message.conversation_id = $2
+              AND message.inbox_id = $4
               AND message.id <> $3
               AND message.private = false
               AND message.message_type IN (0, 1)
@@ -192,7 +214,7 @@ export class PostgresChatwootDeliveryStore
             LIMIT 12
          ) AS recent
         ORDER BY recent.created_at ASC, recent.message_id::bigint ASC`,
-      [input.accountId, conversation.conversation_id, input.currentMessageId],
+      [input.accountId, conversation.conversation_id, input.currentMessageId, input.inboxId],
     )
 
     const turns: ConversationTurn[] = []
@@ -215,6 +237,11 @@ export class PostgresChatwootDeliveryStore
       humanRepliedAfterBot: lastBotHandoffId > 0 && lastHumanMessageId > lastBotHandoffId,
       humanEverReplied: lastHumanMessageId > 0,
       previousAgentDraft: extractAgentDraft(conversation.last_agent_draft_note),
+      supportRouting: {
+        conversationTenant: conversation.conversation_tenant,
+        conversationChannel: conversation.conversation_channel,
+        sourceTenant: conversation.source_tenant,
+      },
       // Keyed Pseudonym statt Kontakt-ID: die Ratengrenze braucht nur Gleichheit.
       contactHash: conversation.contact_id
         ? contactFingerprint(

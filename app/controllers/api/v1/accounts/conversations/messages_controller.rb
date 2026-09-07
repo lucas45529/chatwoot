@@ -27,6 +27,11 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
 
   def retry
     return if message.blank?
+    if managed_central_api_bridge?
+      return render_could_not_create_error(
+        'Bitte sende diese Antwort als neue Nachricht. Die bisherige Nachricht bleibt als fehlgeschlagen markiert.'
+      )
+    end
 
     service = Messages::StatusUpdateService.new(message, 'sent')
     service.perform
@@ -73,6 +78,14 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
 
   def already_translated_content_available?
     message.translations.present? && message.translations[permitted_params[:target_language]].present?
+  end
+
+  def managed_central_api_bridge?
+    channel = message.inbox.channel
+    channel.is_a?(Channel::Api) &&
+      channel.additional_attributes['managed_by'] == 'myinvest-bootstrap' &&
+      channel.additional_attributes['myinvest_support_bridge'] == true &&
+      message.account.custom_attributes['myinvest_tenant_key'] == 'saas'
   end
 
   # API inbox check

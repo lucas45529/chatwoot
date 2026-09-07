@@ -299,6 +299,54 @@ RSpec.describe 'Conversation Messages API', type: :request do
         expect(message.reload.status).to eq('sent')
         expect(message.reload.content_attributes['external_error']).to be_nil
       end
+
+      context 'when the message belongs to the managed central API bridge' do
+        let(:api_channel) do
+          create(
+            :channel_api,
+            account: account,
+            additional_attributes: {
+              'managed_by' => 'myinvest-bootstrap',
+              'myinvest_support_bridge' => true
+            }
+          )
+        end
+        let(:conversation) { create(:conversation, account: account, inbox: api_channel.inbox) }
+        let(:message) do
+          create(
+            :message,
+            account: account,
+            inbox: api_channel.inbox,
+            conversation: conversation,
+            status: :failed,
+            content_attributes: { external_error: 'error' }
+          )
+        end
+
+        before do
+          message
+          account.update!(custom_attributes: { 'myinvest_tenant_key' => 'saas' })
+          allow(SendReplyJob).to receive(:perform_later)
+          allow(WebhookJob).to receive(:perform_later)
+        end
+
+        it 'keeps the failed message unchanged and requires a new message' do
+          post "/api/v1/accounts/#{account.id}/conversations/#{conversation.display_id}/messages/#{message.id}/retry",
+               headers: agent.create_new_auth_token,
+               as: :json
+
+          expect(response).to have_http_status(:unprocessable_entity)
+          expect(response.parsed_body).to eq(
+            'error' => 'Bitte sende diese Antwort als neue Nachricht. Die bisherige Nachricht bleibt als fehlgeschlagen markiert.'
+          )
+          expect(message.reload).to have_attributes(
+            status: 'failed',
+            content_attributes: { 'external_error' => 'error' }
+          )
+          expect(SendReplyJob).not_to have_received(:perform_later)
+          expect(WebhookJob).not_to have_received(:perform_later)
+        end
+      end
     end
 
     context 'when the message id is invalid' do

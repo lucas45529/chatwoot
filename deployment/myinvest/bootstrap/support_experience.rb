@@ -166,6 +166,8 @@ class Myinvest::SupportExperience
           const box = document.querySelector('.reply-box');
           const actions = box?.querySelector('.right-wrap');
           if (!actions || !learningHost) return;
+          actions.classList.add('flex-wrap', 'gap-2', 'max-w-full', 'min-w-0');
+          actions.parentElement?.classList.add('flex-wrap', 'gap-2');
           const nativeAi = box.querySelector('.i-ph-sparkle-fill')?.closest('button');
           if (nativeAi) {
             nativeAi.title = 'KI-Entwurf erstellen';

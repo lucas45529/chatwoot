@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { SupportRoutingMetadata } from './support-routing.js'
 
 export const tenantKeySchema = z.enum(['saas', 'new_academy', 'legacy_academy'])
 export type TenantKey = z.infer<typeof tenantKeySchema>
@@ -68,6 +69,8 @@ export interface ConversationContext {
   contactEmail?: string
   /** Letzter unveraenderter KI-Composertext; nur als Compare-and-swap-Wert. */
   previousAgentDraft?: string
+  /** Serverseitige Produkt-/Kanalidentitaet der aktuellen Eingangsnachricht. */
+  supportRouting?: SupportRoutingMetadata
 }
 
 export interface KnowledgeHit {

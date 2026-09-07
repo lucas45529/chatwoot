@@ -10,7 +10,7 @@ import {
 import type { ChatwootPort } from './chatwoot-client.js'
 import type { ChatwootConversationContextStore } from './chatwoot-delivery-repository.js'
 import type { TenantConfig } from './config.js'
-import type { ChatwootWebhookPayload } from './domain.js'
+import type { ChatwootWebhookPayload, ConversationContext, TenantKey } from './domain.js'
 import type { AgentState } from './state.js'
 import type {
   SupportBrainAnswer,
@@ -18,6 +18,7 @@ import type {
   SupportBrainPort,
 } from './support-brain.js'
 import { privateLearningReferences } from './support-brain.js'
+import { resolveSupportRoute, type SupportRoute } from './support-routing.js'
 import { directSupportReply, handoffNote, triage, type TriageOutcome } from './triage.js'
 
 /**
@@ -76,6 +77,7 @@ export class MessageProcessor {
     const conversationId = payload.conversation.id
     const conversationContext = await this.dependencies.context.loadContext({
       accountId: tenant.accountId,
+      inboxId: tenant.inboxId,
       conversationDisplayId: conversationId,
       currentMessageId: payload.id,
     })
@@ -89,6 +91,9 @@ export class MessageProcessor {
       )
       throw new Error('Chatwoot conversation context is unavailable')
     }
+    const supportRoute = this.supportRoute(tenant, conversationContext)
+    if (!supportRoute) throw new Error('Chatwoot support routing is invalid')
+    const crossProduct = supportRoute.tenant !== tenant.key
     const wasHandedOff = await this.dependencies.state.isHandedOff(
       tenant.key,
       conversationId,
@@ -145,6 +150,7 @@ export class MessageProcessor {
       )
       await this.escalate({
         tenant,
+        productTenant: supportRoute.tenant,
         conversationId,
         deliveryId: payload.id,
         outcome,
@@ -153,7 +159,7 @@ export class MessageProcessor {
         isFinalAttempt,
         draft,
         learningSources,
-        notifyCustomer: !wasHandedOff,
+        notifyCustomer: !wasHandedOff && !crossProduct,
       })
       await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
     }
@@ -187,7 +193,7 @@ export class MessageProcessor {
       )
       return
     }
-    const reviewOnly = humanOwned || outcome.category === 'beratung'
+    const reviewOnly = crossProduct || humanOwned || outcome.category === 'beratung'
     const directReply = reviewOnly ? undefined : directSupportReply(question)
     let answer: SupportBrainAnswer
     if (directReply) {
@@ -214,12 +220,8 @@ export class MessageProcessor {
               text: turn.text,
             }),
           ),
-          tenant: tenant.key,
-          channel:
-            payload.inboxId !== undefined &&
-            this.dependencies.whatsappInboxIds.has(payload.inboxId)
-              ? 'whatsapp'
-              : 'web',
+          tenant: supportRoute.tenant,
+          channel: supportRoute.channel,
           ...(conversationContext.contactEmail
             ? { contact: { email: conversationContext.contactEmail } }
             : {}),
@@ -263,17 +265,21 @@ export class MessageProcessor {
       return
     }
 
-    const verdict = autoSendDecision({
-      enabled: this.dependencies.autoSendEnabled,
-      humanInConversation: humanOwned,
-      answer,
-    })
+    const verdict: AutoSendVerdict | 'manual_review' = crossProduct
+      ? 'manual_review'
+      : autoSendDecision({
+          enabled: this.dependencies.autoSendEnabled,
+          humanInConversation: humanOwned,
+          answer,
+        })
     if (verdict === 'auto_send') {
       // Ein Fehler der Chatwoot-API laeuft hier bewusst in den Job-Retry und
       // nicht in den Entwurfspfad: bereits gesendete Nachrichten sind ueber den
       // Delivery-Marker idempotent, ein zweiter Weg waere es nicht.
       await this.autoAnswer({
         tenant,
+        productTenant: supportRoute.tenant,
+        productChannel: supportRoute.channel,
         conversationId,
         deliveryId: payload.id,
         question,
@@ -287,6 +293,7 @@ export class MessageProcessor {
     try {
       await this.prepareDraft({
         tenant,
+        productTenant: supportRoute.tenant,
         conversationId,
         deliveryId: payload.id,
         answer,
@@ -315,6 +322,8 @@ export class MessageProcessor {
    */
   private async autoAnswer(input: {
     tenant: TenantConfig
+    productTenant: TenantKey
+    productChannel: SupportRoute['channel']
     conversationId: number
     deliveryId: number
     question: string
@@ -343,6 +352,7 @@ export class MessageProcessor {
     if (!reservation.reserved) {
       await this.prepareDraft({
         tenant,
+        productTenant: input.productTenant,
         conversationId,
         deliveryId,
         answer,
@@ -355,10 +365,19 @@ export class MessageProcessor {
 
     const liveContext = await this.dependencies.context.loadContext({
       accountId: tenant.accountId,
+      inboxId: tenant.inboxId,
       conversationDisplayId: conversationId,
       currentMessageId: deliveryId,
     })
     if (!liveContext) throw new Error('Chatwoot conversation context is unavailable before send')
+    const liveRoute = this.supportRoute(tenant, liveContext)
+    if (
+      !liveRoute ||
+      liveRoute.tenant !== input.productTenant ||
+      liveRoute.channel !== input.productChannel
+    ) {
+      throw new Error('Chatwoot support routing changed before send')
+    }
     const liveHandedOff = await this.dependencies.state.isHandedOff(
       tenant.key,
       conversationId,
@@ -386,6 +405,7 @@ export class MessageProcessor {
     if (liveVerdict !== 'auto_send') {
       await this.prepareDraft({
         tenant,
+        productTenant: input.productTenant,
         conversationId,
         deliveryId,
         answer,
@@ -444,10 +464,11 @@ export class MessageProcessor {
 
   private async prepareDraft(input: {
     tenant: TenantConfig
+    productTenant: TenantKey
     conversationId: number
     deliveryId: number
     answer: SupportBrainAnswer
-    verdict: AutoSendVerdict
+    verdict: AutoSendVerdict | 'manual_review'
     labels?: readonly string[]
     previousAgentDraft?: string
   }): Promise<void> {
@@ -475,7 +496,7 @@ export class MessageProcessor {
     const draftNote = draftWrite.written
       ? `KI-Antwortentwurf wartet auf menschliche Freigabe (${verdict}).\n\nAntwortvorschlag:\n${draftWrite.message}${sourceNote}`
       : `KI-Vorschlag wurde nicht in den Composer übernommen, weil dort ein menschlich bearbeiteter Entwurf liegt.\n\nVorschlag zur Referenz:\n${answer.text}${sourceNote}`
-    const noteContent = draftNote + privateLearningReferences(answer, tenant.key)
+    const noteContent = draftNote + privateLearningReferences(answer, input.productTenant)
     await this.dependencies.chatwoot.sendPrivateNote(
       tenant,
       conversationId,
@@ -509,6 +530,7 @@ export class MessageProcessor {
    */
   private async escalate(input: {
     tenant: TenantConfig
+    productTenant: TenantKey
     conversationId: number
     deliveryId: number
     outcome: TriageOutcome
@@ -571,7 +593,7 @@ export class MessageProcessor {
       : draft
         ? `${handoffContent}\n\n${humanDraftPreserved ? 'Im Composer liegt ein menschlich bearbeiteter Entwurf.\n\n' : ''}Vorschlag zur Referenz:\n${draft}`
         : handoffContent
-    const noteContent = draftNote + privateLearningReferences(input, tenant.key)
+    const noteContent = draftNote + privateLearningReferences(input, input.productTenant)
 
     await run('priority', false, () =>
       chatwoot.setPriority(tenant, conversationId, outcome.priority),
@@ -622,6 +644,18 @@ export class MessageProcessor {
         }),
       )
     }
+  }
+
+  private supportRoute(
+    tenant: TenantConfig,
+    context: ConversationContext,
+  ): SupportRoute | undefined {
+    return resolveSupportRoute(context.supportRouting, {
+      tenant: tenant.key,
+      channel: this.dependencies.whatsappInboxIds.has(tenant.inboxId)
+        ? 'whatsapp'
+        : 'web',
+    })
   }
 }
 

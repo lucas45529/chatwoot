@@ -163,6 +163,67 @@ function setup(
 }
 
 describe('MessageProcessor', () => {
+  it('uses Academy knowledge for a central-account Academy conversation', async () => {
+    const centralAccess = { ...tenants[0]!, accountId: 1, inboxId: 1 }
+    const answer: SupportBrainAnswer = {
+      ...BRAIN_ANSWER,
+      learningSources: [{
+        id: '19',
+        tenant: 'new_academy',
+        question: 'Wie funktioniert die Academy?',
+      }],
+    }
+    const central = setup({
+      answer: { ...answer, safeToAutoSend: true },
+      autoSendEnabled: true,
+      context: {
+        supportRouting: {
+          conversationTenant: 'new_academy',
+          conversationChannel: 'whatsapp',
+          sourceTenant: 'new_academy',
+        },
+      },
+    })
+
+    await central.processor.process({ tenant: centralAccess, payload: incomingPayload() })
+
+    expect(central.answer).toHaveBeenCalledWith(expect.objectContaining({
+      tenant: 'new_academy',
+      channel: 'whatsapp',
+      reviewOnly: true,
+    }))
+    expect(central.saveDraft).toHaveBeenCalledWith(centralAccess, 77, answer.text)
+    expect(central.sendPrivateNote).toHaveBeenCalledWith(
+      centralAccess,
+      77,
+      expect.stringMatching(/manual_review[\s\S]*produkt=new_academy/),
+      55,
+      'draft_note',
+    )
+    expect(central.autoSend.reserve).not.toHaveBeenCalled()
+    expect(central.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects conflicting central-account product metadata before side effects', async () => {
+    const central = setup({
+      context: {
+        supportRouting: {
+          conversationTenant: 'saas',
+          conversationChannel: 'web',
+          sourceTenant: 'new_academy',
+        },
+      },
+    })
+
+    await expect(central.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload(),
+    })).rejects.toThrow(/routing/i)
+    expect(central.answer).not.toHaveBeenCalled()
+    expect(central.saveDraft).not.toHaveBeenCalled()
+    expect(central.sendMessage).not.toHaveBeenCalled()
+  })
+
   it('uses only the configured tenant and hands off unsafe or brain-declined questions', async () => {
     const supported = setup()
     await supported.processor.process({

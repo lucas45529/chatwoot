@@ -10,16 +10,19 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('rejects consumed drafts and 
   const client = new Client({ connectionString: process.env.LEARNING_TEST_DATABASE_URL })
   await client.connect()
   try {
-    await client.query('CREATE TEMP TABLE conversations (id bigint, account_id bigint, display_id bigint, inbox_id bigint)')
+    await client.query('CREATE TEMP TABLE conversations (id bigint, account_id bigint, display_id bigint, inbox_id bigint, custom_attributes jsonb)')
     await client.query(`CREATE TEMP TABLE messages (id bigint, account_id bigint, conversation_id bigint, inbox_id bigint,
       message_type integer, private boolean, sender_type text, sender_id bigint, content text, content_attributes json)`)
-    await client.query('INSERT INTO conversations VALUES (700, 101, 77, 17)')
+    await client.query("INSERT INTO conversations VALUES (700, 101, 77, 17, '{}')")
     await client.query(`INSERT INTO messages VALUES
       (55, 101, 700, 17, 0, false, 'Contact', 900, 'Wie bearbeite ich Kontakte?', '{}'),
       (61, 101, 700, 17, 1, true, 'AgentBot', 801, E'KI-Entwurf\n\nAntwortvorschlag:\nÖffne Kontakte und wähle Bearbeiten.\nQuellen: Hilfe', '{"myinvest_agent_delivery_id":"55","myinvest_agent_message_kind":"draft_note"}')`)
     const resolver = new PostgresLearningSourceResolver({ query: (sql, values) => client.query(sql, [...values]) }, buildTenantRegistry(tenants.map((tenant, index) => ({ ...tenant, agentBotId: 801 + index }))))
     const source = { accountId: 101, conversationId: 77, questionMessageId: 55, draftMessageId: 61 }
     await expect(resolver.resolve(source)).resolves.toMatchObject({ tenant: 'saas', question: 'Wie bearbeite ich Kontakte?' })
+    await client.query(`UPDATE conversations SET custom_attributes = '{"myinvest_tenant":"new_academy","myinvest_channel":"whatsapp"}'`)
+    await client.query(`UPDATE messages SET content_attributes = '{"myinvest_tenant":"new_academy"}' WHERE id = 55`)
+    await expect(resolver.resolve(source)).resolves.toMatchObject({ tenant: 'new_academy', question: 'Wie bearbeite ich Kontakte?' })
     // A bot-authored note in a historical inbox must not become fresh
     // composer provenance even when all record-level joins match.
     await client.query('UPDATE conversations SET inbox_id = 99')

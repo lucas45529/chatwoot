@@ -15,6 +15,7 @@ describe('PostgresChatwootDeliveryStore', () => {
     await expect(
       store.exists({
         accountId: 101,
+        inboxId: 17,
         conversationDisplayId: 77,
         deliveryId: 55,
         kind: 'handoff_ack',
@@ -81,6 +82,9 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
             contact_id: '4242',
             contact_email: 'kunde@example.de',
             cached_label_list: 'ki-uebergabe',
+            conversation_tenant: null,
+            conversation_channel: null,
+            source_tenant: null,
             last_human_message_id: '3',
             last_agent_handoff_id: '1',
             last_agent_draft_note:
@@ -128,6 +132,7 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     const store = new PostgresChatwootDeliveryStore({ query }, PSEUDONYMIZATION_KEY)
     const context = await store.loadContext({
       accountId: 101,
+      inboxId: 17,
       conversationDisplayId: 71,
       currentMessageId: 4,
     })
@@ -136,6 +141,11 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
       labels: ['ki-uebergabe'],
       humanEverReplied: true,
       previousAgentDraft: 'Alter KI-Entwurf',
+      supportRouting: {
+        conversationTenant: null,
+        conversationChannel: null,
+        sourceTenant: null,
+      },
       turns: [
         { role: 'assistant', text: 'Übergabe' },
         { role: 'human', text: 'Hallo, wie können wir helfen?' },
@@ -149,10 +159,13 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
       contactEmail: 'kunde@example.de',
     })
     expect(context!.contactHash).not.toContain('4242')
-    expect(query.mock.calls[0]![1]).toEqual([101, 71])
+    expect(query.mock.calls[0]![1]).toEqual([101, 71, 4, 17])
     expect(query.mock.calls[0]![0]).toContain('JOIN contacts')
     expect(query.mock.calls[0]![0]).toContain('AS last_human_message_id')
     expect(query.mock.calls[0]![0]).toContain('AS last_agent_draft_note')
+    expect(query.mock.calls[0]![0]).toContain("custom_attributes ->> 'myinvest_tenant'")
+    expect(query.mock.calls[0]![0]).toContain('source_message.id = $3')
+    expect(query.mock.calls[0]![0]).toContain('conversation.inbox_id = $4')
     expect(query.mock.calls[0]![0]).toContain(
       "IN ('handoff_note', 'draft_note', 'clarify_draft_note')",
     )
@@ -164,7 +177,7 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     expect(query.mock.calls[1]![0]).toContain('message.private = false')
 
     expect(query.mock.calls[1]![0]).toContain("content_attributes ->> 'external_echo'")
-    expect(query.mock.calls[1]![1]).toEqual([101, '900', 4])
+    expect(query.mock.calls[1]![1]).toEqual([101, '900', 4, 17])
   })
 
   it('keys and domain-separates production pseudonyms', () => {
@@ -216,6 +229,7 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     await expect(
       store.loadContext({
         accountId: 101,
+        inboxId: 17,
         conversationDisplayId: 71,
         currentMessageId: 55,
       }),

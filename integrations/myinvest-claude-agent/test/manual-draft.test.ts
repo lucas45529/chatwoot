@@ -13,6 +13,9 @@ import { PSEUDONYMIZATION_KEY, tenants } from './fixtures.js'
 const sourceRow = {
   conversation_id: '9001',
   inbox_id: 17,
+  conversation_tenant: null,
+  conversation_channel: null,
+  source_tenant: null,
   source_message_id: '243',
   source_content: 'Wie richte ich mein Konto ein?',
   source_content_type: 0,
@@ -83,6 +86,85 @@ function dependencies(overrides: Partial<ManualDraftDependencies> = {}) {
 }
 
 describe('ManualDraftService', () => {
+  it('uses Academy knowledge while retaining the central account access identity', async () => {
+    const answer = vi.fn().mockResolvedValue({
+      action: 'answer' as const,
+      text: 'Öffnen Sie zuerst die Academy-Einstellungen.',
+      confidence: 0.8,
+      sources: [],
+      learningSources: [{
+        id: '19',
+        tenant: 'new_academy' as const,
+        question: 'Wie funktioniert die Academy?',
+      }],
+      safeToAutoSend: false,
+    })
+    const fixture = dependencies({
+      database: { query: vi.fn().mockResolvedValue({
+        rows: [{
+          ...sourceRow,
+          conversation_tenant: 'new_academy',
+          conversation_channel: 'whatsapp',
+          source_tenant: 'new_academy',
+        }],
+      }) },
+      brain: { answer },
+    })
+
+    await expect(new ManualDraftService(fixture.values).createDraft({
+      accountId: 101,
+      conversationId: 77,
+    })).resolves.toEqual({ status: 'ready' })
+    expect(answer).toHaveBeenCalledWith(
+      expect.objectContaining({ tenant: 'new_academy', channel: 'whatsapp' }),
+      undefined,
+    )
+    expect(fixture.chatwoot.saveDraft).toHaveBeenCalledWith(
+      tenants[0], 77, 'Öffnen Sie zuerst die Academy-Einstellungen.',
+    )
+    expect(fixture.chatwoot.sendPrivateNote).toHaveBeenCalledWith(
+      tenants[0], 77, expect.stringContaining('produkt=new_academy'), 243, 'draft_note',
+    )
+  })
+
+  it('discards an answer when central product routing changes during generation', async () => {
+    const academySource = {
+      ...sourceRow,
+      conversation_tenant: 'new_academy',
+      conversation_channel: 'whatsapp',
+      source_tenant: 'new_academy',
+    }
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [academySource] })
+      .mockResolvedValueOnce({ rows: [{ ...academySource, source_tenant: 'saas' }] })
+    const fixture = dependencies({ database: { query } })
+
+    await expect(new ManualDraftService(fixture.values).createDraft({
+      accountId: 101,
+      conversationId: 77,
+    })).resolves.toEqual({ status: 'unavailable' })
+    expect(fixture.brain.answer).toHaveBeenCalledOnce()
+    expect(fixture.chatwoot.saveDraft).not.toHaveBeenCalled()
+    expect(fixture.chatwoot.sendPrivateNote).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { conversation_tenant: 'invalid', conversation_channel: 'whatsapp', source_tenant: 'invalid' },
+    { conversation_tenant: 'saas', conversation_channel: 'web', source_tenant: 'new_academy' },
+    { conversation_tenant: 'new_academy', conversation_channel: null, source_tenant: 'new_academy' },
+  ])('rejects invalid or conflicting product routing metadata: %o', async (routing) => {
+    const fixture = dependencies({
+      database: { query: vi.fn().mockResolvedValue({ rows: [{ ...sourceRow, ...routing }] }) },
+    })
+
+    await expect(new ManualDraftService(fixture.values).createDraft({
+      accountId: 101,
+      conversationId: 77,
+    })).resolves.toEqual({ status: 'unavailable' })
+    expect(fixture.brain.answer).not.toHaveBeenCalled()
+    expect(fixture.chatwoot.saveDraft).not.toHaveBeenCalled()
+  })
+
   it('creates only an editable internal draft from the redacted context', async () => {
     const fixture = dependencies()
     const service = new ManualDraftService(fixture.values)
@@ -96,6 +178,7 @@ describe('ManualDraftService', () => {
     )
     expect(fixture.context.loadContext).toHaveBeenCalledWith({
       accountId: 101,
+      inboxId: 17,
       conversationDisplayId: 77,
       currentMessageId: 243,
     })
@@ -131,6 +214,8 @@ describe('ManualDraftService', () => {
         sourceMessageId: 243,
         draft: 'Öffnen Sie zuerst die Einstellungen.',
         note: expect.stringContaining('Antwortvorschlag:'),
+        productTenant: 'saas',
+        channel: 'web',
       }),
     )
     expect(fixture.proposals.save.mock.invocationCallOrder[0]).toBeLessThan(

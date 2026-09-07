@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { ChatwootPort } from './chatwoot-client.js'
 import type { ChatwootConversationContextStore } from './chatwoot-delivery-repository.js'
 import type { TenantConfig, TenantRegistry } from './config.js'
-import type { ConversationContext } from './domain.js'
+import type { ConversationContext, TenantKey } from './domain.js'
 import {
   containsResidualPersonalData,
   redactSupportText,
@@ -14,6 +14,7 @@ import {
   type SupportBrainHistoryTurn,
   type SupportBrainPort,
 } from './support-brain.js'
+import { resolveSupportRoute, type SupportRoute } from './support-routing.js'
 
 export const manualDraftRequestSchema = z.object({
   action: z.literal('draft'),
@@ -57,6 +58,8 @@ export const proposalSchema = z.object({
   sourceMessageId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   draft: z.string().min(1).max(4_000),
   note: z.string().min(1).max(40_000),
+  productTenant: z.enum(['saas', 'new_academy', 'legacy_academy']).optional(),
+  channel: z.enum(['web', 'whatsapp']).optional(),
 }).strict()
 
 export type ManualDraftProposal = z.infer<typeof proposalSchema>
@@ -82,6 +85,9 @@ export interface ManualDraftDependencies {
 interface ManualDraftSourceRow extends Record<string, unknown> {
   conversation_id: string
   inbox_id: number
+  conversation_tenant: string | null
+  conversation_channel: string | null
+  source_tenant: string | null
   source_message_id: string | null
   source_content: string | null
   source_content_type: number | null
@@ -145,6 +151,8 @@ export class ManualDraftService {
           signal,
         })
       }
+      const route = routeForSource(source, tenant, this.dependencies.whatsappInboxIds)
+      if (!route) return { status: 'unavailable' }
       if (source.human_replied_after_inbound) {
         return { status: 'already_answered' }
       }
@@ -155,6 +163,7 @@ export class ManualDraftService {
 
       const context = await this.dependencies.context.loadContext({
         accountId: tenant.accountId,
+        inboxId: tenant.inboxId,
         conversationDisplayId: input.conversationId,
         currentMessageId: sourceMessageId,
       })
@@ -162,6 +171,7 @@ export class ManualDraftService {
 
       const answer = await this.answerForSource({
         tenant,
+        route,
         source,
         sourceMessageId,
         context,
@@ -171,7 +181,13 @@ export class ManualDraftService {
       if (!answer) return { status: 'unavailable' }
 
       const currentSource = await this.loadSource(tenant, input.conversationId)
-      const currentState = sourceState(currentSource, tenant, sourceMessageId)
+      const currentState = sourceState(
+        currentSource,
+        tenant,
+        sourceMessageId,
+        route,
+        this.dependencies.whatsappInboxIds,
+      )
       if (currentState !== 'current') return { status: currentState }
       if (currentSource!.draft_note_exists) {
         const sourceLinkedDraft = await this.dependencies.drafts.loadDraft(
@@ -189,7 +205,9 @@ export class ManualDraftService {
       const proposal = proposalSchema.parse({
         sourceMessageId,
         draft: answer.text,
-        note: draftNote(answer, tenant),
+        note: draftNote(answer, route.tenant),
+        productTenant: route.tenant,
+        channel: route.channel,
       })
       signal?.throwIfAborted()
       await this.dependencies.proposals.save(proposalKey, proposal)
@@ -232,6 +250,8 @@ export class ManualDraftService {
       input.source,
       input.tenant,
       input.proposal.sourceMessageId,
+      proposalRoute(input.proposal, input.tenant, this.dependencies.whatsappInboxIds),
+      this.dependencies.whatsappInboxIds,
     )
     if (pendingState !== 'current') {
       const rollback = await this.dependencies.chatwoot.saveDraft(
@@ -268,6 +288,8 @@ export class ManualDraftService {
         currentSource,
         input.tenant,
         input.proposal.sourceMessageId,
+        proposalRoute(input.proposal, input.tenant, this.dependencies.whatsappInboxIds),
+        this.dependencies.whatsappInboxIds,
       )
       if (currentState !== 'current') {
         input.signal?.throwIfAborted()
@@ -304,7 +326,13 @@ export class ManualDraftService {
     signal?: AbortSignal
   }): Promise<ManualDraftResult> {
     const currentSource = await this.loadSource(input.tenant, input.conversationId)
-    const currentState = sourceState(currentSource, input.tenant, input.sourceMessageId)
+    const currentState = sourceState(
+      currentSource,
+      input.tenant,
+      input.sourceMessageId,
+      proposalRoute(input.proposal, input.tenant, this.dependencies.whatsappInboxIds),
+      this.dependencies.whatsappInboxIds,
+    )
     if (currentState !== 'current') {
       const rollback = await this.dependencies.chatwoot.saveDraft(
         input.tenant,
@@ -340,9 +368,12 @@ export class ManualDraftService {
     const result = await this.dependencies.database.query<ManualDraftSourceRow>(
       `SELECT conversation.id::text AS conversation_id,
               conversation.inbox_id,
+              conversation.custom_attributes ->> 'myinvest_tenant' AS conversation_tenant,
+              conversation.custom_attributes ->> 'myinvest_channel' AS conversation_channel,
               incoming.id::text AS source_message_id,
               incoming.content AS source_content,
               incoming.content_type AS source_content_type,
+              incoming.source_tenant,
               COALESCE(
                 (last_human.created_at, last_human.id) >
                 (incoming.created_at, incoming.id),
@@ -353,6 +384,7 @@ export class ManualDraftService {
                   FROM messages AS draft_note
                  WHERE draft_note.account_id = $1
                    AND draft_note.conversation_id = conversation.id
+                   AND draft_note.inbox_id = conversation.inbox_id
                    AND draft_note.private = true
                    AND CASE WHEN json_typeof(draft_note.content_attributes) = 'string'
                             THEN (draft_note.content_attributes #>> '{}')::json ->> 'myinvest_agent_delivery_id'
@@ -363,10 +395,14 @@ export class ManualDraftService {
               ) AS draft_note_exists
          FROM conversations AS conversation
          LEFT JOIN LATERAL (
-           SELECT message.id, message.content, message.content_type, message.created_at
+           SELECT message.id, message.content, message.content_type, message.created_at,
+                  CASE WHEN json_typeof(message.content_attributes) = 'string'
+                       THEN (message.content_attributes #>> '{}')::json ->> 'myinvest_tenant'
+                       ELSE message.content_attributes ->> 'myinvest_tenant' END AS source_tenant
              FROM messages AS message
             WHERE message.account_id = $1
               AND message.conversation_id = conversation.id
+              AND message.inbox_id = conversation.inbox_id
               AND message.private = false
               AND message.message_type = 0
               AND (message.sender_type IS NULL OR message.sender_type = 'Contact')
@@ -378,6 +414,7 @@ export class ManualDraftService {
              FROM messages AS message
             WHERE message.account_id = $1
               AND message.conversation_id = conversation.id
+              AND message.inbox_id = conversation.inbox_id
               AND message.private = false
               AND message.message_type = 1
               AND (
@@ -406,6 +443,7 @@ export class ManualDraftService {
 
   private async answerForSource(input: {
     tenant: TenantConfig
+    route: SupportRoute
     source: ManualDraftSourceRow
     sourceMessageId: number
     context: ConversationContext
@@ -449,10 +487,8 @@ export class ManualDraftService {
           text: turn.text,
         }),
       ),
-      tenant: input.tenant.key,
-      channel: this.dependencies.whatsappInboxIds.has(input.tenant.inboxId)
-        ? 'whatsapp'
-        : 'web',
+      tenant: input.route.tenant,
+      channel: input.route.channel,
       ...(input.context.contactEmail
         ? { contact: { email: input.context.contactEmail } }
         : {}),
@@ -486,11 +522,14 @@ function sourceState(
   source: ManualDraftSourceRow | undefined,
   tenant: TenantConfig,
   expectedMessageId: number,
+  expectedRoute: SupportRoute,
+  whatsappInboxIds: ReadonlySet<number>,
 ): 'current' | 'already_answered' | 'unavailable' {
   if (
     !source ||
     source.inbox_id !== tenant.inboxId ||
-    Number(source.source_message_id) !== expectedMessageId
+    Number(source.source_message_id) !== expectedMessageId ||
+    !sameRoute(routeForSource(source, tenant, whatsappInboxIds), expectedRoute)
   ) {
     return 'unavailable'
   }
@@ -501,14 +540,52 @@ function isPositiveSafeInteger(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0
 }
 
-function draftNote(answer: SupportBrainAnswer, tenant: TenantConfig): string {
+function routeForSource(
+  source: ManualDraftSourceRow,
+  tenant: TenantConfig,
+  whatsappInboxIds: ReadonlySet<number>,
+): SupportRoute | undefined {
+  return resolveSupportRoute(
+    {
+      conversationTenant: source.conversation_tenant,
+      conversationChannel: source.conversation_channel,
+      sourceTenant: source.source_tenant,
+    },
+    {
+      tenant: tenant.key,
+      channel: whatsappInboxIds.has(tenant.inboxId) ? 'whatsapp' : 'web',
+    },
+  )
+}
+
+function proposalRoute(
+  proposal: ManualDraftProposal,
+  tenant: TenantConfig,
+  whatsappInboxIds: ReadonlySet<number>,
+): SupportRoute {
+  return {
+    tenant: proposal.productTenant ?? tenant.key,
+    channel:
+      proposal.channel ??
+      (whatsappInboxIds.has(tenant.inboxId) ? 'whatsapp' : 'web'),
+  }
+}
+
+function sameRoute(
+  actual: SupportRoute | undefined,
+  expected: SupportRoute,
+): boolean {
+  return actual?.tenant === expected.tenant && actual.channel === expected.channel
+}
+
+function draftNote(answer: SupportBrainAnswer, tenant: TenantKey): string {
   const sourceNote = answer.sources.length > 0
     ? `\nQuellen: ${brainSources(answer)}`
     : '\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.'
   return (
     `KI-Antwortentwurf wartet auf menschliche Freigabe (manual_review).` +
     `\n\nAntwortvorschlag:\n${answer.text}${sourceNote}` +
-    privateLearningReferences(answer, tenant.key)
+    privateLearningReferences(answer, tenant)
   )
 }
 

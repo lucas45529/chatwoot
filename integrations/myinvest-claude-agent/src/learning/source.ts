@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { TenantRegistry } from '../config.js'
 import type { TenantKey } from '../domain.js'
 import { extractAgentDraft } from '../chatwoot-delivery-repository.js'
+import { resolveSupportRoute } from '../support-routing.js'
 import { LearningRequestError } from './review-auth.js'
 
 const sourceId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
@@ -38,8 +39,19 @@ export class PostgresLearningSourceResolver implements LearningSourceResolver {
     const tenant = this.tenants.all.find((entry) => entry.accountId === source.accountId)
     if (!tenant) throw new LearningRequestError(404, 'learning_source_not_found')
     if (!tenant.agentBotId) throw new LearningRequestError(503, 'learning_source_identity_unavailable')
-    const result = await this.database.query<{ question: string; draft_note: string }>(`
-      SELECT q.content AS question, n.content AS draft_note
+    const result = await this.database.query<{
+      question: string
+      draft_note: string
+      conversation_tenant: string | null
+      conversation_channel: string | null
+      source_tenant: string | null
+    }>(`
+      SELECT q.content AS question, n.content AS draft_note,
+        c.custom_attributes ->> 'myinvest_tenant' AS conversation_tenant,
+        c.custom_attributes ->> 'myinvest_channel' AS conversation_channel,
+        CASE WHEN json_typeof(q.content_attributes) = 'string'
+          THEN (q.content_attributes #>> '{}')::json ->> 'myinvest_tenant'
+          ELSE q.content_attributes ->> 'myinvest_tenant' END AS source_tenant
       FROM conversations c
       JOIN messages q ON q.id = $3 AND q.conversation_id = c.id AND q.account_id = c.account_id
         AND q.inbox_id = c.inbox_id AND q.message_type = 0 AND q.private = false
@@ -70,11 +82,20 @@ export class PostgresLearningSourceResolver implements LearningSourceResolver {
       LIMIT 1`, [source.accountId, source.conversationId, source.questionMessageId, source.draftMessageId, tenant.agentBotId, tenant.inboxId])
     const row = result.rows[0]
     if (!row) throw new LearningRequestError(404, 'learning_source_not_found')
+    const route = resolveSupportRoute(
+      {
+        conversationTenant: row.conversation_tenant,
+        conversationChannel: row.conversation_channel,
+        sourceTenant: row.source_tenant,
+      },
+      { tenant: tenant.key, channel: 'web' },
+    )
+    if (!route) throw new LearningRequestError(404, 'learning_source_not_found')
     const question = typeof row.question === 'string' ? row.question.trim() : ''
     const previousDraft = extractAgentDraft(row.draft_note)
     if (question.length < 8 || question.length > 1000 || !previousDraft || previousDraft.length < 10 || previousDraft.length > 4000) {
       throw new LearningRequestError(422, 'learning_source_not_supported')
     }
-    return { tenant: tenant.key, source, question, previousDraft }
+    return { tenant: route.tenant, source, question, previousDraft }
   }
 }

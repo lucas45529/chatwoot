@@ -9,6 +9,38 @@ const draft = 'Öffne Kontakte und wähle Bearbeiten.'
 const pinnedTenants = tenants.map((tenant, index) => ({ ...tenant, agentBotId: 801 + index }))
 
 describe('authenticated conversation learning source', () => {
+  it('resolves an Academy product inside the central SaaS access account', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{
+      question: 'Wie funktioniert die Academy?',
+      draft_note: `KI-Entwurf\n\nAntwortvorschlag:\n${draft}\nQuellen: Hilfe`,
+      conversation_tenant: 'new_academy',
+      conversation_channel: 'whatsapp',
+      source_tenant: 'new_academy',
+    }] })
+    const resolver = new PostgresLearningSourceResolver({ query }, buildTenantRegistry(pinnedTenants))
+
+    await expect(resolver.resolve(source)).resolves.toMatchObject({
+      tenant: 'new_academy',
+      source,
+    })
+    expect(query.mock.calls[0]?.[1]).toEqual([101, 77, 55, 61, 801, 17])
+  })
+
+  it.each([
+    { conversation_tenant: 'invalid', conversation_channel: 'web', source_tenant: 'invalid' },
+    { conversation_tenant: 'saas', conversation_channel: 'web', source_tenant: 'new_academy' },
+    { conversation_tenant: 'new_academy', conversation_channel: null, source_tenant: 'new_academy' },
+  ])('rejects invalid or conflicting source product routing: %o', async (routing) => {
+    const query = vi.fn().mockResolvedValue({ rows: [{
+      question: 'Wie funktioniert die Academy?',
+      draft_note: `KI-Entwurf\n\nAntwortvorschlag:\n${draft}\nQuellen: Hilfe`,
+      ...routing,
+    }] })
+    const resolver = new PostgresLearningSourceResolver({ query }, buildTenantRegistry(pinnedTenants))
+
+    await expect(resolver.resolve(source)).rejects.toMatchObject({ status: 404 })
+  })
+
   it('resolves immutable question and original draft through tenant-bound read-only joins', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [{ question: 'Wie bearbeite ich Kontakte?', draft_note: `KI-Entwurf\n\nAntwortvorschlag:\n${draft}\nQuellen: Hilfe` }] })
     const resolver = new PostgresLearningSourceResolver({ query }, buildTenantRegistry(pinnedTenants))
