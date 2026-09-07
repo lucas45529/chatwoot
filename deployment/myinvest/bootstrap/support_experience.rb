@@ -57,10 +57,12 @@ class Myinvest::SupportExperience
         let learningHost = null;
         let pendingDraft = null;
         const attemptedDrafts = new Set();
-        const currentEditor = () => {
-          let component = document.querySelector('.reply-box')?.__vueParentComponent;
-          while (component && typeof component.proxy?.saveDraft !== 'function') component = component.parent;
-          return component?.proxy;
+        const currentEditor = (box = document.querySelector('.reply-box')) => {
+          const bridge = box?.myinvestSupportReplyBox;
+          if (typeof bridge?.read !== 'function' || typeof bridge.normalizeDraft !== 'function') return null;
+          const editor = bridge.read();
+          if (!editor || typeof editor !== 'object') return null;
+          return { ...editor, normalizeDraft: bridge.normalizeDraft };
         };
         const currentConversation = () => {
           const route = window.location.pathname.match(routePattern);
@@ -70,8 +72,8 @@ class Myinvest::SupportExperience
         };
         const hasEditorChanges = (editor, expected = '') => {
           if (!editor) return false;
-          const normalized = typeof editor.toggleSignatureForDraft === 'function'
-            ? editor.toggleSignatureForDraft(expected) : expected;
+          const normalized = typeof editor.normalizeDraft === 'function'
+            ? editor.normalizeDraft(expected) : expected;
           return typeof editor.message === 'string' && editor.message !== normalized;
         };
         const draftStatus = (text) => {
@@ -127,9 +129,7 @@ class Myinvest::SupportExperience
         const learningIntent = (box) => {
           const route = window.location.pathname.match(routePattern);
           if (!route || !learningHost) return null;
-          let component = box?.__vueParentComponent;
-          while (component && typeof component.proxy?.saveDraft !== 'function') component = component.parent;
-          const editor = component?.proxy;
+          const editor = currentEditor(box);
           if (!editor || editor.isPrivate || editor.isEditorDisabled || editor.replyType !== 'REPLY') return null;
           const accountId = Number(route[1]);
           const conversationId = Number(route[2]);

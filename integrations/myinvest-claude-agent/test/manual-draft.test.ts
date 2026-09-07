@@ -16,7 +16,6 @@ const sourceRow = {
   source_message_id: '243',
   source_content: 'Wie richte ich mein Konto ein?',
   source_content_type: 0,
-  source_has_attachment: false,
   human_replied_after_inbound: false,
   draft_note_exists: false,
 }
@@ -197,7 +196,6 @@ describe('ManualDraftService', () => {
           ...sourceRow,
           source_content: '(audio-Nachricht ohne Text)',
           source_content_type: 1,
-          source_has_attachment: true,
         }],
       }) },
       chatwoot: {
@@ -219,6 +217,76 @@ describe('ManualDraftService', () => {
     expect(sendPrivateNote).toHaveBeenCalledWith(
       tenants[0], 77, expect.any(String), 243, 'draft_note',
     )
+  })
+
+  it('uses a neutral clarification for an empty text message without claiming an attachment', async () => {
+    const saveDraft = vi.fn().mockResolvedValue({ written: true, message: 'fallback' })
+    const fixture = dependencies({
+      database: { query: vi.fn().mockResolvedValue({
+        rows: [{ ...sourceRow, source_content: '', source_content_type: 0 }],
+      }) },
+      chatwoot: {
+        saveDraft,
+        sendPrivateNote: vi.fn().mockResolvedValue(undefined),
+      },
+    })
+
+    await expect(new ManualDraftService(fixture.values).createDraft({
+      accountId: 101,
+      conversationId: 77,
+    })).resolves.toEqual({ status: 'ready' })
+    expect(fixture.brain.answer).not.toHaveBeenCalled()
+    expect(saveDraft).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      'Bitte beschreibe kurz dein Anliegen und an welcher Stelle das Problem auftritt.',
+    )
+  })
+
+  it('sends readable text to the brain even when Chatwoot uses a nonzero content type', async () => {
+    const fixture = dependencies({
+      database: { query: vi.fn().mockResolvedValue({
+        rows: [{
+          ...sourceRow,
+          source_content: 'Bitte prüft meine Formularfrage.',
+          source_content_type: 7,
+        }],
+      }) },
+    })
+
+    await expect(new ManualDraftService(fixture.values).createDraft({
+      accountId: 101,
+      conversationId: 77,
+    })).resolves.toEqual({ status: 'ready' })
+    expect(fixture.brain.answer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: 'Bitte prüft meine Formularfrage.',
+        reviewOnly: true,
+      }),
+      undefined,
+    )
+    expect(fixture.chatwoot.saveDraft).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      'Öffnen Sie zuerst die Einstellungen.',
+    )
+  })
+
+  it('keeps the source query inside the read-only role table grant', async () => {
+    const query = vi.fn().mockImplementation(async (sql: string) => {
+      if (/\battachments\b/iu.test(sql)) throw new Error('permission denied for table attachments')
+      return { rows: [sourceRow] }
+    })
+    const fixture = dependencies({ database: { query } })
+
+    await expect(new ManualDraftService(fixture.values).createDraft({
+      accountId: 101,
+      conversationId: 77,
+    })).resolves.toEqual({ status: 'ready' })
+    expect(query).toHaveBeenCalled()
+    for (const [sql] of query.mock.calls) {
+      expect(sql).not.toMatch(/\battachments\b/iu)
+    }
   })
 
   it('returns unavailable for unknown accounts, cross-account conversations, and unsupported inboxes', async () => {

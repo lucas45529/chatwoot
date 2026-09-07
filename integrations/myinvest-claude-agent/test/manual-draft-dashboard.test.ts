@@ -18,7 +18,19 @@ function dashboard() {
   const elements: Array<{ dataset: Record<string, string>; textContent?: string }> = []
   const native = { disabled: false, title: '', setAttribute: vi.fn(), querySelector: (selector: string) => selector === '.i-ph-sparkle-fill' ? {} : null }
   const actions = { classList: { add() {} }, querySelector: (selector: string) => selector === 'button' ? { className: 'token-button' } : elements.find(el => selector === '[data-myinvest-learning]' ? el.dataset.myinvestLearning : el.dataset.myinvestDraftStatus), prepend: (el: typeof elements[number]) => elements.push(el) }
-  const box = { __vueParentComponent: { proxy: editor }, querySelector: (selector: string) => selector === '.right-wrap' ? actions : selector === '.i-ph-sparkle-fill' ? { closest: () => native } : null }
+  const box = {
+    myinvestSupportReplyBox: {
+      read: () => ({
+        isPrivate: editor.isPrivate,
+        isEditorDisabled: editor.isEditorDisabled,
+        replyType: editor.replyType,
+        message: editor.message,
+        currentChat: editor.currentChat,
+      }),
+      normalizeDraft: (message: string) => message,
+    },
+    querySelector: (selector: string) => selector === '.right-wrap' ? actions : selector === '.i-ph-sparkle-fill' ? { closest: () => native } : null,
+  }
   const axios = vi.fn().mockResolvedValue({ data: { has_draft: false } })
   const dispatch = vi.fn().mockImplementation(async (_action: string, { message }: { message: string }) => { editor.message = message })
   const window = {
@@ -35,12 +47,12 @@ function dashboard() {
   runInNewContext(script, { window, document })
   const message = (data: unknown, origin = 'https://www.myinvest-pro.de', source: unknown = parent) => listeners.get('message')?.({ data, origin, source })
   const click = () => { const event = { target: { closest: () => native }, preventDefault: vi.fn(), stopImmediatePropagation: vi.fn() }; documentListeners.get('click')?.(event); return event }
-  return { parent, editor, window, axios, storage, native, message, click, host: () => message({ type: 'myinvest-support-learning-host', version: 1 }), sync: () => intervals[1]?.(), tick: () => intervals[0]?.(), timeout: () => timeouts.at(-1)?.(), status: () => elements.find(el => el.dataset.myinvestDraftStatus)?.textContent }
+  return { parent, editor, box, window, axios, storage, native, message, click, host: () => message({ type: 'myinvest-support-learning-host', version: 1 }), sync: () => intervals[1]?.(), tick: () => intervals[0]?.(), timeout: () => timeouts.at(-1)?.(), status: () => elements.find(el => el.dataset.myinvestDraftStatus)?.textContent }
 }
 
 describe('MyInvest draft composer bridge', () => {
   it('replaces the native AI menu only after the trusted portal handshake', () => {
-    const ui = dashboard(); ui.click(); expect(ui.parent.postMessage).not.toHaveBeenCalled()
+    const ui = dashboard(); expect('__vueParentComponent' in ui.box).toBe(false); ui.click(); expect(ui.parent.postMessage).not.toHaveBeenCalled()
     ui.host(); const event = ui.click()
     expect(event.preventDefault).toHaveBeenCalled()
     expect(ui.parent.postMessage).toHaveBeenCalledWith({ type: 'myinvest-support-draft', version: 1, requestId, accountId: 101, conversationId: 77 }, 'https://www.myinvest-pro.de')

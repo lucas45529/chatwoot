@@ -26,7 +26,19 @@ function dashboard(pathname = '/app/accounts/101/inbox/17/conversations/77') {
     querySelector: (selector: string) => selector === 'button' ? { className: 'token-button' } : button,
     prepend(value: typeof button) { button = value },
   }
-  const box = { __vueParentComponent: { proxy: editor }, querySelector: (selector: string) => selector === '.right-wrap' ? actions : null }
+  const box = {
+    myinvestSupportReplyBox: {
+      read: () => ({
+        isPrivate: editor.isPrivate,
+        isEditorDisabled: editor.isEditorDisabled,
+        replyType: editor.replyType,
+        message: editor.message,
+        currentChat: editor.currentChat,
+      }),
+      normalizeDraft: (message: string) => message,
+    },
+    querySelector: (selector: string) => selector === '.right-wrap' ? actions : null,
+  }
   const axios = vi.fn().mockResolvedValue({ data: { has_draft: false } })
   const window = {
     parent, location: { pathname, reload: vi.fn() }, axios,
@@ -41,12 +53,13 @@ function dashboard(pathname = '/app/accounts/101/inbox/17/conversations/77') {
   }
   runInNewContext(script, { window, document })
   const host = (origin = 'https://www.myinvest-pro.de', source: unknown = parent, data: unknown = { type: 'myinvest-support-learning-host', version: 1 }) => listeners.get('message')?.({ origin, source, data })
-  return { parent, editor, host, button: () => button, click: () => click?.(), tick: () => intervals[0]?.(), sync: () => intervals[1]?.(), storage, axios, window }
+  return { parent, editor, box, host, button: () => button, click: () => click?.(), tick: () => intervals[0]?.(), sync: () => intervals[1]?.(), storage, axios, window }
 }
 
 describe('embedded draft learning bridge', () => {
   it('requires exact host origin, parent window and handshake schema before showing action', () => {
     const ui = dashboard()
+    expect('__vueParentComponent' in ui.box).toBe(false)
     ui.host('https://evil.example'); ui.host(undefined, {}); ui.host(undefined, undefined, { type: 'myinvest-support-learning-host', version: 1, extra: true })
     expect(ui.button()).toBeUndefined()
     ui.host(); expect(ui.button()?.disabled).toBe(false)

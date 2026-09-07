@@ -527,6 +527,7 @@ export default {
 
   mounted() {
     this.getFromDraft();
+    this.exposeMyinvestSupportBridge();
     // Don't use the keyboard listener mixin here as the events here are supposed to be
     // working even if the editor is focussed.
     document.addEventListener('paste', this.onPaste);
@@ -553,6 +554,9 @@ export default {
     emitter.on(BUS_EVENTS.INSERT_INTO_NORMAL_EDITOR, this.addIntoEditor);
     emitter.on(CMD_AI_ASSIST, this.executeCopilotAction);
   },
+  beforeUnmount() {
+    this.removeMyinvestSupportBridge();
+  },
   unmounted() {
     document.removeEventListener('paste', this.onPaste);
     document.removeEventListener('keydown', this.handleKeyEvents);
@@ -565,6 +569,27 @@ export default {
     emitter.off(CMD_AI_ASSIST, this.executeCopilotAction);
   },
   methods: {
+    exposeMyinvestSupportBridge() {
+      if (!this.replyEditor) return;
+      this.replyEditor.myinvestSupportReplyBox = {
+        read: () => ({
+          isPrivate: this.isPrivate,
+          isEditorDisabled: this.isEditorDisabled,
+          replyType: this.replyType,
+          message: this.message,
+          currentChat: {
+            id: this.currentChat?.id,
+            messages: this.currentChat?.messages || [],
+          },
+        }),
+        normalizeDraft: message => this.toggleSignatureForDraft(message),
+      };
+    },
+    removeMyinvestSupportBridge() {
+      if (this.replyEditor) {
+        delete this.replyEditor.myinvestSupportReplyBox;
+      }
+    },
     getDraftKey(
       conversationId = this.conversationIdByRoute,
       replyType = this.replyType

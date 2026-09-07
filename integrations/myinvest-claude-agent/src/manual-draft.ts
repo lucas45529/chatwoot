@@ -85,13 +85,14 @@ interface ManualDraftSourceRow extends Record<string, unknown> {
   source_message_id: string | null
   source_content: string | null
   source_content_type: number | null
-  source_has_attachment: boolean
   human_replied_after_inbound: boolean
   draft_note_exists: boolean
 }
 
 const ATTACHMENT_REVIEW_DRAFT =
   'Danke für den Anhang. Was genau sollen wir darin prüfen, und an welcher Stelle tritt das Problem auf?'
+const EMPTY_MESSAGE_REVIEW_DRAFT =
+  'Bitte beschreibe kurz dein Anliegen und an welcher Stelle das Problem auftritt.'
 
 const ATTACHMENT_PLACEHOLDER = /^\(audio-nachricht ohne text\)$/iu
 const MANUAL_REVIEW_REQUEST_DOMAIN = 'manual-review'
@@ -342,12 +343,6 @@ export class ManualDraftService {
               incoming.id::text AS source_message_id,
               incoming.content AS source_content,
               incoming.content_type AS source_content_type,
-              EXISTS(
-                SELECT 1
-                  FROM attachments AS attachment
-                 WHERE attachment.account_id = $1
-                   AND attachment.message_id = incoming.id
-              ) AS source_has_attachment,
               COALESCE(
                 (last_human.created_at, last_human.id) >
                 (incoming.created_at, incoming.id),
@@ -417,16 +412,7 @@ export class ManualDraftService {
     signal?: AbortSignal
   }): Promise<SupportBrainAnswer | undefined> {
     const rawQuestion = input.source.source_content?.trim() ?? ''
-    const isAttachmentWithoutText =
-      !rawQuestion || ATTACHMENT_PLACEHOLDER.test(rawQuestion)
-    if (isAttachmentWithoutText) {
-      if (
-        !input.source.source_has_attachment &&
-        input.source.source_content_type === 0 &&
-        !ATTACHMENT_PLACEHOLDER.test(rawQuestion)
-      ) {
-        return undefined
-      }
+    if (ATTACHMENT_PLACEHOLDER.test(rawQuestion)) {
       return {
         action: 'clarify',
         text: ATTACHMENT_REVIEW_DRAFT,
@@ -434,6 +420,16 @@ export class ManualDraftService {
         sources: [],
         safeToAutoSend: false,
         reason: 'attachment_without_text',
+      }
+    }
+    if (!rawQuestion) {
+      return {
+        action: 'clarify',
+        text: EMPTY_MESSAGE_REVIEW_DRAFT,
+        confidence: 0,
+        sources: [],
+        safeToAutoSend: false,
+        reason: 'message_without_text',
       }
     }
 
