@@ -127,8 +127,9 @@ describe('ManualDraftService', () => {
     )
     expect(fixture.chatwoot.sendMessage).not.toHaveBeenCalled()
     expect(fixture.proposals.save).toHaveBeenCalledWith(
-      'manual-draft:v1:saas:101:77:243',
+      'manual-draft:v1:saas:101:77',
       expect.objectContaining({
+        sourceMessageId: 243,
         draft: 'Öffnen Sie zuerst die Einstellungen.',
         note: expect.stringContaining('Antwortvorschlag:'),
       }),
@@ -137,7 +138,7 @@ describe('ManualDraftService', () => {
       fixture.chatwoot.saveDraft.mock.invocationCallOrder[0]!,
     )
     expect(fixture.proposals.clear).toHaveBeenCalledWith(
-      'manual-draft:v1:saas:101:77:243',
+      'manual-draft:v1:saas:101:77',
     )
   })
 
@@ -182,7 +183,8 @@ describe('ManualDraftService', () => {
       accountId: 101,
       conversationId: 77,
     })).resolves.toEqual({ status: 'already_answered' })
-    expect(fixture.drafts.loadDraft).not.toHaveBeenCalled()
+    expect(fixture.drafts.loadDraft).toHaveBeenCalledOnce()
+    expect(fixture.proposals.load).toHaveBeenCalledOnce()
     expect(fixture.brain.answer).not.toHaveBeenCalled()
   })
 
@@ -297,6 +299,7 @@ describe('ManualDraftService', () => {
 
   it('repairs a private-note partial write from the exact pending draft without using the brain', async () => {
     const proposal = {
+      sourceMessageId: 243,
       draft: 'Bereits geschriebener KI-Entwurf',
       note: 'Exakte gespeicherte Provenienznotiz',
     }
@@ -323,7 +326,7 @@ describe('ManualDraftService', () => {
     expect(sendPrivateNote).toHaveBeenCalledWith(
       tenants[0], 77, proposal.note, 243, 'draft_note',
     )
-    expect(clear).toHaveBeenCalledWith('manual-draft:v1:saas:101:77:243')
+    expect(clear).toHaveBeenCalledWith('manual-draft:v1:saas:101:77')
   })
 
   it('preserves a human edit that differs from a pending proposal', async () => {
@@ -333,7 +336,11 @@ describe('ManualDraftService', () => {
     const fixture = dependencies({
       drafts: { loadDraft: vi.fn().mockResolvedValue('Menschlich geändert') },
       proposals: {
-        load: vi.fn().mockResolvedValue({ draft: 'KI-Text', note: 'KI-Notiz' }),
+        load: vi.fn().mockResolvedValue({
+          sourceMessageId: 243,
+          draft: 'KI-Text',
+          note: 'KI-Notiz',
+        }),
         save: vi.fn(),
         clear,
       },
@@ -348,6 +355,107 @@ describe('ManualDraftService', () => {
     expect(saveDraft).not.toHaveBeenCalled()
     expect(sendPrivateNote).not.toHaveBeenCalled()
     expect(clear).toHaveBeenCalledOnce()
+  })
+
+  it('finds an older pending proposal after source drift and compensates even after abort', async () => {
+    const controller = new AbortController()
+    const proposal = {
+      sourceMessageId: 243,
+      draft: 'Alter KI-Entwurf',
+      note: 'Alte Notiz',
+    }
+    const clear = vi.fn().mockResolvedValue(undefined)
+    const saveDraft = vi.fn().mockResolvedValue({ written: true, message: '' })
+    const fixture = dependencies({
+      database: { query: vi.fn().mockResolvedValue({
+        rows: [{ ...sourceRow, source_message_id: '244', source_content: 'Neue Frage' }],
+      }) },
+      drafts: { loadDraft: vi.fn().mockResolvedValue(proposal.draft) },
+      proposals: {
+        load: vi.fn().mockImplementation(async () => {
+          controller.abort()
+          return proposal
+        }),
+        save: vi.fn(),
+        clear,
+      },
+      chatwoot: { saveDraft, sendPrivateNote: vi.fn() },
+    })
+
+    await expect(new ManualDraftService(fixture.values).createDraft(
+      { accountId: 101, conversationId: 77 },
+      controller.signal,
+    )).resolves.toEqual({ status: 'unavailable' })
+    expect(saveDraft).toHaveBeenCalledWith(
+      tenants[0], 77, '', proposal.draft,
+    )
+    expect(clear).toHaveBeenCalledWith('manual-draft:v1:saas:101:77')
+    expect(fixture.brain.answer).not.toHaveBeenCalled()
+  })
+
+  it('loads and rolls back pending work before returning already answered', async () => {
+    const proposal = {
+      sourceMessageId: 243,
+      draft: 'Zu spät geschriebener KI-Entwurf',
+      note: 'Nicht mehr benötigte Notiz',
+    }
+    const saveDraft = vi.fn().mockResolvedValue({ written: true, message: '' })
+    const clear = vi.fn().mockResolvedValue(undefined)
+    const fixture = dependencies({
+      database: { query: vi.fn().mockResolvedValue({
+        rows: [{ ...sourceRow, human_replied_after_inbound: true }],
+      }) },
+      drafts: { loadDraft: vi.fn().mockResolvedValue(proposal.draft) },
+      proposals: {
+        load: vi.fn().mockResolvedValue(proposal),
+        save: vi.fn(),
+        clear,
+      },
+      chatwoot: { saveDraft, sendPrivateNote: vi.fn() },
+    })
+
+    await expect(new ManualDraftService(fixture.values).createDraft({
+      accountId: 101,
+      conversationId: 77,
+    })).resolves.toEqual({ status: 'already_answered' })
+    expect(saveDraft).toHaveBeenCalledWith(
+      tenants[0], 77, '', proposal.draft,
+    )
+    expect(clear).toHaveBeenCalledOnce()
+  })
+
+  it('retains stale pending recovery when rollback preserves a human draft', async () => {
+    const proposal = {
+      sourceMessageId: 243,
+      draft: 'Alter KI-Entwurf',
+      note: 'Alte Notiz',
+    }
+    const clear = vi.fn()
+    const saveDraft = vi.fn().mockResolvedValue({
+      written: false,
+      message: 'Menschliche Antwort',
+    })
+    const fixture = dependencies({
+      database: { query: vi.fn().mockResolvedValue({
+        rows: [{ ...sourceRow, source_message_id: '244', source_content: 'Neue Frage' }],
+      }) },
+      drafts: { loadDraft: vi.fn().mockResolvedValue('Menschliche Antwort') },
+      proposals: {
+        load: vi.fn().mockResolvedValue(proposal),
+        save: vi.fn(),
+        clear,
+      },
+      chatwoot: { saveDraft, sendPrivateNote: vi.fn() },
+    })
+
+    await expect(new ManualDraftService(fixture.values).createDraft({
+      accountId: 101,
+      conversationId: 77,
+    })).resolves.toEqual({ status: 'unavailable' })
+    expect(saveDraft).toHaveBeenCalledWith(
+      tenants[0], 77, '', proposal.draft,
+    )
+    expect(clear).not.toHaveBeenCalled()
   })
 
   it('keeps a pending proposal when its private note fails so a retry can repair it', async () => {
@@ -471,8 +579,8 @@ describe('ManualDraftService', () => {
     expect(manual).toMatch(/^[0-9a-f-]{36}$/)
     expect(manualReviewRequestId(PSEUDONYMIZATION_KEY, 101, 243)).toBe(manual)
     expect(manual).not.toBe(supportBrainRequestId(PSEUDONYMIZATION_KEY, 101, 243))
-    expect(proposalSchema.safeParse({ draft: 'Text', note: 'Notiz' }).success).toBe(true)
-    expect(proposalSchema.safeParse({ draft: 'Text', note: 'Notiz', extra: true }).success).toBe(false)
+    expect(proposalSchema.safeParse({ sourceMessageId: 243, draft: 'Text', note: 'Notiz' }).success).toBe(true)
+    expect(proposalSchema.safeParse({ sourceMessageId: 243, draft: 'Text', note: 'Notiz', extra: true }).success).toBe(false)
   })
 
   it('exposes a strict request contract and never returns customer text', () => {

@@ -54,6 +54,7 @@ export interface ManualDraftReader {
 }
 
 export const proposalSchema = z.object({
+  sourceMessageId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   draft: z.string().min(1).max(4_000),
   note: z.string().min(1).max(40_000),
 }).strict()
@@ -123,36 +124,31 @@ export class ManualDraftService {
       if (!isPositiveSafeInteger(sourceMessageId)) {
         return { status: 'unavailable' }
       }
-      if (source.human_replied_after_inbound) {
-        return { status: 'already_answered' }
-      }
       const proposalKey = manualDraftProposalKey(
         tenant,
         input.conversationId,
-        sourceMessageId,
       )
       const [currentDraft, pendingProposal] = await Promise.all([
         this.dependencies.drafts.loadDraft(tenant, input.conversationId),
         this.dependencies.proposals.load(proposalKey),
       ])
       const hasCurrentDraft = typeof currentDraft === 'string' && currentDraft.trim().length > 0
-      if (source.draft_note_exists) {
-        if (pendingProposal) {
-          signal?.throwIfAborted()
-          await this.dependencies.proposals.clear(proposalKey)
-        }
-        return { status: hasCurrentDraft ? 'existing' : 'unavailable' }
-      }
       if (pendingProposal) {
         return await this.resumeProposal({
           tenant,
           conversationId: input.conversationId,
-          sourceMessageId,
+          source,
           proposalKey,
           proposal: pendingProposal,
           currentDraft,
           signal,
         })
+      }
+      if (source.human_replied_after_inbound) {
+        return { status: 'already_answered' }
+      }
+      if (source.draft_note_exists) {
+        return { status: hasCurrentDraft ? 'existing' : 'unavailable' }
       }
       if (hasCurrentDraft) return { status: 'preserved' }
 
@@ -190,6 +186,7 @@ export class ManualDraftService {
       }
 
       const proposal = proposalSchema.parse({
+        sourceMessageId,
         draft: answer.text,
         note: draftNote(answer, tenant),
       })
@@ -224,12 +221,39 @@ export class ManualDraftService {
   private async resumeProposal(input: {
     tenant: TenantConfig
     conversationId: number
-    sourceMessageId: number
+    source: ManualDraftSourceRow
     proposalKey: string
     proposal: ManualDraftProposal
     currentDraft: string | undefined
     signal?: AbortSignal
   }): Promise<ManualDraftResult> {
+    const pendingState = sourceState(
+      input.source,
+      input.tenant,
+      input.proposal.sourceMessageId,
+    )
+    if (pendingState !== 'current') {
+      const rollback = await this.dependencies.chatwoot.saveDraft(
+        input.tenant,
+        input.conversationId,
+        '',
+        input.proposal.draft,
+      )
+      if (rollback.written) {
+        await this.dependencies.proposals.clear(input.proposalKey)
+      }
+      return { status: pendingState }
+    }
+    if (input.source.draft_note_exists) {
+      input.signal?.throwIfAborted()
+      await this.dependencies.proposals.clear(input.proposalKey)
+      return {
+        status:
+          typeof input.currentDraft === 'string' && input.currentDraft.trim().length > 0
+            ? 'existing'
+            : 'unavailable',
+      }
+    }
     if (input.currentDraft && input.currentDraft !== input.proposal.draft) {
       input.signal?.throwIfAborted()
       await this.dependencies.proposals.clear(input.proposalKey)
@@ -239,7 +263,11 @@ export class ManualDraftService {
     let readyStatus: 'ready' | 'existing' = 'existing'
     if (input.currentDraft !== input.proposal.draft) {
       const currentSource = await this.loadSource(input.tenant, input.conversationId)
-      const currentState = sourceState(currentSource, input.tenant, input.sourceMessageId)
+      const currentState = sourceState(
+        currentSource,
+        input.tenant,
+        input.proposal.sourceMessageId,
+      )
       if (currentState !== 'current') {
         input.signal?.throwIfAborted()
         await this.dependencies.proposals.clear(input.proposalKey)
@@ -258,7 +286,11 @@ export class ManualDraftService {
       }
       readyStatus = draftWrite.written ? 'ready' : 'existing'
     }
-    return await this.finishProposal({ ...input, readyStatus })
+    return await this.finishProposal({
+      ...input,
+      sourceMessageId: input.proposal.sourceMessageId,
+      readyStatus,
+    })
   }
 
   private async finishProposal(input: {
@@ -273,15 +305,15 @@ export class ManualDraftService {
     const currentSource = await this.loadSource(input.tenant, input.conversationId)
     const currentState = sourceState(currentSource, input.tenant, input.sourceMessageId)
     if (currentState !== 'current') {
-      input.signal?.throwIfAborted()
-      await this.dependencies.chatwoot.saveDraft(
+      const rollback = await this.dependencies.chatwoot.saveDraft(
         input.tenant,
         input.conversationId,
         '',
         input.proposal.draft,
       )
-      input.signal?.throwIfAborted()
-      await this.dependencies.proposals.clear(input.proposalKey)
+      if (rollback.written) {
+        await this.dependencies.proposals.clear(input.proposalKey)
+      }
       return { status: currentState }
     }
 
@@ -436,9 +468,8 @@ export class ManualDraftService {
 export function manualDraftProposalKey(
   tenant: TenantConfig,
   conversationId: number,
-  sourceMessageId: number,
 ): string {
-  return `manual-draft:v1:${tenant.key}:${tenant.accountId}:${conversationId}:${sourceMessageId}`
+  return `manual-draft:v1:${tenant.key}:${tenant.accountId}:${conversationId}`
 }
 
 export function manualReviewRequestId(

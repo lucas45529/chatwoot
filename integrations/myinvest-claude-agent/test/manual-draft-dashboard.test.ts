@@ -65,6 +65,7 @@ describe('MyInvest draft composer bridge', () => {
     const ui = dashboard(); ui.host(); ui.click()
     const result = { type: 'myinvest-support-draft-result', version: 1, requestId, status: 'ready' }
     ui.message(result, 'https://evil.example'); ui.message(result, undefined, {}); ui.message({ ...result, requestId: 'stale' })
+    await ui.sync()
     expect(ui.native.disabled).toBe(true); expect(ui.axios).not.toHaveBeenCalled()
     ui.axios.mockResolvedValue({ data: { has_draft: true, message: 'Ein bearbeitbarer KI-Entwurf.' } })
     ui.message(result)

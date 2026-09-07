@@ -232,7 +232,7 @@ class Myinvest::SupportExperience
         document.addEventListener('input', updateLearningButton);
         window.setInterval(updateLearningButton, 300);
         const syncDraft = async () => {
-          if (syncing || !window.axios) return;
+          if (syncing || pendingDraft || !window.axios) return;
           const route = window.location.pathname.match(routePattern);
           if (!route) return;
           syncing = true;
