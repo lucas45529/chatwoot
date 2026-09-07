@@ -121,11 +121,14 @@ ActiveRecord::Base.transaction do
     agent_bot.save!
 
     inbox_name = "#{name} Website"
+    # Human replies from the central SaaS inbox use the website bridge. Preserve
+    # routing owned outside this seed for existing Academy website inboxes.
+    website_webhook_url = key == 'saas' ? ENV.fetch('MYINVEST_REBOOKING_WEBHOOK_URL') : nil
     inbox = Inbox.find_by(account: account, name: inbox_name)
     unless inbox
       channel = Channel::Api.create!(
         account: account,
-        webhook_url: nil,
+        webhook_url: website_webhook_url,
         hmac_mandatory: false,
         additional_attributes: {
           'managed_by' => 'myinvest-bootstrap',
@@ -139,7 +142,7 @@ ActiveRecord::Base.transaction do
       previous_channel = inbox.channel
       channel = Channel::Api.create!(
         account: account,
-        webhook_url: nil,
+        webhook_url: website_webhook_url,
         hmac_mandatory: false,
         additional_attributes: {
           'managed_by' => 'myinvest-bootstrap',
@@ -152,15 +155,15 @@ ActiveRecord::Base.transaction do
       inbox.update!(channel: channel)
     end
     raise "Managed inbox is not an API inbox: #{inbox_name}" unless inbox.channel.is_a?(Channel::Api)
-    inbox.channel.update!(
-      webhook_url: nil,
-      hmac_mandatory: false,
+    channel_updates = {
       additional_attributes: inbox.channel.additional_attributes.merge(
         'managed_by' => 'myinvest-bootstrap',
         'myinvest_support_bridge' => true,
         'myinvest_website_url' => website_url
       )
-    )
+    }
+    channel_updates[:webhook_url] = website_webhook_url if key == 'saas'
+    inbox.channel.update!(channel_updates)
     inbox.update!(enable_auto_assignment: false)
 
     InboxMember.find_or_create_by!(inbox: inbox, user: admin)
