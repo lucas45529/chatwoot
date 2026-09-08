@@ -152,22 +152,27 @@ export default {
 
 <template>
   <div
-    class="flex justify-between gap-2 h-[3.25rem] items-center ltr:pl-3 ltr:pr-2 rtl:pr-3 rtl:pl-2"
+    class="flex flex-wrap justify-between gap-2 min-h-14 py-2 items-center ltr:pl-3 ltr:pr-2 rtl:pr-3 rtl:pl-2"
   >
     <EditorModeToggle
+      class="shrink-0"
       :mode="mode"
       :disabled="disabled"
       :is-reply-restricted="isReplyRestricted"
       @toggle-mode="handleModeToggle"
     />
-    <div class="flex items-center mx-4 my-0">
-      <div v-if="isMessageLengthReachingThreshold" class="text-xs">
-        <span :class="charLengthClass">
-          {{ characterLengthWarning }}
-        </span>
-      </div>
+    <div
+      v-if="isMessageLengthReachingThreshold"
+      class="order-last basis-full text-xs"
+    >
+      <span :class="charLengthClass">
+        {{ characterLengthWarning }}
+      </span>
     </div>
-    <div v-if="captainTasksEnabled" class="flex items-center gap-2">
+    <div
+      v-if="captainTasksEnabled"
+      class="flex items-center gap-2 shrink-0 ltr:ml-auto rtl:mr-auto"
+    >
       <div class="relative">
         <NextButton
           ref="copilotToggleRef"
