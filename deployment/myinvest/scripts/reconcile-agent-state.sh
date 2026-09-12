@@ -4,6 +4,8 @@ set -Eeuo pipefail
 deployment_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 env_path="${ENV_FILE:-$deployment_dir/.env}"
 compose=(docker compose --project-directory "$deployment_dir" --env-file "$env_path" -f "$deployment_dir/compose.yaml")
+# shellcheck source=deployment/myinvest/scripts/resume-services.sh
+source "$deployment_dir/scripts/resume-services.sh"
 
 set -a
 # shellcheck disable=SC1090
@@ -43,19 +45,22 @@ run_tag="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 container_messages="/tmp/myinvest-agent-state-${run_tag}-messages.tsv"
 container_conversations="/tmp/myinvest-agent-state-${run_tag}-conversations.tsv"
 paused_services=()
+reconcile_exit_status=0
 
 cleanup() {
+  local resume_status=0
+  if (( ${#paused_services[@]} > 0 )); then
+    resume_compose_services "${paused_services[@]}" || resume_status=$?
+  fi
   if [[ -n "$postgres_id" ]]; then
     docker exec "$postgres_id" find /tmp -maxdepth 1 -type f \
       \( -name "$(basename "$container_messages")" -o -name "$(basename "$container_conversations")" \) \
       -delete >/dev/null 2>&1 || true
   fi
   find "$work_dir" -depth -delete >/dev/null 2>&1 || true
-  if (( ${#paused_services[@]} > 0 )); then
-    "${compose[@]}" unpause "${paused_services[@]}" >/dev/null 2>&1 || true
-  fi
+  return "$resume_status"
 }
-trap cleanup EXIT
+trap 'reconcile_exit_status=$?; cleanup || reconcile_exit_status=1; exit "$reconcile_exit_status"' EXIT
 
 [[ -n "$postgres_id" ]] || {
   printf 'PostgreSQL container is not running.\n' >&2
