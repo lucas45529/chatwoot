@@ -39,6 +39,11 @@
 	@root path /
 	redir @root /app/login 302
 
+	# MyInvest telephony: authenticated gateway on the private host bridge.
+	handle_path /sip-gateway/* {
+		reverse_proxy 172.19.0.1:23871
+	}
+
 	handle_path /brand-assets/* {
 		root * /srv/brand-assets
 		file_server
