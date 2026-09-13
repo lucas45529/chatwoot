@@ -60,7 +60,7 @@ cleanup() {
   find "$work_dir" -depth -delete >/dev/null 2>&1 || true
   return "$resume_status"
 }
-trap 'reconcile_exit_status=$?; cleanup || reconcile_exit_status=1; exit "$reconcile_exit_status"' EXIT
+trap 'reconcile_exit_status=$?; cleanup || { if (( reconcile_exit_status == 0 )); then reconcile_exit_status=1; fi; }; exit "$reconcile_exit_status"' EXIT
 
 [[ -n "$postgres_id" ]] || {
   printf 'PostgreSQL container is not running.\n' >&2

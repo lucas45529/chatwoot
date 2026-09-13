@@ -61,7 +61,7 @@ finish_or_clean_up() {
   fi
   return "$resume_status"
 }
-trap 'backup_exit_status=$?; finish_or_clean_up || backup_exit_status=1; exit "$backup_exit_status"' EXIT
+trap 'backup_exit_status=$?; finish_or_clean_up || { if (( backup_exit_status == 0 )); then backup_exit_status=1; fi; }; exit "$backup_exit_status"' EXIT
 
 "${compose[@]}" pause rails sidekiq claude-agent >/dev/null
 "${compose[@]}" run --rm --user "$(id -u):$(id -g)" rails \
@@ -117,7 +117,9 @@ gpg --batch --yes --trust-model always --recipient "$BACKUP_GPG_RECIPIENT" \
 )
 mv "$temporary" "$snapshot"
 backup_finished=true
-finish_or_clean_up
+# Secure the completed snapshot even if a service cannot resume. Report that
+# failure after encryption and plaintext cleanup have finished.
+finish_or_clean_up || backup_exit_status=$?
 trap - EXIT
 
 remove_plaintext_snapshot() {
@@ -160,3 +162,4 @@ if [[ "${LOCAL_SMOKE:-false}" == true ]]; then
 else
   printf 'Application-consistent encrypted backup created; plaintext staging removed: %s.tar.gpg\n' "$snapshot"
 fi
+exit "$backup_exit_status"
