@@ -5,6 +5,8 @@ umask 077
 deployment_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 env_path="${ENV_FILE:-$deployment_dir/.env}"
 compose=(docker compose --project-directory "$deployment_dir" --env-file "$env_path" -f "$deployment_dir/compose.yaml")
+# shellcheck source=deployment/myinvest/scripts/resume-services.sh
+source "$deployment_dir/scripts/resume-services.sh"
 
 command -v flock >/dev/null 2>&1 || {
   printf 'flock is required for serialized backups.\n' >&2
@@ -49,14 +51,17 @@ snapshot="$backup_root/$(date -u +%Y%m%dT%H%M%SZ)"
 temporary="${snapshot}.partial"
 mkdir -m 700 "$temporary"
 backup_finished=false
+backup_exit_status=0
 
 finish_or_clean_up() {
+  local resume_status=0
+  resume_compose_services rails sidekiq claude-agent redis minio || resume_status=$?
   if [[ "$backup_finished" != true && -d "$temporary" ]]; then
     find "$temporary" -depth -delete || true
   fi
-  "${compose[@]}" unpause rails sidekiq claude-agent redis minio >/dev/null 2>&1 || true
+  return "$resume_status"
 }
-trap finish_or_clean_up EXIT
+trap 'backup_exit_status=$?; finish_or_clean_up || { if (( backup_exit_status == 0 )); then backup_exit_status=1; fi; }; exit "$backup_exit_status"' EXIT
 
 "${compose[@]}" pause rails sidekiq claude-agent >/dev/null
 "${compose[@]}" run --rm --user "$(id -u):$(id -g)" rails \
@@ -92,8 +97,7 @@ docker run --rm \
   -v "$temporary:/backup" \
   alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d \
   sh -ec 'cd /source && tar -czf /backup/object-storage.tar.gz .'
-"${compose[@]}" unpause redis >/dev/null
-"${compose[@]}" unpause minio >/dev/null
+resume_compose_services redis minio
 
 [[ -n "${BACKUP_GPG_RECIPIENT:-}" ]] || {
   printf 'BACKUP_GPG_RECIPIENT is required for encrypted recovery metadata.\n' >&2
@@ -113,7 +117,9 @@ gpg --batch --yes --trust-model always --recipient "$BACKUP_GPG_RECIPIENT" \
 )
 mv "$temporary" "$snapshot"
 backup_finished=true
-finish_or_clean_up
+# Secure the completed snapshot even if a service cannot resume. Report that
+# failure after encryption and plaintext cleanup have finished.
+finish_or_clean_up || backup_exit_status=$?
 trap - EXIT
 
 remove_plaintext_snapshot() {
@@ -156,3 +162,4 @@ if [[ "${LOCAL_SMOKE:-false}" == true ]]; then
 else
   printf 'Application-consistent encrypted backup created; plaintext staging removed: %s.tar.gpg\n' "$snapshot"
 fi
+exit "$backup_exit_status"
