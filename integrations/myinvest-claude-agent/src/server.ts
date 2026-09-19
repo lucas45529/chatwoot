@@ -8,7 +8,7 @@ import {
 } from './auto-send-repository.js'
 import { ChatwootClient } from './chatwoot-client.js'
 import { PostgresChatwootDeliveryStore } from './chatwoot-delivery-repository.js'
-import { loadConfig } from './config.js'
+import { loadConfig, SUPPORT_BETA_ANSWER_URL } from './config.js'
 import { InternSsoError, InternSsoService } from './intern-sso.js'
 import { runAutoSendFeedbackSweep } from './learning/auto-send-feedback.js'
 import { authorizeLearningRequest, LearningRequestError } from './learning/review-auth.js'
@@ -153,6 +153,11 @@ feedbackTimer?.unref()
 
 const app = express()
 const manualDraft = new ManualDraftService({
+  betaBrain: new SupportBrainClient({
+    baseUrl: SUPPORT_BETA_ANSWER_URL,
+    secret: config.SUPPORT_ANSWER_SECRET,
+    timeoutMs: config.SUPPORT_ANSWER_TIMEOUT_MS,
+  }),
   database: chatwootPool,
   context: deliveryStore,
   brain,

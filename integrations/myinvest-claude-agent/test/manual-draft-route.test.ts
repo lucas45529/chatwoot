@@ -68,3 +68,22 @@ it('dispatches signed preview and apply commands without allowing browser answer
   expect((await api.post(JSON.stringify({ action: 'draft_preview', ...input }), false)).status).toBe(401)
   expect(api.createDraft).not.toHaveBeenCalled()
 })
+
+
+it('allows only a signed Beta preview enum, never arbitrary targets or legacy/apply routing', async () => {
+  const api = await endpoint()
+  const input = { accountId: 101, conversationId: 77, questionMessageId: 243, draftMessageId: 250, generationId: '5360ea90-7d1a-4055-9271-1d3b10386a81' }
+  const command = { action: 'draft_preview', ...input, brainTarget: 'beta' }
+  expect((await api.post(JSON.stringify(command))).status).toBe(200)
+  expect(api.previewDraft).toHaveBeenCalledWith({ ...input, brainTarget: 'beta' }, expect.any(AbortSignal))
+  expect((await api.post(JSON.stringify(command), false)).status).toBe(401)
+  for (const brainTarget of ['https://evil.example', 'production', 'Beta', '', true]) {
+    expect((await api.post(JSON.stringify({ ...command, brainTarget }))).status).toBe(422)
+  }
+  expect((await api.post(JSON.stringify({ ...command, brainUrl: 'https://evil.example' }))).status).toBe(422)
+  expect((await api.post(JSON.stringify({ ...command, action: 'draft_apply' }))).status).toBe(422)
+  expect((await api.post(JSON.stringify({ action: 'draft', accountId: 101, conversationId: 77, brainTarget: 'beta' }))).status).toBe(422)
+  expect(api.previewDraft).toHaveBeenCalledOnce()
+  expect(api.createDraft).not.toHaveBeenCalled()
+  expect(api.applyDraft).not.toHaveBeenCalled()
+})

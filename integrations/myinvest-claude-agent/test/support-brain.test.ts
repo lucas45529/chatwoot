@@ -1,3 +1,4 @@
+import { SUPPORT_BETA_ANSWER_URL } from '../src/config.js'
 import { createHmac } from 'node:crypto'
 import { type Mock, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
@@ -464,4 +465,15 @@ it('signs and forwards the original question timestamp independently of the curr
   await clientWith(fetcher).answer(brainRequest({ questionReceivedAt: '2026-08-01T08:30:00.000Z' }))
   const body = JSON.parse(String(fetcher.mock.calls[0]![1]?.body))
   expect(body.questionReceivedAt).toBe('2026-08-01T08:30:00.000Z')
+})
+
+
+it('uses the fixed approved Beta endpoint with the same signed request contract', async () => {
+  const fetchImplementation = respondingFetch(jsonResponse(brainPayload()))
+  const beta = new SupportBrainClient({ baseUrl: SUPPORT_BETA_ANSWER_URL, secret: TEST_SECRET, timeoutMs: 1000, fetchImplementation, now: () => FIXED_NOW_MS })
+  await beta.answer(brainRequest({ reviewOnly: true }))
+  expect(fetchImplementation.mock.calls[0]?.[0]).toBe('https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app/api/support/answer')
+  const headers = new Headers(requestInit(fetchImplementation).headers)
+  expect(headers.get('x-support-signature')).toBe(supportAnswerSignature({ rawBody: sentRawBody(fetchImplementation), timestamp: FIXED_TIMESTAMP, requestId: REQUEST_ID, secret: TEST_SECRET }))
+  expect(JSON.parse(sentRawBody(fetchImplementation))).toMatchObject({ reviewOnly: true, tenant: 'saas' })
 })

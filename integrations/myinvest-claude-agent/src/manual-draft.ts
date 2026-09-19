@@ -24,9 +24,11 @@ const regenerateInputSchema = legacyDraftRequestSchema.omit({ action: true }).ex
   draftMessageId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   generationId: z.string().uuid(),
 }).strict()
+const previewInputSchema = regenerateInputSchema.extend({ brainTarget: z.literal('beta').optional() })
+export type PreviewDraftInput = z.infer<typeof previewInputSchema>
 export const manualDraftRequestSchema = z.discriminatedUnion('action', [
   legacyDraftRequestSchema,
-  regenerateInputSchema.extend({ action: z.literal('draft_preview') }),
+  previewInputSchema.extend({ action: z.literal('draft_preview') }),
   regenerateInputSchema.extend({ action: z.literal('draft_apply') }),
 ])
 export type ManualDraftCommand = z.infer<typeof manualDraftRequestSchema>
@@ -96,6 +98,7 @@ export interface ManualDraftDependencies {
   database: ManualDraftDatabase
   context: ChatwootConversationContextStore
   brain: SupportBrainPort
+  betaBrain?: SupportBrainPort
   drafts: ManualDraftReader
   proposals: ManualDraftProposalStore
   chatwoot: Pick<ChatwootPort, 'saveDraft' | 'sendPrivateNote'>
@@ -129,10 +132,10 @@ const MANUAL_REVIEW_REQUEST_DOMAIN = 'manual-review'
 export class ManualDraftService {
   constructor(private readonly dependencies: ManualDraftDependencies) {}
 
-  async previewDraft(input: RegenerateDraftInput, signal?: AbortSignal): Promise<DraftPreviewResult> {
+  async previewDraft(input: PreviewDraftInput, signal?: AbortSignal): Promise<DraftPreviewResult> {
     try {
       signal?.throwIfAborted()
-      if (!regenerateInputSchema.safeParse(input).success) return { status: 'unavailable' }
+      if (!previewInputSchema.safeParse(input).success) return { status: 'unavailable' }
       const tenant = this.dependencies.tenants.requireByAccountId(input.accountId)
       const source = await this.loadSource(tenant, input.conversationId)
       const route = source && routeForSource(source, tenant, this.dependencies.whatsappInboxIds)
@@ -150,7 +153,7 @@ export class ManualDraftService {
       if (await this.dependencies.drafts.loadDraft(tenant, input.conversationId) !== expectedDraft) return { status: 'preserved' }
       const context = await this.dependencies.context.loadContext({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: input.conversationId, currentMessageId: input.questionMessageId })
       if (!context) return { status: 'unavailable' }
-      const answer = await this.answerForSource({ tenant, route, source: source!, sourceMessageId: input.questionMessageId, context, generationId: input.generationId, signal })
+      const answer = await this.answerForSource({ tenant, route, source: source!, sourceMessageId: input.questionMessageId, context, generationId: input.generationId, brainTarget: input.brainTarget, signal })
       signal?.throwIfAborted()
       if (!answer) return { status: 'unavailable' }
       const current = sourceState(await this.loadSource(tenant, input.conversationId), tenant, input.questionMessageId, route, this.dependencies.whatsappInboxIds)
@@ -579,6 +582,7 @@ export class ManualDraftService {
     sourceMessageId: number
     context: ConversationContext
     generationId?: string
+    brainTarget?: 'beta'
     signal?: AbortSignal
   }): Promise<SupportBrainAnswer | undefined> {
     const rawQuestion = input.source.source_content?.trim() ?? ''
@@ -608,7 +612,9 @@ export class ManualDraftService {
     input.signal?.throwIfAborted()
     const sourceTime = input.source.source_created_at
     const questionReceivedAt = sourceTime instanceof Date ? sourceTime.toISOString() : sourceTime ? new Date(sourceTime).toISOString() : undefined
-    return this.dependencies.brain.answer({
+    const brain = input.brainTarget === 'beta' ? this.dependencies.betaBrain : this.dependencies.brain
+    if (!brain) return undefined
+    return brain.answer({
       requestId: manualReviewRequestId(
         this.dependencies.pseudonymizationKey,
         input.tenant.accountId,

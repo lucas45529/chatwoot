@@ -1,11 +1,11 @@
 import type { RequestHandler } from 'express'
 import { authorizeLearningRequest, LearningRequestError } from './learning/review-auth.js'
-import { manualDraftRequestSchema, type ManualDraftInput, type ManualDraftResult, type RegenerateDraftInput, type DraftPreviewResult } from './manual-draft.js'
+import { manualDraftRequestSchema, type ManualDraftInput, type ManualDraftResult, type RegenerateDraftInput, type PreviewDraftInput, type DraftPreviewResult } from './manual-draft.js'
 
 interface ManualDraftHttpDependencies {
   secret: string
   claim(key: string, ttl: number): Promise<boolean>
-  previewDraft?(input: RegenerateDraftInput, signal: AbortSignal): Promise<DraftPreviewResult>
+  previewDraft?(input: PreviewDraftInput, signal: AbortSignal): Promise<DraftPreviewResult>
   applyDraft?(input: RegenerateDraftInput, signal: AbortSignal): Promise<ManualDraftResult>
   createDraft(input: ManualDraftInput, signal: AbortSignal): Promise<ManualDraftResult>
 }

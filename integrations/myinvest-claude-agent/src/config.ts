@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import { tenantKeySchema, type TenantKey } from './domain.js'
 
+// Fixed approved embedded Beta; request bodies may select it, never supply a URL.
+export const SUPPORT_BETA_ANSWER_URL = 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app'
+
 const tenantSchema = z.object({
   key: tenantKeySchema,
   accountId: z.number().int().positive(),

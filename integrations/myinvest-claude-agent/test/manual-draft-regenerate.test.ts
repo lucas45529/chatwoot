@@ -7,21 +7,22 @@ const generationId = '5360ea90-7d1a-4055-9271-1d3b10386a81'
 const input = { accountId: 101, conversationId: 77, questionMessageId: 243, draftMessageId: 250, generationId }
 const old = 'Der ursprüngliche KI-Entwurf.'
 const fresh = 'Die Antwort mit aktuellem Wissen.'
-function fixture() {
+function fixture(withBeta = false) {
   const source = { conversation_id: '9001', inbox_id: 17, source_message_id: '243', source_content: 'Wie richte ich mein Konto ein?', source_content_type: 0, conversation_tenant: null, conversation_channel: null, source_tenant: null, human_replied_after_inbound: false, draft_note_exists: true }
   const notes = { content: `KI-Entwurf\n\nAntwortvorschlag:\n${old}\nQuellen: Hilfe` }
   let current: string | undefined = old
   const stored = new Map<string, ManualDraftProposal>()
   const query = vi.fn().mockImplementation(async (sql: string) => ({ rows: sql.includes('AS regeneration_note') ? [notes] : [source] }))
   const brain = { answer: vi.fn().mockResolvedValue({ action: 'answer', text: fresh, confidence: 0.8, sources: [], safeToAutoSend: false }) }
+  const betaBrain = { answer: vi.fn().mockResolvedValue({ action: 'answer', text: 'Beta-Wissen', confidence: 0.8, sources: [], safeToAutoSend: false }) }
   const saveDraft = vi.fn().mockImplementation(async (_tenant, _conversation, text, expected) => {
     if (current !== expected) return { written: false, message: current ?? '' }
     current = text; return { written: true, message: text }
   })
   const sendPrivateNote = vi.fn().mockResolvedValue(undefined)
   const proposals = { load: vi.fn(async (key: string) => stored.get(key)), save: vi.fn(async (key: string, proposal: ManualDraftProposal) => { stored.set(key, structuredClone(proposal)) }), clear: vi.fn(async (key: string) => { stored.delete(key) }) }
-  const service = new ManualDraftService({ database: { query }, context: { loadContext: vi.fn().mockResolvedValue({ turns: [], labels: [], humanEverReplied: false, humanRepliedAfterBot: false }) }, brain, drafts: { loadDraft: vi.fn(async () => current) }, proposals, chatwoot: { saveDraft, sendPrivateNote }, tenants: buildTenantRegistry(tenants.map(t => ({ ...t, agentBotId: 7 }))), pseudonymizationKey: PSEUDONYMIZATION_KEY, whatsappInboxIds: new Set() })
-  return { service, source, notes, query, brain, saveDraft, sendPrivateNote, proposals, stored, edit: (text: string | undefined) => { current = text }, current: () => current }
+  const service = new ManualDraftService({ database: { query }, context: { loadContext: vi.fn().mockResolvedValue({ turns: [], labels: [], humanEverReplied: false, humanRepliedAfterBot: false }) }, brain, ...(withBeta ? { betaBrain } : {}), drafts: { loadDraft: vi.fn(async () => current) }, proposals, chatwoot: { saveDraft, sendPrivateNote }, tenants: buildTenantRegistry(tenants.map(t => ({ ...t, agentBotId: 7 }))), pseudonymizationKey: PSEUDONYMIZATION_KEY, whatsappInboxIds: new Set() })
+  return { service, source, notes, query, brain, betaBrain, saveDraft, sendPrivateNote, proposals, stored, edit: (text: string | undefined) => { current = text }, current: () => current }
 }
 describe('explicit draft preview and apply', () => {
   it('previews current knowledge once per generation without writing drafts or notes', async () => {
@@ -136,4 +137,34 @@ it('uses the database question timestamp for regeneration, never a browser suppl
   expect(f.brain.answer).toHaveBeenCalledWith(expect.objectContaining({ questionReceivedAt: '2026-08-01T08:30:00.000Z' }), undefined)
   expect(f.query.mock.calls[0]?.[0]).toContain('incoming.created_at AS source_created_at')
   expect(manualDraftRequestSchema.safeParse({ action: 'draft_preview', ...input, questionReceivedAt: '2026-09-19T00:00:00.000Z' }).success).toBe(false)
+})
+
+
+it('routes only opted-in previews to Beta and applies the immutable result without another Brain call', async () => {
+  const f = fixture(true)
+  const preview = { ...input, brainTarget: 'beta' as const }
+  await expect(f.service.previewDraft(preview)).resolves.toMatchObject({ status: 'preview', draft: 'Beta-Wissen' })
+  await expect(f.service.previewDraft(input)).resolves.toMatchObject({ status: 'preview', draft: 'Beta-Wissen' })
+  expect(f.betaBrain.answer).toHaveBeenCalledOnce()
+  expect(f.brain.answer).not.toHaveBeenCalled()
+  expect(f.betaBrain.answer).toHaveBeenCalledWith(expect.objectContaining({ reviewOnly: true, tenant: 'saas' }), undefined)
+  await expect(f.service.applyDraft(input)).resolves.toEqual({ status: 'ready' })
+  expect(f.saveDraft).toHaveBeenCalledWith(expect.anything(), 77, 'Beta-Wissen', old, true)
+  expect(f.betaBrain.answer).toHaveBeenCalledOnce()
+  const normal = fixture(true)
+  await expect(normal.service.previewDraft(input)).resolves.toMatchObject({ status: 'preview', draft: fresh })
+  expect(normal.brain.answer).toHaveBeenCalledOnce()
+  expect(normal.betaBrain.answer).not.toHaveBeenCalled()
+})
+
+it('does not silently fall back to production if the Beta port is missing or fails', async () => {
+  const missing = fixture()
+  await expect(missing.service.previewDraft({ ...input, brainTarget: 'beta' })).resolves.toEqual({ status: 'unavailable' })
+  expect(missing.brain.answer).not.toHaveBeenCalled()
+  const failed = fixture(true)
+  failed.betaBrain.answer.mockRejectedValue(new Error('Beta unavailable'))
+  await expect(failed.service.previewDraft({ ...input, brainTarget: 'beta' })).resolves.toEqual({ status: 'unavailable' })
+  expect(failed.betaBrain.answer).toHaveBeenCalledOnce()
+  expect(failed.brain.answer).not.toHaveBeenCalled()
+  expect(failed.proposals.save).not.toHaveBeenCalled()
 })
