@@ -1245,7 +1245,7 @@ describe('reviewed own-document assistance', () => {
   it.each(['Die Rechnung bitte', 'Bitte meine Rechnung', 'Bitte schicke mir meine Rechnung als PDF.', 'Kann ich meinen Vertrag als Kopie bekommen?', 'Ich möchte meine invoices sehen.', 'Vertragsfrage: Kannst du mir die Kopie senden?'])('allows only an internal source-bound document review: %s', async content => {
     const flow = await fixture(content)
     await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
-    expect(flow.answer).toHaveBeenCalledWith(expect.objectContaining({ reviewOnly: true, executionContext: expect.objectContaining({ sourceMessageId: 55 }) }))
+    expect(flow.answer).toHaveBeenCalledWith(expect.objectContaining({ executionContext: expect.objectContaining({ sourceMessageId: 55 }) }))
     expect(flow.saveDraft).toHaveBeenCalled()
     expect(flow.sendPrivateNote).toHaveBeenCalledWith(tenants[0], 77, expect.any(String), 55, 'document_assistance_note')
     expect(flow.addLabels).toHaveBeenCalledWith(tenants[0], 77, ['ki-entwurf'])
@@ -1269,5 +1269,101 @@ describe('reviewed own-document assistance', () => {
       expect(flow.sendMessage).not.toHaveBeenCalled()
       expect(flow.sendPrivateNote).toHaveBeenCalledWith(tenants[0], 77, expect.any(String), 55, 'document_assistance_note')
     }
+  })
+})
+
+
+describe('source-bound routine automation', () => {
+  const proof = (kind: NonNullable<SupportBrainAnswer['automation']>['kind'] = 'calendar_clarification') => ({ version: 1 as const, kind, requestId: supportBrainRequestId(PSEUDONYMIZATION_KEY, 101, 55), sourceMessageId: 55 })
+  it('sends a proven clarification without public knowledge sources', async () => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true, answer: { ...SAFE_ANSWER, action: 'clarify', sources: [], reason: 'calendar_action_clarify', automation: proof() } })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(f.sendMessage).toHaveBeenCalledOnce()
+    expect(f.autoSend.reserve).toHaveBeenCalledOnce()
+  })
+  it.each(['missing', 'request', 'source', 'disabled', 'human', 'latehuman', 'stale', 'unsafe', 'fake'] as const)('rejects untrusted automation: %s', async mode => {
+    const automation = mode === 'missing' ? undefined : { ...proof(), ...(mode === 'request' ? { requestId: '550e8400-e29b-41d4-a716-446655440000' } : {}), ...(mode === 'source' ? { sourceMessageId: 99 } : {}) }
+    const f = setup({ trustedSource: mode !== 'fake', autoSendEnabled: mode !== 'disabled', context: { humanEverReplied: mode === 'human' }, answer: { ...SAFE_ANSWER, action: 'clarify', safeToAutoSend: mode !== 'unsafe', reason: 'calendar_action_clarify', automation } })
+    if (mode === 'latehuman') f.loadContext.mockResolvedValueOnce({ turns: [], labels: [], humanEverReplied: false }).mockResolvedValue({ turns: [], labels: [], humanEverReplied: true })
+    if (mode === 'stale') f.loadCurrentSource.mockResolvedValueOnce(await f.loadCurrentSource()).mockResolvedValue(undefined)
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(f.sendMessage).not.toHaveBeenCalled()
+  })
+  it('accepts an existing policy-approved knowledge answer without inventing a reason', async () => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true, answer: { ...SAFE_ANSWER, automation: proof('knowledge') } })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(f.sendMessage).toHaveBeenCalledOnce()
+  })
+  it.each([
+    ['calendar_clarification', 'autonomy:calendar_clarification'],
+    ['document_verification', 'document_assistance:contract_facts'],
+    ['document_access', 'document_assistance:unknown'],
+    ['knowledge', 'document_assistance:contract_facts'],
+    ['knowledge', 'autonomy:acknowledgement'],
+  ] as const)('rejects kind/reason spoofing: %s / %s', async (kind, reason) => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true, answer: { ...SAFE_ANSWER, automation: proof(kind), reason } })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(f.sendMessage).not.toHaveBeenCalled()
+  })
+  it('sends proven document guidance with a privacy marker before delivery', async () => {
+    const content = 'Die Rechnung bitte'
+    const f = setup({ trustedSource: true, autoSendEnabled: true, answer: { ...SAFE_ANSWER, sources: [], reason: 'document_assistance:verification_required', automation: proof('document_verification') } })
+    const source = await f.loadCurrentSource(); f.loadCurrentSource.mockResolvedValue({ ...source, content })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
+    expect(f.answer.mock.calls[0]?.[0].reviewOnly).not.toBe(true)
+    expect(f.sendMessage).toHaveBeenCalledOnce()
+    expect(f.sendPrivateNote).toHaveBeenCalledWith(tenants[0], 77, expect.any(String), 55, 'document_assistance_note')
+    expect(f.sendPrivateNote.mock.invocationCallOrder[0]).toBeLessThan(f.sendMessage.mock.invocationCallOrder[0]!)
+    expect(f.autoSend.reserve.mock.calls[0]?.[0]).toMatchObject({ sensitive: true, sourceIds: [] })
+  })
+  it('does not send a safe-looking ordinary answer from a required review-only request', async () => {
+    const content = 'Wie funktioniert die AfA?'
+    const f = setup({ trustedSource: true, autoSendEnabled: true, answer: SAFE_ANSWER })
+    const source = await f.loadCurrentSource(); f.loadCurrentSource.mockResolvedValue({ ...source, content })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
+    expect(f.answer.mock.calls[0]?.[0].reviewOnly).toBe(true)
+    expect(f.sendMessage).not.toHaveBeenCalled()
+  })
+  it('rechecks the customer source after writing the document privacy marker', async () => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true, answer: { ...SAFE_ANSWER, reason: 'document_assistance:contract_facts', automation: proof('document_access') } })
+    f.sendPrivateNote.mockImplementationOnce(async () => { f.loadCurrentSource.mockResolvedValue(undefined) })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(f.sendMessage).not.toHaveBeenCalled()
+    expect(f.state.completeWithoutReply).toHaveBeenCalledWith('saas', 55)
+  })
+  it.each(['label', 'handoff', 'human', 'routing', 'missing_context'] as const)('rechecks ownership and routing after the document marker: %s', async mode => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true, answer: { ...SAFE_ANSWER, reason: 'document_assistance:contract_facts', automation: proof('document_access') } })
+    const original = await f.loadContext()
+    f.sendPrivateNote.mockImplementationOnce(async () => {
+      if (mode === 'handoff') f.state.isHandedOff.mockResolvedValue(true)
+      else f.loadContext.mockResolvedValue(mode === 'missing_context' ? undefined : { ...original,
+        ...(mode === 'label' ? { labels: ['mensch-gewuenscht'] } : {}),
+        ...(mode === 'human' ? { humanEverReplied: true } : {}),
+        ...(mode === 'routing' ? { supportRouting: { conversationTenant: 'new_academy', sourceTenant: 'new_academy', conversationChannel: 'web' } } : {}),
+      })
+    })
+    const process = f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    if (mode === 'routing' || mode === 'missing_context') await expect(process).rejects.toThrow()
+    else {
+      await process
+      expect(f.autoSend.blockConversation).toHaveBeenCalled()
+      expect(f.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
+    }
+    expect(f.sendMessage).not.toHaveBeenCalled()
+    expect(f.autoSend.markSent).not.toHaveBeenCalled()
+  })
+  it('keeps a genuine non-handoff review draft eligible for a later routine message', async () => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(f.state.completeHandoff).not.toHaveBeenCalled()
+    expect(f.state.completeWithoutReply).toHaveBeenCalledWith('saas', 55)
+    expect(f.handoff).not.toHaveBeenCalled()
+    expect(f.assign).not.toHaveBeenCalled()
+  })
+  it('preserves human ownership when a routine draft encounters a manually edited composer', async () => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true })
+    f.saveDraft.mockResolvedValue({ written: false, message: 'Human edit' })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(f.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
 })

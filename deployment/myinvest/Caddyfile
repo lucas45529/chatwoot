@@ -61,6 +61,13 @@
 		reverse_proxy claude-agent:8080
 	}
 
+	handle /_agent/autonomy-status {
+		@invalid_autonomy_status_method not method POST
+		respond @invalid_autonomy_status_method 405
+		uri strip_prefix /_agent
+		reverse_proxy claude-agent:8080
+	}
+
 	handle /_agent/draft {
 		@invalid_draft_method not method POST
 		respond @invalid_draft_method 405

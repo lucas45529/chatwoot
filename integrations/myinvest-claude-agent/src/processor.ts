@@ -1,6 +1,7 @@
 import { redactConversationText } from './conversation-history.js'
 import {
   autoSendDecision,
+  hasBoundAutomation,
   questionFingerprint,
   supportBrainRequestId,
   type AutoSendLimits,
@@ -226,7 +227,7 @@ export class MessageProcessor {
       )
       return
     }
-    const reviewOnly = documentAssistance || crossProduct || humanOwned || outcome.category === 'beratung'
+    const reviewOnly = crossProduct || humanOwned || (outcome.category === 'beratung' && !documentAssistance)
     const directReply = reviewOnly ? undefined : directSupportReply(question)
     let answer: SupportBrainAnswer
     if (directReply) {
@@ -303,12 +304,15 @@ export class MessageProcessor {
       return
     }
 
-    const verdict: AutoSendVerdict | 'manual_review' = crossProduct || documentAssistance
+    const binding = executionContext ? { requestId: supportBrainRequestId(this.dependencies.pseudonymizationKey, tenant.accountId, payload.id), sourceMessageId: executionContext.sourceMessageId, reviewOnly: reviewOnly || !this.dependencies.autoSendEnabled } : undefined
+    const documentApproved = documentAssistance && hasBoundAutomation(answer, binding) && (answer.automation?.kind === 'document_verification' || answer.automation?.kind === 'document_access')
+    const verdict: AutoSendVerdict | 'manual_review' = reviewOnly || (documentAssistance && !documentApproved)
       ? 'manual_review'
       : autoSendDecision({
           enabled: this.dependencies.autoSendEnabled,
           humanInConversation: humanOwned,
           answer,
+          binding,
         })
     if (verdict === 'auto_send') {
       // Ein Fehler der Chatwoot-API laeuft hier bewusst in den Job-Retry und
@@ -329,8 +333,10 @@ export class MessageProcessor {
       return
     }
 
+    const retainAutomation = Boolean(executionContext && this.dependencies.autoSendEnabled && !crossProduct && !humanOwned && (!outcome.humanOnly || documentAssistance) && !reviewOnly && answer.action !== 'handoff')
+    let written = false
     try {
-      await this.prepareDraft({
+      written = await this.prepareDraft({
         tenant,
         productTenant: supportRoute.tenant,
         conversationId,
@@ -338,6 +344,7 @@ export class MessageProcessor {
         answer,
         verdict,
         documentAssistance,
+        retainAutomation,
         labels:
           reviewOnly && outcome.category === 'beratung' && !documentAssistance
             ? outcome.labels
@@ -353,7 +360,8 @@ export class MessageProcessor {
       )
       return
     }
-    await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
+    if (retainAutomation && written) await this.completeSuperseded(tenant.key, payload.id)
+    else await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
   }
 
   /**
@@ -390,7 +398,8 @@ export class MessageProcessor {
           input.question,
         ),
         confidence: answer.confidence,
-        sourceIds: answer.sources.map((source) => source.url),
+        sourceIds: answer.reason?.startsWith('document_assistance:') ? [] : answer.sources.map((source) => source.url),
+        ...(answer.reason?.startsWith('document_assistance:') ? { sensitive: true } : {}),
         sentText: answer.text,
       },
       this.dependencies.autoSendLimits,
@@ -407,6 +416,12 @@ export class MessageProcessor {
       })
       await this.dependencies.state.completeHandoff(tenant.key, deliveryId, conversationId)
       return
+    }
+
+    if (reservation.entry.sensitive || answer.reason?.startsWith('document_assistance:')) {
+      // Persist the privacy marker before any public effect. All live ownership,
+      // routing and source checks below run after this awaited external write.
+      await this.dependencies.chatwoot.sendPrivateNote(tenant, conversationId, 'Private Dokumenthilfe – vom Lernen ausgeschlossen.', deliveryId, 'document_assistance_note')
     }
 
     const liveContext = await this.dependencies.context.loadContext({
@@ -447,6 +462,7 @@ export class MessageProcessor {
       enabled: this.dependencies.autoSendEnabled,
       humanInConversation: liveHuman || liveHumanOnlyLabel || liveHandedOff,
       answer,
+      binding: input.executionContext ? { requestId: supportBrainRequestId(this.dependencies.pseudonymizationKey, tenant.accountId, deliveryId), sourceMessageId: input.executionContext.sourceMessageId, reviewOnly: false } : undefined,
     })
     if (liveVerdict !== 'auto_send') {
       await this.prepareDraft({
@@ -525,8 +541,9 @@ export class MessageProcessor {
     verdict: AutoSendVerdict | 'manual_review'
     labels?: readonly string[]
     documentAssistance?: boolean
+    retainAutomation?: boolean
     previousAgentDraft?: string
-  }): Promise<void> {
+  }): Promise<boolean> {
     const { tenant, conversationId, deliveryId, answer, verdict } = input
     const draftWrite = input.previousAgentDraft
       ? await this.dependencies.chatwoot.saveDraft(
@@ -559,12 +576,10 @@ export class MessageProcessor {
       deliveryId,
       input.documentAssistance || answer.reason?.startsWith('document_assistance:') ? 'document_assistance_note' : answer.action === 'clarify' ? 'clarify_draft_note' : 'draft_note',
     )
-    await this.dependencies.chatwoot.assign(
-      tenant,
-      conversationId,
-      tenant.handoffAssigneeId,
-    )
-    await this.dependencies.chatwoot.handoff(tenant, conversationId)
+    if (!input.retainAutomation || !draftWrite.written) {
+      await this.dependencies.chatwoot.assign(tenant, conversationId, tenant.handoffAssigneeId)
+      await this.dependencies.chatwoot.handoff(tenant, conversationId)
+    }
     console.log(
       JSON.stringify({
         event: 'agent_draft_ready',
@@ -575,6 +590,7 @@ export class MessageProcessor {
         draftWritten: draftWrite.written,
       }),
     )
+    return draftWrite.written
   }
 
   /**

@@ -277,3 +277,34 @@ describe('PostgresConversationProcessingLock', () => {
     expect(release).toHaveBeenCalledOnce()
   })
 })
+
+
+describe('private document delivery reservations', () => {
+  const key = 'test-only-pseudonymization-key-with-32-characters'
+  function dbForRetry() {
+    let stored: string | undefined
+    const query = vi.fn(async (sql: string, values?: readonly unknown[]) => {
+      if (!sql.includes('WITH usage')) return { rows: [] }
+      stored ??= String(values?.[7])
+      return { rows: [{ ...reservationRow({ conversationCount: 0, reserved: true }), reservation_sent_text: stored, reservation_source_ids: values?.[6] }] }
+    })
+    return { query, connect: vi.fn(async () => ({ query, release: vi.fn() })), stored: () => stored }
+  }
+  it('encrypts the first document response and replays exactly it after an uncertain send', async () => {
+    const db = dbForRetry(); const log = new PostgresAutoSendLog(db, key)
+    const original = { ...ENTRY, sensitive: true, sentText: 'Private invoice facts', sourceIds: [] }
+    const first = await log.reserve(original, LIMITS)
+    expect(db.stored()).not.toContain(original.sentText)
+    expect(db.stored()).toMatch(/^private:v1:/)
+    expect(first).toMatchObject({ reserved: true, entry: { sentText: original.sentText, sensitive: true } })
+    const retry = await log.reserve({ ...original, sentText: 'Changed generation' }, LIMITS)
+    expect(retry).toMatchObject({ reserved: true, entry: { sentText: original.sentText, sensitive: true } })
+  })
+  it.each(['wrong_key', 'wrong_tenant', 'wrong_conversation', 'wrong_source', 'tampered', 'tampered_header', 'no_key'])('fails closed for private reservation substitution: %s', async mode => {
+    const db = dbForRetry(); await new PostgresAutoSendLog(db, key).reserve({ ...ENTRY, sensitive: true }, LIMITS)
+    const row = { ...reservationRow({ conversationCount: 0, reserved: true }), reservation_source_ids: ['urn:myinvest:private-document-delivery:v1'], reservation_sent_text: mode === 'tampered' ? db.stored()!.slice(0, -3) + 'xxx' : mode === 'tampered_header' ? 'altered:' + db.stored() : db.stored()! }
+    const fake = databaseForRow(row)
+    const entry = { ...ENTRY, ...(mode === 'wrong_tenant' ? { tenantKey: 'new_academy' as const } : {}), ...(mode === 'wrong_conversation' ? { conversationId: 88 } : {}), ...(mode === 'wrong_source' ? { messageId: 99 } : {}) }
+    await expect(new PostgresAutoSendLog(fake.database, mode === 'no_key' ? undefined : mode === 'wrong_key' ? key + 'other' : key).reserve(entry, LIMITS)).rejects.toThrow()
+  })
+})

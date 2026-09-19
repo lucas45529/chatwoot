@@ -45,7 +45,15 @@ export interface SupportBrainRequest {
   reviewOnly?: boolean
 }
 
+export const automationProofSchema = z.object({
+  version: z.literal(1),
+  kind: z.enum(['acknowledgement', 'calendar_status', 'calendar_clarification', 'document_verification', 'document_access', 'knowledge']),
+  requestId: z.string().uuid(),
+  sourceMessageId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+}).strict()
+
 const brainAnswerSchema = z.object({
+  automation: automationProofSchema.optional(),
   action: z.enum(['answer', 'clarify', 'handoff']),
   text: z.string().min(1).max(4_000),
   confidence: z.number().min(0).max(1),

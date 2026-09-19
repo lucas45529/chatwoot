@@ -30,6 +30,7 @@ interface PendingRow extends Record<string, unknown> {
 
 interface OutcomeRow extends Record<string, unknown> {
   status: number
+  document_assistance?: boolean
   human_reply_content: string | null
 }
 
@@ -84,6 +85,12 @@ export async function runAutoSendFeedbackSweep(input: {
     const sentAt = new Date(row.sent_at)
     const outcome = await input.chatwootPool.query<OutcomeRow>(
       `SELECT conversation.status,
+              EXISTS (SELECT 1 FROM messages AS marker
+                       WHERE marker.account_id = $1 AND marker.conversation_id = conversation.id
+                         AND CASE WHEN json_typeof(marker.content_attributes) = 'string'
+                                  THEN (marker.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
+                                  ELSE marker.content_attributes ->> 'myinvest_agent_message_kind' END = 'document_assistance_note'
+                     ) AS document_assistance,
               (
                 SELECT reply.content
                   FROM messages AS reply
@@ -104,10 +111,10 @@ export async function runAutoSendFeedbackSweep(input: {
     const conversation = outcome.rows[0]
     // Redaction vor der Bewertung: der Korrekturtext wird gespeichert, also
     // entscheidet die redigierte Fassung ueber seine Verwertbarkeit.
-    const correction = conversation?.human_reply_content
+    const correction = !conversation?.document_assistance && conversation?.human_reply_content
       ? redactSupportText(conversation.human_reply_content).text.trim()
       : ''
-    const rating: FeedbackRating | undefined = !conversation
+    const rating: FeedbackRating | undefined = !conversation || conversation.document_assistance
       ? 'none'
       : feedbackRating({
           correction,

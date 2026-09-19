@@ -40,6 +40,8 @@ export interface AutoSendRecord {
   confidence: number
   sourceIds: readonly string[]
   sentText: string
+  /** Encrypt private document response text at rest; never train from it. */
+  sensitive?: boolean
 }
 
 export type AutoSendReservation =
@@ -120,15 +122,32 @@ export function supportBrainRequestId(
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+export function hasBoundAutomation(answer: SupportBrainAnswer, binding?: { requestId: string; sourceMessageId: number; reviewOnly: boolean }): boolean {
+  const proof = answer.automation
+  if (!proof || !binding || binding.reviewOnly || proof.requestId !== binding.requestId || proof.sourceMessageId !== binding.sourceMessageId) return false
+  switch (proof.kind) {
+    case 'acknowledgement': return answer.reason === 'autonomy:acknowledgement'
+    case 'calendar_status': return answer.reason === 'autonomy:calendar_status'
+    case 'calendar_clarification': return answer.reason === 'calendar_action_clarify'
+    case 'document_verification': return answer.reason === 'document_assistance:verification_required'
+    case 'document_access': return ['document_assistance:invoices', 'document_assistance:contract_facts', 'document_assistance:contract_selection', 'document_assistance:code_in_chat'].includes(answer.reason ?? '')
+    case 'knowledge': return answer.reason === undefined && answer.action === 'answer' && answer.sources.length > 0
+  }
+}
+
 export function autoSendDecision(input: {
   enabled: boolean
   humanInConversation: boolean
   answer: SupportBrainAnswer
+  binding?: { requestId: string; sourceMessageId: number; reviewOnly: boolean }
 }): AutoSendVerdict {
   if (!input.enabled) return 'kill_switch_off'
   // `safeToAutoSend` ist die Serverentscheidung; action wird zusaetzlich
   // geprueft, damit eine Rueckfrage oder Uebergabe nie versehentlich rausgeht.
-  if (!input.answer.safeToAutoSend || input.answer.action !== 'answer') return 'brain_declined'
+  const bound = hasBoundAutomation(input.answer, input.binding)
+  const proofRequired = Boolean(input.answer.automation || input.answer.reason?.startsWith('autonomy:') || input.answer.reason?.startsWith('document_assistance:'))
+  if (proofRequired && !bound) return 'brain_declined'
+  if (!input.answer.safeToAutoSend || (input.answer.action !== 'answer' && !(input.answer.action === 'clarify' && bound && input.answer.automation?.kind === 'calendar_clarification'))) return 'brain_declined'
   if (input.humanInConversation) return 'human_in_conversation'
   if (input.answer.text.trim().length === 0 || input.answer.text.length > MAX_AUTO_SEND_CHARS) {
     return 'text_too_long'

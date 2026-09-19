@@ -32,3 +32,14 @@ describe('runAutoSendFeedbackSweep', () => {
     expect(expirySql).toContain('LIMIT 1000')
   })
 })
+
+
+it('never learns a human correction from a document-marked conversation', async () => {
+  const query = vi.fn().mockResolvedValueOnce({ rows: [{ id: '1', tenant_key: 'saas', conversation_id: '77', message_id: '55', sent_at: new Date(Date.now() - 3600000) }] }).mockResolvedValue({ rows: [] })
+  const connect = vi.fn()
+  const chatQuery = vi.fn().mockResolvedValue({ rows: [{ status: 1, human_reply_content: 'Private invoice correction', document_assistance: true }] })
+  const result = await runAutoSendFeedbackSweep({ agentPool: { query, connect } as unknown as LearningPool & { query: typeof query }, chatwootPool: { query: chatQuery }, tenants: { requireByKey: () => ({ accountId: 101 }) } as unknown as TenantRegistry })
+  expect(result).toMatchObject({ helpful: 0, corrected: 0, undecided: 1 })
+  expect(connect).not.toHaveBeenCalled()
+  expect(chatQuery.mock.calls[0]?.[0]).toContain('document_assistance_note')
+})

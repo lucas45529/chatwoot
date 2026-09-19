@@ -493,3 +493,13 @@ it('signs strict source context while keeping review calls explicitly read-only'
   await expect(clientWith(invalid).answer(brainRequest({ executionContext: { ...executionContext, callbackUrl: 'https://evil.example' } }))).rejects.toThrow()
   expect(invalid).not.toHaveBeenCalled()
 })
+
+
+it('preserves only schema-validated deterministic automation proof', async () => {
+  const automation = { version: 1, kind: 'document_verification', requestId: REQUEST_ID, sourceMessageId: 55 }
+  const answer = await clientWith(respondingFetch(jsonResponse(brainPayload({ automation })))).answer(brainRequest())
+  expect(answer.automation).toEqual(automation)
+  for (const invalid of [{ ...automation, version: 2 }, { ...automation, kind: 'anything' }, { ...automation, sourceMessageId: 0 }, { ...automation, requestId: 'invalid' }, { ...automation, authorized: true }]) {
+    await expect(clientWith(respondingFetch(jsonResponse(brainPayload({ automation: invalid })))).answer(brainRequest())).rejects.toBeInstanceOf(SupportBrainError)
+  }
+})

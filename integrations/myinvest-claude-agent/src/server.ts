@@ -16,6 +16,7 @@ import { learningCommandSchema, LearningReviewService } from './learning/review-
 import { PostgresLearningSourceResolver } from './learning/source.js'
 import { ManualDraftService, proposalSchema } from './manual-draft.js'
 import { manualDraftHandler } from './manual-draft-route.js'
+import { autonomyStatusHandler } from './autonomy-status-route.js'
 import { MessageProcessor } from './processor.js'
 import { DeliveryQueue, QUEUE_NAME, type DeliveryJob } from './queue.js'
 import { PostgresAgentState } from './state.js'
@@ -37,7 +38,7 @@ const deliveryQueue = new DeliveryQueue(queue, {
   retentionSeconds: config.DELIVERY_RETENTION_SECONDS,
 })
 const state = new PostgresAgentState(pool)
-const autoSendLog = new PostgresAutoSendLog(pool)
+const autoSendLog = new PostgresAutoSendLog(pool, config.PSEUDONYMIZATION_KEY)
 const conversationLock = new PostgresConversationProcessingLock(pool)
 const brain: SupportBrainPort = config.LOCAL_FAKE_BRAIN_ANSWER
   ? {
@@ -177,6 +178,13 @@ const manualDraft = new ManualDraftService({
   pseudonymizationKey: config.PSEUDONYMIZATION_KEY,
   whatsappInboxIds: config.whatsappInboxIds,
 })
+app.post('/autonomy-status', express.raw({ type: 'application/json', limit: '1kb' }), autonomyStatusHandler({
+  secret: config.SUPPORT_CHATWOOT_SSO_SECRET,
+  claim: async (key, ttl) => await redis.set(key, '1', 'EX', ttl, 'NX') === 'OK',
+  autoSendEnabled: config.AUTO_SEND_ENABLED,
+  maxPerConversation: config.AUTO_SEND_MAX_PER_CONVERSATION,
+  maxPerContactPerHour: config.AUTO_SEND_MAX_PER_CONTACT_PER_HOUR,
+}))
 app.post('/draft', express.raw({ type: 'application/json', limit: '2kb' }), manualDraftHandler({
   secret: config.SUPPORT_CHATWOOT_SSO_SECRET,
   claim: async (key, ttl) => await redis.set(key, '1', 'EX', ttl, 'NX') === 'OK',

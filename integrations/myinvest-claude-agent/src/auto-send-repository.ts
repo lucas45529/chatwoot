@@ -1,3 +1,4 @@
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto'
 import type {
   AutoSendLimits,
   AutoSendLog,
@@ -38,6 +39,8 @@ interface ReservationRow extends Record<string, unknown> {
   reservation_source_ids: unknown
   reservation_sent_text: string | null
 }
+
+const PRIVATE_DOCUMENT_SOURCE = 'urn:myinvest:private-document-delivery:v1'
 
 const conversationAutoSendLockKey = (tenantKey: TenantKey, conversationId: number) =>
   `myinvest-agent:auto-send:${tenantKey}:${conversationId}`
@@ -123,7 +126,41 @@ export class PostgresConversationProcessingLock implements ConversationProcessin
 }
 
 export class PostgresAutoSendLog implements AutoSendLog {
-  constructor(private readonly database: DatabasePool) {}
+  constructor(private readonly database: DatabasePool, private readonly encryptionSecret?: string) {}
+
+  private documentKey(): Buffer {
+    if (!this.encryptionSecret || this.encryptionSecret.length < 32) throw new Error('Private delivery encryption unavailable')
+    return Buffer.from(hkdfSync('sha256', this.encryptionSecret, 'myinvest-agent/private-delivery/v1', 'document-sent-text/aes-256-gcm', 32))
+  }
+
+  private documentAad(entry: AutoSendRecord): Buffer {
+    return Buffer.from(JSON.stringify(['myinvest-agent/private-delivery/v1', entry.tenantKey, entry.conversationId, entry.messageId]))
+  }
+
+  private storedText(entry: AutoSendRecord): string {
+    if (!entry.sensitive) return entry.sentText
+    const iv = randomBytes(12)
+    const cipher = createCipheriv('aes-256-gcm', this.documentKey(), iv)
+    cipher.setAAD(this.documentAad(entry))
+    const encrypted = Buffer.concat([cipher.update(entry.sentText, 'utf8'), cipher.final()])
+    return `private:v1:${iv.toString('base64url')}:${cipher.getAuthTag().toString('base64url')}:${encrypted.toString('base64url')}`
+  }
+
+  private restoredText(stored: string, entry: AutoSendRecord): string {
+    if (!stored.startsWith('private:')) {
+      if (entry.sensitive) throw new Error('Private delivery reservation is not encrypted')
+      return stored
+    }
+    const parts = stored.split(':')
+    if (parts.length !== 5 || parts[1] !== 'v1') throw new Error('Invalid private delivery envelope')
+    const iv = Buffer.from(parts[2]!, 'base64url')
+    const tag = Buffer.from(parts[3]!, 'base64url')
+    if (iv.length !== 12 || tag.length !== 16) throw new Error('Invalid private delivery envelope')
+    const decipher = createDecipheriv('aes-256-gcm', this.documentKey(), iv)
+    decipher.setAAD(this.documentAad(entry))
+    decipher.setAuthTag(tag)
+    return Buffer.concat([decipher.update(Buffer.from(parts[4]!, 'base64url')), decipher.final()]).toString('utf8')
+  }
 
   async reserve(
     entry: AutoSendRecord,
@@ -195,8 +232,8 @@ export class PostgresAutoSendLog implements AutoSendLog {
           entry.contactHash ?? null,
           entry.questionHash,
           entry.confidence,
-          [...entry.sourceIds],
-          entry.sentText,
+          entry.sensitive ? [PRIVATE_DOCUMENT_SOURCE] : [...entry.sourceIds],
+          this.storedText(entry),
           limits.maxPerConversation,
           limits.maxPerContactPerHour,
         ],
@@ -233,6 +270,7 @@ export class PostgresAutoSendLog implements AutoSendLog {
         }
         sourceIds.push(sourceId)
       }
+      const sensitive = sourceIds.includes(PRIVATE_DOCUMENT_SOURCE) || row.reservation_sent_text.startsWith('private:')
       return {
         reserved: true,
         usage,
@@ -243,8 +281,9 @@ export class PostgresAutoSendLog implements AutoSendLog {
           contactHash: row.reservation_contact_hash ?? undefined,
           questionHash: row.reservation_question_hash,
           confidence: Number(row.reservation_confidence),
-          sourceIds,
-          sentText: row.reservation_sent_text,
+          sourceIds: sensitive ? [] : sourceIds,
+          sentText: this.restoredText(row.reservation_sent_text, { ...entry, sensitive: sensitive || entry.sensitive }),
+          ...(sensitive ? { sensitive: true } : {}),
         },
       }
     })
