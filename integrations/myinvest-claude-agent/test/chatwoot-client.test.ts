@@ -246,3 +246,21 @@ describe('ChatwootClient', () => {
     expect(request).toHaveBeenCalledOnce()
   })
 })
+
+it('does not recreate a human-deleted draft during explicit replacement', async () => {
+  const request = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ has_draft: false })))
+  const client = new ChatwootClient('https://chat.example.test', { exists: vi.fn() }, request)
+  await expect(client.saveDraft(tenants[0]!, 77, 'Neu', 'Alt', true)).resolves.toEqual({ written: false, message: '' })
+  expect(request).toHaveBeenCalledOnce()
+})
+
+it('keeps original source identity while deduplicating regenerated private notes by generation', async () => {
+  const exists = vi.fn().mockResolvedValue(false)
+  const request = vi.fn().mockResolvedValue(new Response('{}'))
+  const client = new ChatwootClient('https://chat.example.test', { exists }, request)
+  await client.sendPrivateNote(tenants[0]!, 77, 'Notiz', 243, 'draft_note', { generationId: '5360ea90-7d1a-4055-9271-1d3b10386a81', replacesNoteId: 250 })
+  expect(exists).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: 243, generationId: '5360ea90-7d1a-4055-9271-1d3b10386a81' }))
+  const body = JSON.parse(request.mock.calls[0]![1].body)
+  expect(body.private).toBe(true)
+  expect(body.content_attributes).toEqual({ myinvest_agent_delivery_id: '243', myinvest_agent_message_kind: 'draft_note', myinvest_agent_generation_id: '5360ea90-7d1a-4055-9271-1d3b10386a81', myinvest_agent_replaces_note_id: '250' })
+})

@@ -2,7 +2,7 @@ import { redactConversationText } from './conversation-history.js'
 import { createHmac } from 'node:crypto'
 import { z } from 'zod'
 import type { ChatwootPort } from './chatwoot-client.js'
-import type { ChatwootConversationContextStore } from './chatwoot-delivery-repository.js'
+import { extractAgentDraft, type ChatwootConversationContextStore } from './chatwoot-delivery-repository.js'
 import type { TenantConfig, TenantRegistry } from './config.js'
 import type { ConversationContext, TenantKey } from './domain.js'
 import {
@@ -13,11 +13,30 @@ import {
 } from './support-brain.js'
 import { resolveSupportRoute, type SupportRoute } from './support-routing.js'
 
-export const manualDraftRequestSchema = z.object({
+const legacyDraftRequestSchema = z.object({
   action: z.literal('draft'),
   accountId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   conversationId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 }).strict()
+
+const regenerateInputSchema = legacyDraftRequestSchema.omit({ action: true }).extend({
+  questionMessageId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  draftMessageId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  generationId: z.string().uuid(),
+}).strict()
+export const manualDraftRequestSchema = z.discriminatedUnion('action', [
+  legacyDraftRequestSchema,
+  regenerateInputSchema.extend({ action: z.literal('draft_preview') }),
+  regenerateInputSchema.extend({ action: z.literal('draft_apply') }),
+])
+export type ManualDraftCommand = z.infer<typeof manualDraftRequestSchema>
+export type RegenerateDraftInput = z.infer<typeof regenerateInputSchema>
+export type DraftPreviewResult = ManualDraftResult | {
+  status: 'preview'
+  generationId: string
+  previousDraft: string
+  draft: string
+}
 
 export type ManualDraftStatus =
   | 'ready'
@@ -57,6 +76,12 @@ export const proposalSchema = z.object({
   note: z.string().min(1).max(40_000),
   productTenant: z.enum(['saas', 'new_academy', 'legacy_academy']).optional(),
   channel: z.enum(['web', 'whatsapp']).optional(),
+  regeneration: z.object({
+    generationId: z.string().uuid(),
+    draftMessageId: z.number().int().positive(),
+    expectedDraft: z.string().min(1).max(4_000),
+    phase: z.enum(['preview', 'applying', 'applied']),
+  }).strict().optional(),
 }).strict()
 
 export type ManualDraftProposal = z.infer<typeof proposalSchema>
@@ -102,6 +127,113 @@ const MANUAL_REVIEW_REQUEST_DOMAIN = 'manual-review'
 
 export class ManualDraftService {
   constructor(private readonly dependencies: ManualDraftDependencies) {}
+
+  async previewDraft(input: RegenerateDraftInput, signal?: AbortSignal): Promise<DraftPreviewResult> {
+    try {
+      signal?.throwIfAborted()
+      if (!regenerateInputSchema.safeParse(input).success) return { status: 'unavailable' }
+      const tenant = this.dependencies.tenants.requireByAccountId(input.accountId)
+      const source = await this.loadSource(tenant, input.conversationId)
+      const route = source && routeForSource(source, tenant, this.dependencies.whatsappInboxIds)
+      if (!route) return { status: 'unavailable' }
+      const state = sourceState(source, tenant, input.questionMessageId, route, this.dependencies.whatsappInboxIds)
+      if (state !== 'current') return { status: state }
+      const expectedDraft = await this.regenerationOriginal(tenant, input)
+      if (!expectedDraft) return { status: 'unavailable' }
+      const key = regenerationProposalKey(tenant, input)
+      const existing = await this.dependencies.proposals.load(key)
+      if (existing) {
+        if (!matchesRegeneration(existing, input, route, expectedDraft)) return { status: 'unavailable' }
+        return previewResult(existing)
+      }
+      if (await this.dependencies.drafts.loadDraft(tenant, input.conversationId) !== expectedDraft) return { status: 'preserved' }
+      const context = await this.dependencies.context.loadContext({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: input.conversationId, currentMessageId: input.questionMessageId })
+      if (!context) return { status: 'unavailable' }
+      const answer = await this.answerForSource({ tenant, route, source: source!, sourceMessageId: input.questionMessageId, context, generationId: input.generationId, signal })
+      signal?.throwIfAborted()
+      if (!answer) return { status: 'unavailable' }
+      const current = sourceState(await this.loadSource(tenant, input.conversationId), tenant, input.questionMessageId, route, this.dependencies.whatsappInboxIds)
+      if (current !== 'current') return { status: current }
+      if (await this.regenerationOriginal(tenant, input) !== expectedDraft) return { status: 'unavailable' }
+      if (await this.dependencies.drafts.loadDraft(tenant, input.conversationId) !== expectedDraft) return { status: 'preserved' }
+      const proposal = proposalSchema.parse({ sourceMessageId: input.questionMessageId, draft: answer.text, note: draftNote(answer, route.tenant), productTenant: route.tenant, channel: route.channel, regeneration: { generationId: input.generationId, draftMessageId: input.draftMessageId, expectedDraft, phase: 'preview' } })
+      signal?.throwIfAborted()
+      await this.dependencies.proposals.save(key, proposal)
+      return previewResult(proposal)
+    } catch { return { status: 'unavailable' } }
+  }
+
+  async applyDraft(input: RegenerateDraftInput, signal?: AbortSignal): Promise<ManualDraftResult> {
+    try {
+      signal?.throwIfAborted()
+      if (!regenerateInputSchema.safeParse(input).success) return { status: 'unavailable' }
+      const tenant = this.dependencies.tenants.requireByAccountId(input.accountId)
+      const key = regenerationProposalKey(tenant, input)
+      const proposal = await this.dependencies.proposals.load(key)
+      if (!proposal?.regeneration) return { status: 'unavailable' }
+      const route = proposalRoute(proposal, tenant, this.dependencies.whatsappInboxIds)
+      const original = await this.regenerationOriginal(tenant, input)
+      if (!original || !matchesRegeneration(proposal, input, route, original)) return { status: 'unavailable' }
+      const currentState = sourceState(await this.loadSource(tenant, input.conversationId), tenant, input.questionMessageId, route, this.dependencies.whatsappInboxIds)
+      if (currentState !== 'current') {
+        if (proposal.regeneration.phase === 'applying') await this.dependencies.chatwoot.saveDraft(tenant, input.conversationId, '', proposal.draft, true)
+        return { status: currentState }
+      }
+      const current = await this.dependencies.drafts.loadDraft(tenant, input.conversationId)
+      if (proposal.regeneration.phase === 'applied') return { status: current === proposal.draft ? 'existing' : 'preserved' }
+      // Only an explicitly approved proposal may recover a previous CAS write.
+      const recovering = proposal.regeneration.phase === 'applying' && current === proposal.draft
+      if (!recovering && current !== original) return { status: 'preserved' }
+      let status: 'ready' | 'existing' = 'existing'
+      if (!recovering) {
+        proposal.regeneration.phase = 'applying'
+        signal?.throwIfAborted()
+        await this.dependencies.proposals.save(key, proposal)
+        signal?.throwIfAborted()
+        const write = await this.dependencies.chatwoot.saveDraft(tenant, input.conversationId, proposal.draft, original, true)
+        if (!write.written) return { status: 'preserved' }
+        status = 'ready'
+      }
+      const after = sourceState(await this.loadSource(tenant, input.conversationId), tenant, input.questionMessageId, route, this.dependencies.whatsappInboxIds)
+      if (after !== 'current') {
+        await this.dependencies.chatwoot.saveDraft(tenant, input.conversationId, '', proposal.draft, true)
+        return { status: after }
+      }
+      if (await this.dependencies.drafts.loadDraft(tenant, input.conversationId) !== proposal.draft) return { status: 'preserved' }
+      signal?.throwIfAborted()
+      await this.dependencies.chatwoot.sendPrivateNote(tenant, input.conversationId, proposal.note, input.questionMessageId, 'draft_note', { generationId: input.generationId, replacesNoteId: input.draftMessageId })
+      proposal.regeneration.phase = 'applied'
+      await this.dependencies.proposals.save(key, proposal)
+      return { status }
+    } catch { return { status: 'unavailable' } }
+  }
+
+  private async regenerationOriginal(tenant: TenantConfig, input: RegenerateDraftInput): Promise<string | undefined> {
+    if (!tenant.agentBotId) return undefined
+    const result = await this.dependencies.database.query<{ content: string }>(
+      `SELECT regeneration_note.content FROM messages AS regeneration_note
+       JOIN conversations c ON c.id = regeneration_note.conversation_id AND c.account_id = regeneration_note.account_id
+       WHERE c.account_id = $1 AND c.display_id = $2 AND c.inbox_id = $3
+         AND regeneration_note.inbox_id = c.inbox_id AND regeneration_note.id = $4
+         AND regeneration_note.private = true AND regeneration_note.message_type = 1
+         AND regeneration_note.sender_type = 'AgentBot' AND regeneration_note.sender_id = $5
+         AND regeneration_note.id > $6
+         AND ${noteAttribute('regeneration_note', 'myinvest_agent_delivery_id')} = $6::text
+         AND ${noteAttribute('regeneration_note', 'myinvest_agent_message_kind')} IN ('draft_note', 'clarify_draft_note', 'handoff_note')
+         AND NOT EXISTS (
+           SELECT 1 FROM messages newer
+           WHERE newer.account_id = c.account_id AND newer.conversation_id = c.id AND newer.inbox_id = c.inbox_id
+             AND newer.id > regeneration_note.id AND newer.private = true AND newer.message_type = 1
+             AND newer.sender_type = 'AgentBot' AND newer.sender_id = $5
+             AND ${noteAttribute('newer', 'myinvest_agent_delivery_id')} = $6::text
+             AND ${noteAttribute('newer', 'myinvest_agent_message_kind')} IN ('draft_note', 'clarify_draft_note', 'handoff_note')
+             AND ${noteAttribute('newer', 'myinvest_agent_generation_id')} IS DISTINCT FROM $7
+         )`,
+      [tenant.accountId, input.conversationId, tenant.inboxId, input.draftMessageId, tenant.agentBotId, input.questionMessageId, input.generationId],
+    )
+    const draft = extractAgentDraft(result.rows[0]?.content ?? null)
+    return draft && draft.length <= 4_000 ? draft : undefined
+  }
 
   async createDraft(
     input: ManualDraftInput,
@@ -444,6 +576,7 @@ export class ManualDraftService {
     source: ManualDraftSourceRow
     sourceMessageId: number
     context: ConversationContext
+    generationId?: string
     signal?: AbortSignal
   }): Promise<SupportBrainAnswer | undefined> {
     const rawQuestion = input.source.source_content?.trim() ?? ''
@@ -476,6 +609,7 @@ export class ManualDraftService {
         this.dependencies.pseudonymizationKey,
         input.tenant.accountId,
         input.sourceMessageId,
+        input.generationId,
       ),
       question,
       history: input.context.turns.map(
@@ -505,9 +639,10 @@ export function manualReviewRequestId(
   pseudonymizationKey: string,
   accountId: number,
   messageId: number,
+  generationId?: string,
 ): string {
   const digest = createHmac('sha256', pseudonymizationKey)
-    .update(`${MANUAL_REVIEW_REQUEST_DOMAIN}\0${accountId}\0${messageId}`)
+    .update(`${MANUAL_REVIEW_REQUEST_DOMAIN}\0${accountId}\0${messageId}${generationId ? `\0${generationId}` : ''}`)
     .digest()
   digest[6] = (digest[6]! & 0x0f) | 0x50
   digest[8] = (digest[8]! & 0x3f) | 0x80
@@ -593,4 +728,19 @@ function brainSources(answer: SupportBrainAnswer): string {
     if (!references.includes(reference)) references.push(reference)
   }
   return references.join(', ') || 'keine'
+}
+
+function noteAttribute(alias: string, key: string): string {
+  return `(CASE WHEN json_typeof(${alias}.content_attributes) = 'string' THEN (${alias}.content_attributes #>> '{}')::json ->> '${key}' ELSE ${alias}.content_attributes ->> '${key}' END)`
+}
+function regenerationProposalKey(tenant: TenantConfig, input: RegenerateDraftInput): string {
+  return `${manualDraftProposalKey(tenant, input.conversationId)}:regenerate:${input.generationId}`
+}
+function matchesRegeneration(proposal: ManualDraftProposal, input: RegenerateDraftInput, route: SupportRoute, original: string): boolean {
+  return proposal.sourceMessageId === input.questionMessageId && proposal.regeneration?.generationId === input.generationId &&
+    proposal.regeneration.draftMessageId === input.draftMessageId && proposal.regeneration.expectedDraft === original &&
+    proposal.productTenant === route.tenant && proposal.channel === route.channel
+}
+function previewResult(proposal: ManualDraftProposal): DraftPreviewResult {
+  return { status: 'preview', generationId: proposal.regeneration!.generationId, previousDraft: redactConversationText(proposal.regeneration!.expectedDraft), draft: proposal.draft }
 }

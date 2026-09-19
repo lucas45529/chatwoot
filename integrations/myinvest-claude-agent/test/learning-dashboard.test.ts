@@ -19,12 +19,13 @@ function dashboard(pathname = '/app/accounts/101/inbox/17/conversations/77') {
     saveDraft() {}, isPrivate: false, isEditorDisabled: false, replyType: 'REPLY', message: correction,
     currentChat: { id: 77, messages: [{ id: 61, private: true, message_type: 1 as number | string, sender: { type: 'agent_bot' }, content: `KI-Entwurf\n\nAntwortvorschlag:\n${original}\nQuellen: Hilfe`, content_attributes: { myinvest_agent_delivery_id: '55', myinvest_agent_message_kind: 'draft_note' } }] },
   }
-  let click: (() => void) | undefined
-  let button: { disabled: boolean; title: string; textContent: string } | undefined
+  type Element = { dataset: Record<string, string>; disabled?: boolean; title?: string; textContent?: string; click?: () => void }
+  const elements: Element[] = []
+  const learningButton = () => elements.find(element => element.dataset.myinvestLearning)
   const actions = {
     classList: { add() {} },
-    querySelector: (selector: string) => selector === 'button' ? { className: 'token-button' } : button,
-    prepend(value: typeof button) { button = value },
+    querySelector: (selector: string) => selector === 'button' ? { className: 'token-button' } : elements.find(element => selector === '[data-myinvest-learning]' ? element.dataset.myinvestLearning : selector === '[data-myinvest-regenerate]' ? element.dataset.myinvestRegenerate : element.dataset.myinvestDraftStatus),
+    prepend(value: Element) { elements.push(value) },
   }
   const box = {
     myinvestSupportReplyBox: {
@@ -49,11 +50,11 @@ function dashboard(pathname = '/app/accounts/101/inbox/17/conversations/77') {
   const document = {
     querySelector: (selector: string) => selector === '.reply-box' ? box : null,
     addEventListener: (name: string, listener: () => void) => documentListeners.set(name, listener),
-    createElement: () => ({ dataset: {}, addEventListener: (_name: string, listener: () => void) => { click = listener } }),
+    createElement: () => ({ dataset: {}, click: undefined as (() => void) | undefined, addEventListener(_name: string, listener: () => void) { this.click = listener } }),
   }
   runInNewContext(script, { window, document })
   const host = (origin = 'https://www.myinvest-pro.de', source: unknown = parent, data: unknown = { type: 'myinvest-support-learning-host', version: 1 }) => listeners.get('message')?.({ origin, source, data })
-  return { parent, editor, box, host, button: () => button, click: () => click?.(), tick: () => intervals[0]?.(), sync: () => intervals[1]?.(), storage, axios, window }
+  return { parent, editor, box, host, button: learningButton, click: () => learningButton()?.click?.(), tick: () => intervals[0]?.(), sync: () => intervals[1]?.(), storage, axios, window }
 }
 
 describe('embedded draft learning bridge', () => {

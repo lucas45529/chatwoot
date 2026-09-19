@@ -22,6 +22,11 @@ export class ChatwootApiError extends Error {
   }
 }
 
+export interface DraftGenerationProvenance {
+  generationId: string
+  replacesNoteId: number
+}
+
 export interface DraftWriteResult {
   written: boolean
   message: string
@@ -42,12 +47,14 @@ export interface ChatwootPort {
     content: string,
     deliveryId: number,
     kind: PrivateMessageKind,
+    generation?: DraftGenerationProvenance,
   ): Promise<void>
   saveDraft(
     tenant: TenantConfig,
     conversationId: number,
     content: string,
     previousAgentDraft?: string,
+    requirePrevious?: boolean,
   ): Promise<DraftWriteResult>
   setPriority(tenant: TenantConfig, conversationId: number, priority: ConversationPriority): Promise<void>
   /** Ergaenzt Labels, ohne bestehende zu verlieren. */
@@ -96,8 +103,9 @@ export class ChatwootClient implements ChatwootPort {
     content: string,
     deliveryId: number,
     kind: PrivateMessageKind,
+    generation?: DraftGenerationProvenance,
   ): Promise<void> {
-    await this.sendDeliveryMessage(tenant, conversationId, content, deliveryId, kind)
+    await this.sendDeliveryMessage(tenant, conversationId, content, deliveryId, kind, generation)
   }
 
   async saveDraft(
@@ -105,6 +113,7 @@ export class ChatwootClient implements ChatwootPort {
     conversationId: number,
     content: string,
     previousAgentDraft?: string,
+    requirePrevious = false,
   ): Promise<DraftWriteResult> {
     const path = `/api/v1/accounts/${tenant.accountId}/conversations/${conversationId}/draft_messages`
     const current = asObject(
@@ -118,6 +127,7 @@ export class ChatwootClient implements ChatwootPort {
         ? current.message
         : undefined
     const hasCurrentDraft = currentMessage !== undefined
+    if (requirePrevious && currentMessage !== previousAgentDraft) return { written: false, message: currentMessage ?? '' }
     if (
       currentMessage &&
       currentMessage !== previousAgentDraft
@@ -217,6 +227,7 @@ export class ChatwootClient implements ChatwootPort {
     content: string,
     deliveryId: number,
     kind: DeliveryMessageKind,
+    generation?: DraftGenerationProvenance,
   ): Promise<void> {
     if (
       await this.deliveryStore.exists({
@@ -224,6 +235,7 @@ export class ChatwootClient implements ChatwootPort {
         conversationDisplayId: conversationId,
         deliveryId,
         kind,
+        ...(generation ? { generationId: generation.generationId } : {}),
       })
     ) {
       return
@@ -235,6 +247,7 @@ export class ChatwootClient implements ChatwootPort {
       content_attributes: {
         myinvest_agent_delivery_id: String(deliveryId),
         myinvest_agent_message_kind: kind,
+        ...(generation ? { myinvest_agent_generation_id: generation.generationId, myinvest_agent_replaces_note_id: String(generation.replacesNoteId) } : {}),
       },
     })
   }

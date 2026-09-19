@@ -10,8 +10,10 @@ afterEach(async () => { await new Promise<void>(resolve => server ? server.close
 async function endpoint() {
   const createDraft = vi.fn().mockResolvedValue({ status: 'ready' })
   const claim = vi.fn().mockResolvedValue(true)
+  const previewDraft = vi.fn().mockResolvedValue({ status: 'preview', generationId: '5360ea90-7d1a-4055-9271-1d3b10386a81', previousDraft: 'Alt', draft: 'Neu' })
+  const applyDraft = vi.fn().mockResolvedValue({ status: 'ready' })
   const app = express()
-  app.post('/draft', express.raw({ type: 'application/json', limit: '2kb' }), manualDraftHandler({ secret: 'test-only-draft-secret-at-least-32-characters', claim, createDraft }))
+  app.post('/draft', express.raw({ type: 'application/json', limit: '2kb' }), manualDraftHandler({ secret: 'test-only-draft-secret-at-least-32-characters', claim, createDraft, previewDraft, applyDraft }))
   server = app.listen(0, '127.0.0.1')
   await new Promise<void>(resolve => server!.once('listening', resolve))
   const address = server.address()
@@ -21,7 +23,7 @@ async function endpoint() {
     const signature = createHmac('sha256', 'test-only-draft-secret-at-least-32-characters').update(`myinvest-support-learning/v1\0${timestamp}.${requestId}.${body}`).digest('hex')
     return fetch(`http://127.0.0.1:${address.port}/draft`, { method: 'POST', headers: { 'content-type': contentType, 'x-support-timestamp': timestamp, 'x-support-request-id': requestId, 'x-support-signature': signatureValid ? signature : '0'.repeat(64) }, body })
   }
-  return { createDraft, claim, post }
+  return { createDraft, previewDraft, applyDraft, claim, post }
 }
 
 describe('signed draft HTTP boundary', () => {
@@ -51,4 +53,18 @@ describe('signed draft HTTP boundary', () => {
     const response = await api.post(JSON.stringify({ action: 'draft', accountId: 101, conversationId: 77 }))
     expect(response.status).toBe(503); expect(await response.json()).toEqual({ error: 'draft_unavailable' })
   })
+})
+
+
+it('dispatches signed preview and apply commands without allowing browser answer text', async () => {
+  const api = await endpoint()
+  const input = { accountId: 101, conversationId: 77, questionMessageId: 243, draftMessageId: 250, generationId: '5360ea90-7d1a-4055-9271-1d3b10386a81' }
+  const preview = await api.post(JSON.stringify({ action: 'draft_preview', ...input }))
+  expect(await preview.json()).toEqual({ status: 'preview', generationId: input.generationId, previousDraft: 'Alt', draft: 'Neu' })
+  expect(api.previewDraft).toHaveBeenCalledWith(input, expect.any(AbortSignal))
+  expect((await api.post(JSON.stringify({ action: 'draft_apply', ...input }))).status).toBe(200)
+  expect(api.applyDraft).toHaveBeenCalledWith(input, expect.any(AbortSignal))
+  expect((await api.post(JSON.stringify({ action: 'draft_apply', ...input, draft: 'Injected' }))).status).toBe(422)
+  expect((await api.post(JSON.stringify({ action: 'draft_preview', ...input }), false)).status).toBe(401)
+  expect(api.createDraft).not.toHaveBeenCalled()
 })

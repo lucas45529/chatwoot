@@ -20,6 +20,7 @@ export interface ChatwootDeliveryStore {
     conversationDisplayId: number
     deliveryId: number
     kind: DeliveryMessageKind
+    generationId?: string
   }): Promise<boolean>
 }
 
@@ -73,6 +74,7 @@ export class PostgresChatwootDeliveryStore
     conversationDisplayId: number
     deliveryId: number
     kind: DeliveryMessageKind
+    generationId?: string
   }): Promise<boolean> {
     const result = await this.database.query<{ exists: boolean }>(
       `SELECT EXISTS(
@@ -89,8 +91,11 @@ export class PostgresChatwootDeliveryStore
             AND CASE WHEN json_typeof(message.content_attributes) = 'string'
                      THEN (message.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
                      ELSE message.content_attributes ->> 'myinvest_agent_message_kind' END = $4
+             ${input.generationId ? `AND CASE WHEN json_typeof(message.content_attributes) = 'string'
+                     THEN (message.content_attributes #>> '{}')::json ->> 'myinvest_agent_generation_id'
+                     ELSE message.content_attributes ->> 'myinvest_agent_generation_id' END = $5` : ''}
        ) AS exists`,
-      [input.accountId, input.conversationDisplayId, String(input.deliveryId), input.kind],
+      [input.accountId, input.conversationDisplayId, String(input.deliveryId), input.kind, ...(input.generationId ? [input.generationId] : [])],
     )
     return result.rows[0]?.exists === true
   }

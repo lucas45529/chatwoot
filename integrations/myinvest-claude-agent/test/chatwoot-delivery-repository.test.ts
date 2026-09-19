@@ -246,3 +246,11 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     )
   })
 })
+
+it('scopes regenerated delivery deduplication to its generation while preserving legacy queries', async () => {
+  const query = vi.fn().mockResolvedValue({ rows: [{ exists: true }] })
+  const store = new PostgresChatwootDeliveryStore({ query }, PSEUDONYMIZATION_KEY)
+  await store.exists({ accountId: 101, conversationDisplayId: 77, deliveryId: 243, kind: 'draft_note', generationId: '5360ea90-7d1a-4055-9271-1d3b10386a81' })
+  expect(query.mock.calls[0]![0]).toContain('myinvest_agent_generation_id')
+  expect(query.mock.calls[0]![1]).toEqual([101, 77, '243', 'draft_note', '5360ea90-7d1a-4055-9271-1d3b10386a81'])
+})

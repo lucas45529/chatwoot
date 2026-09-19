@@ -57,6 +57,7 @@ class Myinvest::SupportExperience
         ]);
         let learningHost = null;
         let pendingDraft = null;
+        let pendingRegeneration = null;
         const attemptedDrafts = new Set();
         const currentEditor = (box = document.querySelector('.reply-box')) => {
           const bridge = box?.myinvestSupportReplyBox;
@@ -79,7 +80,7 @@ class Myinvest::SupportExperience
         };
         const draftButtonDisabled = () => {
           const current = currentConversation();
-          return Boolean(pendingDraft) || !current || current.editor.isPrivate ||
+          return Boolean(pendingDraft || pendingRegeneration) || !current || current.editor.isPrivate ||
             current.editor.isEditorDisabled || current.editor.replyType !== 'REPLY';
         };
         const draftStatus = (text) => {
@@ -100,7 +101,7 @@ class Myinvest::SupportExperience
         };
         const requestDraft = (automatic = false) => {
           const current = currentConversation();
-          if (!learningHost || !current || pendingDraft || !window.crypto?.randomUUID) return;
+          if (!learningHost || !current || pendingDraft || pendingRegeneration || !window.crypto?.randomUUID) return;
           const { accountId, conversationId, editor } = current;
           if (editor.isPrivate || editor.isEditorDisabled || editor.replyType !== 'REPLY') return;
           if (hasEditorChanges(editor)) {
@@ -131,6 +132,53 @@ class Myinvest::SupportExperience
           const body = note.slice(start + marker.length);
           const end = Math.max(body.lastIndexOf('\\nQuellen:'), body.lastIndexOf('\\nGrundlage:'));
           return end < 0 ? '' : body.slice(0, end).trim();
+        };
+        const regenerationIntent = () => {
+          const current = currentConversation();
+          if (!learningHost || !current || pendingDraft || pendingRegeneration || !window.crypto?.randomUUID) return null;
+          const { accountId, conversationId, editor } = current;
+          if (editor.isPrivate || editor.isEditorDisabled || editor.replyType !== 'REPLY') return null;
+          const notes = [...(editor.currentChat.messages || [])].sort((a, b) => b.id - a.id);
+          for (const note of notes) {
+            if (!note.private || (note.sender?.type !== 'agent_bot' && note.sender_type !== 'AgentBot')) continue;
+            let attributes = note.content_attributes;
+            if (typeof attributes === 'string') {
+              try { attributes = JSON.parse(attributes); } catch (error) { continue; }
+            }
+            if (!['draft_note', 'clarify_draft_note', 'handoff_note'].includes(attributes?.myinvest_agent_message_kind)) continue;
+            const previousDraft = originalDraft(note.content);
+            const questionMessageId = Number(attributes.myinvest_agent_delivery_id);
+            const draftMessageId = Number(note.id);
+            if (!previousDraft || hasEditorChanges(editor, previousDraft) ||
+              ![accountId, conversationId, questionMessageId, draftMessageId].every(value => Number.isSafeInteger(value) && value > 0)) return null;
+            if (notes.some(message => message.private === false &&
+              [0, 1, 'incoming', 'outgoing'].includes(message.message_type) && Number(message.id) > questionMessageId)) return null;
+            return { accountId, conversationId, questionMessageId, draftMessageId, previousDraft };
+          }
+          return null;
+        };
+        const synchronizeRegeneration = async (snapshot) => {
+          const unchanged = () => {
+            const current = currentConversation();
+            const local = readDrafts()[`draft-${snapshot.conversationId}-REPLY`];
+            return current?.accountId === snapshot.accountId && current?.conversationId === snapshot.conversationId &&
+              !current.editor.isPrivate && !current.editor.isEditorDisabled && current.editor.replyType === 'REPLY' &&
+              !hasEditorChanges(current.editor, snapshot.previousDraft) &&
+              (typeof local !== 'string' || local === snapshot.previousDraft || local === current.editor.normalizeDraft(snapshot.previousDraft));
+          };
+          try {
+            if (!unchanged()) return;
+            const response = await request(`/api/v1/accounts/${snapshot.accountId}/conversations/${snapshot.conversationId}/draft_messages`);
+            if (!unchanged() || !response.data?.has_draft || typeof response.data.message !== 'string') return;
+            const text = response.data.message;
+            if (await writeDraftToStore(`draft-${snapshot.conversationId}-REPLY`, text)) {
+              window.localStorage.setItem(`myinvest-synced-draft-${snapshot.accountId}-${snapshot.conversationId}`, text);
+            }
+          } catch (error) {
+            draftStatus('Entwurf bitte erneut öffnen.');
+          } finally {
+            if (pendingRegeneration?.generationId === snapshot.generationId) pendingRegeneration = null;
+          }
         };
         const learningIntent = (box) => {
           const route = window.location.pathname.match(routePattern);
@@ -185,6 +233,28 @@ class Myinvest::SupportExperience
             }
             nativeAi.disabled = draftButtonDisabled();
           }
+          const visible = currentConversation();
+          if (pendingRegeneration && (visible?.accountId !== pendingRegeneration.accountId || visible?.conversationId !== pendingRegeneration.conversationId)) pendingRegeneration = null;
+          let regenerate = actions.querySelector('[data-myinvest-regenerate]');
+          if (!regenerate) {
+            regenerate = document.createElement('button');
+            regenerate.type = 'button';
+            regenerate.dataset.myinvestRegenerate = '1';
+            regenerate.className = actions.querySelector('button')?.className || '';
+            regenerate.textContent = 'Mit aktuellem Wissen neu erstellen';
+            regenerate.addEventListener('click', () => {
+              const intent = regenerationIntent();
+              if (!intent) return;
+              const generationId = window.crypto.randomUUID();
+              pendingRegeneration = { ...intent, generationId };
+              const { previousDraft, ...source } = intent;
+              window.parent.postMessage({ type: 'myinvest-support-regenerate', version: 1, ...source, generationId }, learningHost);
+              draftStatus('Neue Vorschau wird vorbereitet…');
+            });
+            actions.prepend(regenerate);
+          }
+          regenerate.disabled = !regenerationIntent();
+          regenerate.title = regenerate.disabled ? 'Nur einen unveränderten KI-Entwurf zur aktuellen Anfrage neu erstellen.' : 'Neue Antwort vergleichen und bewusst übernehmen';
           let button = actions.querySelector('[data-myinvest-learning]');
           if (!button) {
             actions.classList.add('gap-2');
@@ -211,6 +281,15 @@ class Myinvest::SupportExperience
           if (Object.keys(data).length === 2 && data.type === 'myinvest-support-learning-host') {
             learningHost = event.origin;
             updateLearningButton();
+            return;
+          }
+          if (pendingRegeneration && event.origin === learningHost && Object.keys(data).length === 4 && data.type === 'myinvest-support-regenerate-result' &&
+            data.generationId === pendingRegeneration?.generationId && ['ready', 'existing', 'preserved', 'already_answered', 'unavailable', 'cancelled'].includes(data.status)) {
+            const snapshot = pendingRegeneration;
+            if (['ready', 'existing'].includes(data.status)) void synchronizeRegeneration(snapshot);
+            else pendingRegeneration = null;
+            draftStatus(data.status === 'cancelled' ? '' : data.status === 'preserved' ? 'Dein Entwurf bleibt erhalten.' :
+              ['ready', 'existing'].includes(data.status) ? 'Neuer Entwurf bereit. Vor dem Senden prüfen.' : 'Die Anfrage hat sich geändert. Bitte erneut prüfen.');
             return;
           }
           if (event.origin !== learningHost || Object.keys(data).length !== 4 || data.type !== 'myinvest-support-draft-result' ||
@@ -240,7 +319,7 @@ class Myinvest::SupportExperience
         document.addEventListener('input', updateLearningButton);
         window.setInterval(updateLearningButton, 300);
         const syncDraft = async () => {
-          if (syncing || pendingDraft || !window.axios) return;
+          if (syncing || pendingDraft || pendingRegeneration || !window.axios) return;
           const route = window.location.pathname.match(routePattern);
           if (!route) return;
           syncing = true;

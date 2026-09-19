@@ -1,10 +1,12 @@
 import type { RequestHandler } from 'express'
 import { authorizeLearningRequest, LearningRequestError } from './learning/review-auth.js'
-import { manualDraftRequestSchema, type ManualDraftInput, type ManualDraftResult } from './manual-draft.js'
+import { manualDraftRequestSchema, type ManualDraftInput, type ManualDraftResult, type RegenerateDraftInput, type DraftPreviewResult } from './manual-draft.js'
 
 interface ManualDraftHttpDependencies {
   secret: string
   claim(key: string, ttl: number): Promise<boolean>
+  previewDraft?(input: RegenerateDraftInput, signal: AbortSignal): Promise<DraftPreviewResult>
+  applyDraft?(input: RegenerateDraftInput, signal: AbortSignal): Promise<ManualDraftResult>
   createDraft(input: ManualDraftInput, signal: AbortSignal): Promise<ManualDraftResult>
 }
 
@@ -35,7 +37,14 @@ export function manualDraftHandler(dependencies: ManualDraftHttpDependencies): R
       const command = manualDraftRequestSchema.safeParse(decoded)
       if (!command.success) throw new LearningRequestError(422, 'invalid_draft_command')
       controller.signal.throwIfAborted()
-      const result = await dependencies.createDraft(command.data, controller.signal)
+      let result: DraftPreviewResult
+      if (command.data.action === 'draft') result = await dependencies.createDraft(command.data, controller.signal)
+      else {
+        const { action, ...input } = command.data
+        const operation = action === 'draft_preview' ? dependencies.previewDraft : dependencies.applyDraft
+        if (!operation) throw new LearningRequestError(503, 'draft_unavailable')
+        result = await operation(input, controller.signal)
+      }
       controller.signal.throwIfAborted()
       response.json(result)
     } catch (error) {

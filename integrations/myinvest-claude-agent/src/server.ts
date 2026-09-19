@@ -175,6 +175,14 @@ const manualDraft = new ManualDraftService({
 app.post('/draft', express.raw({ type: 'application/json', limit: '2kb' }), manualDraftHandler({
   secret: config.SUPPORT_CHATWOOT_SSO_SECRET,
   claim: async (key, ttl) => await redis.set(key, '1', 'EX', ttl, 'NX') === 'OK',
+  previewDraft: async (input, signal) => {
+    const tenant = config.tenants.requireByAccountId(input.accountId)
+    return conversationLock.runExclusive(tenant.key, input.conversationId, () => manualDraft.previewDraft(input, signal))
+  },
+  applyDraft: async (input, signal) => {
+    const tenant = config.tenants.requireByAccountId(input.accountId)
+    return conversationLock.runExclusive(tenant.key, input.conversationId, () => manualDraft.applyDraft(input, signal))
+  },
   createDraft: async (input, signal) => {
     const tenant = config.tenants.requireByAccountId(input.accountId)
     return conversationLock.runExclusive(tenant.key, input.conversationId, () => manualDraft.createDraft(input, signal))

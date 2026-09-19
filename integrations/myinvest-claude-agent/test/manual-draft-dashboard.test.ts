@@ -15,9 +15,9 @@ function dashboard() {
   const timeouts: Array<() => unknown> = []
   const storage = new Map<string, string>()
   const editor = { saveDraft() {}, isPrivate: false, isEditorDisabled: false, replyType: 'REPLY', message: '', currentChat: { id: 77, messages: [{ id: 55, private: false, message_type: 0 }] } }
-  const elements: Array<{ dataset: Record<string, string>; textContent?: string }> = []
+  const elements: Array<{ dataset: Record<string, string>; textContent?: string; disabled?: boolean; click?: () => void }> = []
   const native = { disabled: false, title: '', setAttribute: vi.fn(), querySelector: (selector: string) => selector === '.i-ph-sparkle-fill' ? {} : null }
-  const actions = { classList: { add() {} }, querySelector: (selector: string) => selector === 'button' ? { className: 'token-button' } : elements.find(el => selector === '[data-myinvest-learning]' ? el.dataset.myinvestLearning : el.dataset.myinvestDraftStatus), prepend: (el: typeof elements[number]) => elements.push(el) }
+  const actions = { classList: { add() {} }, querySelector: (selector: string) => selector === 'button' ? { className: 'token-button' } : elements.find(el => selector === '[data-myinvest-learning]' ? el.dataset.myinvestLearning : selector === '[data-myinvest-regenerate]' ? el.dataset.myinvestRegenerate : el.dataset.myinvestDraftStatus), prepend: (el: typeof elements[number]) => elements.push(el) }
   const box = {
     myinvestSupportReplyBox: {
       read: () => ({
@@ -42,12 +42,12 @@ function dashboard() {
   const document = {
     querySelector: (selector: string) => selector === '.reply-box' ? box : selector === '#app' ? { __vue_app__: { config: { globalProperties: { $store: { dispatch } } } } } : null,
     addEventListener: (name: string, listener: (event: unknown) => void) => documentListeners.set(name, listener),
-    createElement: () => ({ dataset: {}, addEventListener() {}, setAttribute() {} }),
+    createElement: () => ({ dataset: {}, click: undefined as (() => void) | undefined, addEventListener(_name: string, handler: () => void) { this.click = handler }, setAttribute() {} }),
   }
   runInNewContext(script, { window, document })
   const message = (data: unknown, origin = 'https://www.myinvest-pro.de', source: unknown = parent) => listeners.get('message')?.({ data, origin, source })
   const click = () => { const event = { target: { closest: () => native }, preventDefault: vi.fn(), stopImmediatePropagation: vi.fn() }; documentListeners.get('click')?.(event); return event }
-  return { parent, editor, box, window, axios, storage, native, message, click, host: () => message({ type: 'myinvest-support-learning-host', version: 1 }), sync: () => intervals[1]?.(), tick: () => intervals[0]?.(), timeout: () => timeouts.at(-1)?.(), status: () => elements.find(el => el.dataset.myinvestDraftStatus)?.textContent }
+  return { parent, editor, box, window, axios, storage, native, message, click, regenerate: () => elements.find(el => el.dataset.myinvestRegenerate), host: () => message({ type: 'myinvest-support-learning-host', version: 1 }), sync: () => intervals[1]?.(), tick: () => intervals[0]?.(), timeout: () => timeouts.at(-1)?.(), status: () => elements.find(el => el.dataset.myinvestDraftStatus)?.textContent }
 }
 
 describe('MyInvest draft composer bridge', () => {
@@ -127,5 +127,65 @@ describe('MyInvest draft composer bridge', () => {
       expect(ui.editor.message).toBe(edited ? 'Meine Korrektur' : '')
       expect(ui.window.location.reload).not.toHaveBeenCalled()
     }
+  })
+})
+
+
+describe('explicit regeneration composer bridge', () => {
+  it('ignores a trusted but unsolicited generation result', () => {
+    const ui = dashboard(); ui.host()
+    ui.message({ type: 'myinvest-support-regenerate-result', version: 1, generationId: undefined, status: 'preserved' })
+    expect(ui.status()).toBeUndefined()
+  })
+  function ready() {
+    const ui = dashboard()
+    Object.assign(ui.editor.currentChat, { messages: [
+      { id: 55, private: false, message_type: 0 },
+      { id: 60, private: true, message_type: 1, sender: { type: 'agent_bot' }, content_attributes: { myinvest_agent_delivery_id: '55', myinvest_agent_message_kind: 'draft_note' }, content: 'KI-Entwurf\n\nAntwortvorschlag:\nAlter KI-Entwurf\nQuellen: Hilfe' },
+    ] })
+    ui.editor.message = 'Alter KI-Entwurf'
+    ui.storage.set('draftMessages', JSON.stringify({ 'draft-77-REPLY': 'Alter KI-Entwurf' }))
+    ui.storage.set('myinvest-synced-draft-101-77', 'Alter KI-Entwurf')
+    ui.host(); ui.tick()
+    return ui
+  }
+  it('opens an explicit source-bound preview without removing or transmitting composer text', async () => {
+    const ui = ready()
+    expect(ui.regenerate()?.textContent).toBe('Mit aktuellem Wissen neu erstellen')
+    ui.regenerate()?.click?.()
+    expect(ui.parent.postMessage).toHaveBeenCalledWith({ type: 'myinvest-support-regenerate', version: 1, accountId: 101, conversationId: 77, questionMessageId: 55, draftMessageId: 60, generationId: requestId }, 'https://www.myinvest-pro.de')
+    expect(ui.editor.message).toBe('Alter KI-Entwurf')
+    await ui.sync(); expect(ui.axios).not.toHaveBeenCalled()
+  })
+  it('synchronizes only after a matching trusted apply result and preserves local typing', async () => {
+    for (const edited of [false, true]) {
+      const ui = ready(); ui.regenerate()?.click?.()
+      if (edited) ui.editor.message = 'Meine Änderung'
+      const result = { type: 'myinvest-support-regenerate-result', version: 1, generationId: requestId, status: 'ready' }
+      ui.axios.mockResolvedValue({ data: { has_draft: true, message: 'Neuer KI-Entwurf' } })
+      ui.message(result, 'https://evil.example'); expect(ui.axios).not.toHaveBeenCalled()
+      ui.message({ ...result, generationId: 'stale' }); expect(ui.axios).not.toHaveBeenCalled()
+      ui.message(result)
+      if (!edited) await vi.waitFor(() => expect(ui.editor.message).toBe('Neuer KI-Entwurf'))
+      else expect(ui.editor.message).toBe('Meine Änderung')
+    }
+  })
+  it('disables regeneration for edited drafts, private mode, or a newer customer question', () => {
+    for (const change of ['edited', 'private', 'new_question']) {
+      const ui = ready()
+      if (change === 'edited') ui.editor.message = 'Eigene Antwort'
+      if (change === 'private') ui.editor.isPrivate = true
+      if (change === 'new_question') ui.editor.currentChat.messages.push({ id: 70, private: false, message_type: 0 })
+      ui.tick(); expect(ui.regenerate()?.disabled).toBe(true)
+      ui.regenerate()?.click?.(); expect(ui.parent.postMessage).not.toHaveBeenCalled()
+    }
+  })
+  it('keeps the old draft when preview is cancelled and ignores results after navigation', () => {
+    const ui = ready(); ui.regenerate()?.click?.()
+    ui.message({ type: 'myinvest-support-regenerate-result', version: 1, generationId: requestId, status: 'cancelled' })
+    expect(ui.editor.message).toBe('Alter KI-Entwurf'); expect(ui.axios).not.toHaveBeenCalled()
+    ui.regenerate()?.click?.(); ui.editor.currentChat.id = 78; ui.window.location.pathname = '/app/accounts/101/conversations/78'
+    ui.message({ type: 'myinvest-support-regenerate-result', version: 1, generationId: requestId, status: 'ready' })
+    expect(ui.axios).not.toHaveBeenCalled()
   })
 })
