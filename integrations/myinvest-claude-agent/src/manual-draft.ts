@@ -113,6 +113,7 @@ interface ManualDraftSourceRow extends Record<string, unknown> {
   source_message_id: string | null
   source_content: string | null
   source_content_type: number | null
+  source_created_at?: Date | string
   human_replied_after_inbound: boolean
   draft_note_exists: boolean
 }
@@ -502,6 +503,7 @@ export class ManualDraftService {
               incoming.id::text AS source_message_id,
               incoming.content AS source_content,
               incoming.content_type AS source_content_type,
+              incoming.created_at AS source_created_at,
               incoming.source_tenant,
               COALESCE(
                 (last_human.created_at, last_human.id) >
@@ -604,6 +606,8 @@ export class ManualDraftService {
     const question = redactConversationText(rawQuestion)
     if (!question) return undefined
     input.signal?.throwIfAborted()
+    const sourceTime = input.source.source_created_at
+    const questionReceivedAt = sourceTime instanceof Date ? sourceTime.toISOString() : sourceTime ? new Date(sourceTime).toISOString() : undefined
     return this.dependencies.brain.answer({
       requestId: manualReviewRequestId(
         this.dependencies.pseudonymizationKey,
@@ -612,6 +616,7 @@ export class ManualDraftService {
         input.generationId,
       ),
       question,
+      ...(questionReceivedAt ? { questionReceivedAt } : {}),
       history: input.context.turns.map(
         (turn): SupportBrainHistoryTurn => ({
           role: turn.role === 'customer' ? 'user' : 'agent',

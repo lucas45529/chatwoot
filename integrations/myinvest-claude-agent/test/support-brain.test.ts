@@ -458,3 +458,10 @@ it('transports known contact name and phone only inside the signed contact envel
   expect(body.contact).toEqual({ name: 'Test Kontakt', phone: '+4917112345678' })
   expect(body.history).toEqual([])
 })
+
+it('signs and forwards the original question timestamp independently of the current request time', async () => {
+  const fetcher = respondingFetch(jsonResponse(brainPayload()))
+  await clientWith(fetcher).answer(brainRequest({ questionReceivedAt: '2026-08-01T08:30:00.000Z' }))
+  const body = JSON.parse(String(fetcher.mock.calls[0]![1]?.body))
+  expect(body.questionReceivedAt).toBe('2026-08-01T08:30:00.000Z')
+})

@@ -128,3 +128,12 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('validates exact original not
     expect(f.saveDraft).toHaveBeenCalledOnce()
   } finally { await client.end() }
 })
+
+it('uses the database question timestamp for regeneration, never a browser supplied date', async () => {
+  const f = fixture()
+  Object.assign(f.source, { source_created_at: new Date('2026-08-01T08:30:00.000Z') })
+  await expect(f.service.previewDraft(input)).resolves.toMatchObject({ status: 'preview' })
+  expect(f.brain.answer).toHaveBeenCalledWith(expect.objectContaining({ questionReceivedAt: '2026-08-01T08:30:00.000Z' }), undefined)
+  expect(f.query.mock.calls[0]?.[0]).toContain('incoming.created_at AS source_created_at')
+  expect(manualDraftRequestSchema.safeParse({ action: 'draft_preview', ...input, questionReceivedAt: '2026-09-19T00:00:00.000Z' }).success).toBe(false)
+})

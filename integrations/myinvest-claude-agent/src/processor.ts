@@ -216,6 +216,7 @@ export class MessageProcessor {
             payload.id,
           ),
           question,
+          questionReceivedAt: payload.created_at,
           history: conversationContext.turns.map(
             (turn): SupportBrainHistoryTurn => ({
               role: turn.role === 'customer' ? 'user' : 'agent',

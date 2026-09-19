@@ -21,6 +21,8 @@ export interface SupportBrainHistoryTurn {
 export interface SupportBrainRequest {
   requestId: string
   question: string
+  /** Verified source timestamp for interpreting historical relative dates. */
+  questionReceivedAt?: string
   history: readonly SupportBrainHistoryTurn[]
   tenant: TenantKey
   channel: SupportChannel
@@ -143,6 +145,7 @@ export class SupportBrainClient implements SupportBrainPort {
     // signierte Body sein.
     const rawBody = JSON.stringify({
       question: request.question.slice(0, MAX_QUESTION_CHARS),
+      ...(request.questionReceivedAt ? { questionReceivedAt: z.string().datetime().parse(request.questionReceivedAt) } : {}),
       history: request.history.slice(-MAX_HISTORY_TURNS).map((turn) => ({
         role: turn.role,
         text: turn.text.slice(0, MAX_HISTORY_TURN_CHARS),

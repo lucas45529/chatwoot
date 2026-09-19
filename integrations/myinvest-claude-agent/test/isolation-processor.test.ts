@@ -400,6 +400,7 @@ describe('MessageProcessor', () => {
     expect(thread.answer).toHaveBeenCalledWith({
       requestId: supportBrainRequestId(PSEUDONYMIZATION_KEY, 101, 55),
       question: 'Die möchte ich gerne haben :)',
+      questionReceivedAt: '2026-08-16T18:30:44.414Z',
       history: [
         { role: 'agent', text: 'Danke für deine Nachricht. Ein Kollege meldet sich.' },
         { role: 'agent', text: 'Hallo, wie können wir helfen?' },
@@ -1171,4 +1172,10 @@ it('preserves a newly requested numeric reschedule date while redacting contact 
   const flow = setup()
   await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Bitte auf den 22.09.2026 um 15:30 Uhr verschieben. Meine Rufnummer ist +49 171 12345678.' }) })
   expect(flow.answer).toHaveBeenCalledWith(expect.objectContaining({ question: 'Bitte auf den 22.09.2026 um 15:30 Uhr verschieben. Meine Rufnummer ist [TELEFON/NUMMER]' }))
+})
+
+it('forwards the original signed webhook timestamp for relative dates', async () => {
+  const flow = setup()
+  await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Kannst du mir morgen beim Zugang helfen?', created_at: '2026-08-01T08:30:00.000Z' }) })
+  expect(flow.answer).toHaveBeenCalledWith(expect.objectContaining({ questionReceivedAt: '2026-08-01T08:30:00.000Z' }))
 })
