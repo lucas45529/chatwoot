@@ -191,3 +191,44 @@ describe('live generalized German appointment vocabulary', () => {
     expect(matchReviewedExamples(query, [row])).toEqual([])
   })
 })
+
+describe('bounded phone-after-Zoom concept retrieval', () => {
+  const row = { ...fixture(),
+    question: "Nachdem für ein Gespräch bereits ein fester Termin vereinbart und der entsprechende Zoom-Link gesendet wurde, schickt der Kontakt im Chat lediglich seine Telefonnummer: 'Hi, das wäre noch meine Rufnummer.'",
+    answer: 'Danke dir für deine Telefonnummer! Dein Termin findet wie vereinbart per Zoom statt. Den zugehörigen Zoom-Link findest du weiter oben in unserem Chatverlauf.',
+  }
+  const similar = "Ein Interessent hat bereits die Terminbestätigung samt Zoom-Link für das Gespräch erhalten und sendet anschließend unaufgefordert seine Handynummer: 'Hier ist meine Nummer, falls ihr mich anrufen wollt.'"
+  const history = 'Gesprächskontext: Fabian freut sich auf den Call mit dir. Montag um 14:00 Uhr. Zoom: [ZOOM-LINK].'
+  it.each([
+    `Hi, das wäre meine Rufnummer [TELEFON]. ${history}`,
+    similar,
+  ])('retrieves actual UI phrasings independently of narrative vocabulary: %s', (query) => {
+    expect(matchReviewedExamples(query, [row])).toHaveLength(1)
+  })
+  it('matches the new similar question to the previous reviewed reconfirmation too', () => {
+    expect(matchReviewedExamples(similar, [{ ...row, question: 'Ein Termin per Zoom wurde bereits verbindlich bestätigt und der Link dazu bereitgestellt. Der Kunde sendet daraufhin lediglich seine Telefonnummer. Wie sollte darauf reagiert werden?' }])).toHaveLength(1)
+  })
+  it.each([
+    'Hier ist meine Telefonnummer.',
+    'Ich möchte die Terminbestätigung per Zoom samt Link erhalten und sende anschließend meine Telefonnummer.',
+    'Ich habe die Terminbestätigung per Zoom samt Link noch nicht erhalten. Hier ist meine Telefonnummer.',
+    'Ich habe noch keine Terminbestätigung per Zoom samt Link erhalten. Hier ist meine Telefonnummer.',
+    'Bitte bestätigt einen Termin per Zoom und sendet mir den Link. Hier ist meine Telefonnummer.',
+    `Ich möchte den Termin per Zoom absagen. Hier ist meine Telefonnummer. ${history}`,
+    `Bitte den Termin telefonisch statt per Zoom durchführen. Hier ist meine Telefonnummer. ${history}`,
+    `Ich möchte lieber telefonisch sprechen, hier ist meine Telefonnummer. ${history}`,
+    `Bitte bucht mir einen neuen Termin, hier ist meine Telefonnummer. ${history}`,
+    `Wo hinterlege ich im CRM die Telefonnummer? ${history}`,
+  ])('rejects a different or merely requested state: %s', (query) => {
+    expect(matchReviewedExamples(query, [row])).toEqual([])
+  })
+  it.each([
+    'Danke für deine Telefonnummer! Ich habe sie gespeichert. Dein Termin bleibt per Zoom bestehen. Den Zoom-Link findest du weiter oben.',
+    'Du kannst in den Einstellungen eine Telefonnummer hinterlegen und einen Zoom-Link speichern.',
+  ])('does not apply the concept fallback to another answer type: %s', (answer) => {
+    expect(matchReviewedExamples(similar, [{ ...row, answer }])).toEqual([])
+  })
+  it('does not change the relevance threshold for unrelated knowledge', () => {
+    expect(matchReviewedExamples('Kontakte exportieren', [{ ...fixture(), question: 'Kontakte exportieren nach Excel und mit benutzerdefinierten Feldern für eine CSV-Datei abgleichen' }])).toEqual([])
+  })
+})

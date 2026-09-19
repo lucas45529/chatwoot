@@ -68,6 +68,45 @@ function searchTerms(question: string): string[] {
   return [...new Set([...normalized, ...Object.entries(TERM_ALIASES).filter(([, term]) => normalized.includes(term)).map(([alias]) => alias)])]
 }
 
+// Completion is assessed from the original clauses, never from lexical aliases.
+// A desire for a confirmation, or a missing confirmation, is not a booked call.
+function hasEstablishedAppointment(text: string): boolean {
+  if (/\b(?:kein\w*|nicht)\b[^.!?]{0,50}\b(?:\w*termin\w*|call|vereinbart\w*|bestätig\w*|gebucht)\b/iu.test(text) ||
+      /\b(?:\w*termin\w*|bestätigung)\b[^.!?]{0,150}\b(?:nicht|nichts|nie|kein\w*)\b[^.!?]{0,50}\b(?:erhalten|bekommen|vereinbart|bestätigt|gebucht)\b/iu.test(text)) return false
+  const completed = text.split(/[.!?\n]/u).some((clause) => {
+    if (/\b(?:bitte|möchte\w*|will|wollen|würde\w*|soll\w*)\b[^.!?]{0,180}\b(?:bestätig\w*|vereinbar\w*|buch\w*|erhalten|bekommen)\b/iu.test(clause)) return false
+    return /\b(?:bestätigt\w*|vereinbart\w*|gebucht)\b/iu.test(clause) ||
+      /\b(?:nach\s+(?:der\s+)?(?:termin)?bestätigung|(?:erhalt|zusendung)\s+der\s+(?:termin)?bestätigung)\b/iu.test(clause) ||
+      /\b(?:hat|habe|haben|hast)\b.{0,100}\b(?:termin)?bestätigung\b.{0,150}\b(?:erhalten|bekommen)\b/iu.test(clause)
+  })
+  const invitation = /\bfreut\s+sich\s+auf\s+(?:den|unseren)\s+(?:call|termin|videocall|meeting)\b/iu.test(text)
+  const scheduled = /\b(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|\d{1,2}:\d{2})\b/iu.test(text)
+  return completed || (invitation && scheduled)
+}
+
+function reconfirmsExistingZoom(answer: string): boolean {
+  return answer.length <= 600 &&
+    /\bdanke\b[^.!?]{0,80}\b(?:telefonnummer|rufnummer|handynummer)\b/iu.test(answer) &&
+    /\btermin\b[^.!?]{0,100}\b(?:vereinbart|bestätigt|bleibt)\b[^.!?]{0,80}\bzoom\b/iu.test(answer) &&
+    /\bzoom[- ]link\b[^.!?]{0,100}\b(?:vorherig\w*|vorig\w*|weiter oben|vorangegangen\w*)\b/iu.test(answer) &&
+    !/\b(?:gespeichert|eingetragen|notiert|hinterlegt|reserviert|umbuchen|anrufen)\b/iu.test(answer)
+}
+
+function phoneSupplementAfterZoom(text: string): boolean {
+  const parts = text.split(/\n?Gesprächskontext:\s*/u)
+  const primary = parts[0] ?? ''
+  const phone = /\b(?:telefonnummer|rufnummer|handynummer|telefon)\b/iu
+  if (!phone.test(primary) || !/\bzoom\b/iu.test(text) || !/\blink(?:s)?\b/iu.test(text) || !hasEstablishedAppointment(text)) return false
+  // Keep factual questions, new bookings and an explicit channel change out of
+  // this narrow acknowledgement situation, even when older history has a call.
+  if (/\b(?:absag\w*|stornier\w*|verschieb\w*|buchen|bucht|buche|vereinbaren)\b/iu.test(primary) ||
+      /\b(?:statt|anstatt|anstelle|lieber|möchte\w*)\b[^.!?]{0,80}\b(?:telefon\w*|anrufen)\b/iu.test(primary) ||
+      /\btelefon\w*\b[^.!?]{0,60}\b(?:statt|anstatt|anstelle)\b/iu.test(primary)) return false
+  if (parts.length > 1) return !/[?]|\b(?:wie|wo|wann|warum|welch\w*|bitte|möchte\w*)\b/iu.test(primary)
+  return /\b(?:nachdem|nachträglich|daraufhin|anschließend|bereits|nach)\b/iu.test(text) &&
+    /\b(?:sendet|schickt|teilt|nennt|send\w*|schick\w*)\b/iu.test(text)
+}
+
 // Candidate coverage keeps a long conversation from diluting a precise situation.
 // Short overlapping fragments (especially phone presence alone) cannot qualify.
 export function matchReviewedExamples(question: string, rows: readonly ReviewCandidate[]): Array<{ id: string; question: string; answer: string }> {
@@ -75,28 +114,18 @@ export function matchReviewedExamples(question: string, rows: readonly ReviewCan
   if (queryTerms.length < 2) return []
   return rows.filter((row) => {
     const candidate = terms(row.question)
-    if (candidate.includes('bestätigt') && /\b(?:kein\w*|nicht)\b[^.!?]{0,50}\b(?:\w*termin\w*|call|vereinbart\w*|bestätig\w*|gebucht)\b/iu.test(question)) return false
-    if (candidate.includes('termin') && candidate.includes('bestätigt')) {
-      // Nouns normalize for retrieval, but asking for a confirmation does not
-      // establish that a booking exists. Require completed state or receipt.
-      const established = /\b(?:bestätigt\w*|vereinbart\w*|gebucht)\b/iu.test(question)
-      const received = /\b(?:nach\s+(?:der\s+)?(?:termin)?bestätigung|(?:erhalt|zusendung)\s+der\s+(?:termin)?bestätigung|(?:termin)?bestätigung\s+(?:bereits\s+)?erhalten)\b/iu.test(question)
-      // A delivered invitation can express an established appointment without
-      // the literal word 'confirmed'. Require both the invitation and a time;
-      // merely asking about a Zoom link or supplying a phone never establishes it.
-      const invitation = /\bfreut\s+sich\s+auf\s+(?:den|unseren)\s+(?:call|termin|videocall|meeting)\b/iu.test(question)
-      const scheduled = /\b(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|\d{1,2}:\d{2})\b/iu.test(question)
-      if (!established && !received && !(invitation && scheduled)) return false
-    }
+    if (candidate.includes('termin') && candidate.includes('bestätigt') && !hasEstablishedAppointment(question)) return false
+    if (reconfirmsExistingZoom(row.answer) && !phoneSupplementAfterZoom(question)) return false
     if (candidate.includes('termin') && /\b(?:absag\w*|stornier\w*|verschieb\w*)\b/iu.test(question) && !/\b(?:absag\w*|stornier\w*|verschieb\w*)\b/iu.test(row.question)) return false
     return true
   }).map((row) => {
     const candidateTerms = new Set(terms(row.question))
     const shared = queryTerms.filter((term) => candidateTerms.has(term)).length
-    return { row, score: shared / candidateTerms.size, shared, candidateTerms }
-  }).filter(({ score, shared, candidateTerms }) => shared >= 2 && score >= 0.75 &&
+    const conceptMatch = reconfirmsExistingZoom(row.answer) && phoneSupplementAfterZoom(row.question) && phoneSupplementAfterZoom(question)
+    return { row, score: conceptMatch ? Math.max(0.75, shared / candidateTerms.size) : shared / candidateTerms.size, shared, candidateTerms, conceptMatch }
+  }).filter(({ score, shared, candidateTerms, conceptMatch }) => conceptMatch || (shared >= 2 && score >= 0.75 &&
     !(shared < 3 && candidateTerms.size > 3) &&
-    queryTerms.some((term) => candidateTerms.has(term) && !/^(?:telefon|telefonnummer|nummer|erhalten|gesendet|angegeben|kontakt|danke|vorhanden)$/.test(term)))
+    queryTerms.some((term) => candidateTerms.has(term) && !/^(?:telefon|telefonnummer|nummer|erhalten|gesendet|angegeben|kontakt|danke|vorhanden)$/.test(term))))
     .sort((a, b) => b.score - a.score)
     .slice(0, 3).map(({ row }) => ({ id: row.id, question: row.question, answer: row.answer }))
 }
