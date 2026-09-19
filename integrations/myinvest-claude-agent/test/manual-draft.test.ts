@@ -745,3 +745,11 @@ describe('ManualDraftService', () => {
     }).success).toBe(false)
   })
 })
+
+it('preserves a newly requested numeric reschedule date in the manual draft path', async () => {
+  const fixture = dependencies()
+  fixture.database.query.mockResolvedValue({ rows: [{ ...sourceRow, source_content: 'Bitte auf den 22.09.2026 um 15:30 Uhr verschieben. Meine Rufnummer ist +49 171 12345678.' }] })
+  const service = new ManualDraftService(fixture.values)
+  await service.createDraft({ accountId: 101, conversationId: 77 })
+  expect(fixture.brain.answer).toHaveBeenCalledWith(expect.objectContaining({ question: 'Bitte auf den 22.09.2026 um 15:30 Uhr verschieben. Meine Rufnummer ist [TELEFON/NUMMER]' }), undefined)
+})

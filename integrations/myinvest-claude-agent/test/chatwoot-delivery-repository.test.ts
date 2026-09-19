@@ -81,6 +81,8 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
             conversation_id: '900',
             contact_id: '4242',
             contact_email: 'kunde@example.de',
+            contact_name: 'Test Kontakt',
+            contact_phone: '+4917112345678',
             cached_label_list: 'ki-uebergabe',
             conversation_tenant: null,
             conversation_channel: null,
@@ -157,6 +159,8 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
         .update('myinvest-claude-agent/contact/v1\u0000101\u00004242')
         .digest('hex'),
       contactEmail: 'kunde@example.de',
+      contactName: 'Test Kontakt',
+      contactPhone: '+4917112345678',
     })
     expect(context!.contactHash).not.toContain('4242')
     expect(query.mock.calls[0]![1]).toEqual([101, 71, 4, 17])
@@ -172,11 +176,11 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     expect(query.mock.calls[0]![0]).toContain(
       "draft_note.content LIKE '%Antwortvorschlag:%'",
     )
-    expect(query.mock.calls[1]![0]).toContain('message.id <> $3')
+    expect(query.mock.calls[1]![0]).toContain('(message.created_at, message.id) < (current_message.created_at, current_message.id)')
     expect(query.mock.calls[1]![0]).toContain('json_typeof(message.content_attributes)')
     expect(query.mock.calls[1]![0]).toContain('message.private = false')
 
-    expect(query.mock.calls[1]![0]).toContain("content_attributes ->> 'external_echo'")
+    expect(query.mock.calls[1]![0]).toContain("attrs.value ->> 'external_echo'")
     expect(query.mock.calls[1]![1]).toEqual([101, '900', 4, 17])
   })
 

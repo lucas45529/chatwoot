@@ -112,3 +112,39 @@ describe('existing learning candidate review', () => {
     expect(matchReviewedExamples('Wie bearbeite ich Immobilien?', [fixture()])).toEqual([])
   })
 })
+
+describe('conversation-situation retrieval', () => {
+  it('matches a specific reviewed situation inside longer relevant context', () => {
+    const row = { ...fixture(), question: 'Termin bereits bestätigt Zoom Link vorhanden Telefonnummer erhalten' }
+    expect(matchReviewedExamples('Gespräch: Du hast eine Terminbestätigung erhalten. Termin bereits bestätigt Zoom Link vorhanden. Kunde sendet Telefonnummer erhalten und bedankt sich. Aktuell: Danke, passt für mich!', [row])).toHaveLength(1)
+    expect(matchReviewedExamples('Telefonnummer erhalten', [row])).toEqual([])
+    expect(matchReviewedExamples('Termin absagen Zoom Link funktioniert nicht', [row])).toEqual([])
+  })
+  it('uses identical eligibility and approved retrieval for a read-only preview', async () => {
+    const { service, query } = database()
+    await expect(service.execute({ action: 'preview', tenant: 'saas', question: 'Wie bearbeite ich Kontakte?', example: { question: 'Wie bearbeite ich Kontakte?', answer: 'Öffne Kontakte und wähle Bearbeiten.', reason: 'Genauer Ablauf' } })).resolves.toMatchObject({ candidateMatches: true })
+    expect(query.mock.calls.some(([sql]) => /^(INSERT|UPDATE|DELETE)/.test(sql))).toBe(false)
+  })
+})
+
+
+it('keeps the corrected message only as redacted audit metadata', async () => {
+  const { service, query } = database()
+  await service.execute({ action: 'save', tenant: 'saas', question: 'Wie bearbeite ich Kontakte?', answer: 'Öffne Kontakte und wähle Bearbeiten.', reason: 'Korrigierter Ablauf', correctedAnswer: 'Nutze den Kontakt kunde@example.de und wähle Bearbeiten.' })
+  const event = query.mock.calls.find(([sql, values]) => sql.includes('INSERT INTO agent_learning_audit_events') && values?.[2] === 'feedback_recorded')
+  expect(event?.[1]?.[4]).toMatchObject({ correctedAnswer: 'Nutze den Kontakt [E-MAIL/ACCOUNT] und wähle Bearbeiten.' })
+  const insert = query.mock.calls.find(([sql]) => sql.includes('INSERT INTO agent_knowledge_candidates'))
+  expect(insert?.[1]).not.toContain('Nutze den Kontakt kunde@example.de und wähle Bearbeiten.')
+})
+
+it('recognizes equivalent appointment language without matching absent appointments', () => {
+  const row = { ...fixture(), question: 'Kunde nennt seine Telefonnummer, obwohl bereits ein Termin per Zoom vereinbart ist.' }
+  expect(matchReviewedExamples('Hi, das wäre meine Rufnummer [TELEFON]. Gesprächskontext: Hey Alex, dein Call am Montag 21. September um 14:00 Uhr ist bestätigt. Zoom-Link ist dabei.', [row])).toHaveLength(1)
+  expect(matchReviewedExamples('Hier ist meine Rufnummer [TELEFON]. Ich habe keinen Termin vereinbart und möchte einen Rückruf.', [row])).toEqual([])
+  expect(matchReviewedExamples('Hier ist meine Telefonnummer, wann kann ich einen Termin buchen?', [row])).toEqual([])
+})
+
+it('returns the sanitized preview candidate used for matching', async () => {
+  const { service } = database()
+  await expect(service.execute({ action: 'preview', tenant: 'saas', question: 'Wie bearbeite ich Kontakte?', example: { question: 'Wie bearbeite ich Kontakte?', answer: 'Öffne den Kontakt kunde@example.de und wähle Bearbeiten.', reason: 'Ablauf' } })).resolves.toMatchObject({ candidate: { question: 'Wie bearbeite ich Kontakte?', answer: 'Öffne den Kontakt [E-MAIL/ACCOUNT] und wähle Bearbeiten.' } })
+})

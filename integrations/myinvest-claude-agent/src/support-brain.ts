@@ -24,7 +24,7 @@ export interface SupportBrainRequest {
   history: readonly SupportBrainHistoryTurn[]
   tenant: TenantKey
   channel: SupportChannel
-  contact?: { email: string }
+  contact?: { email?: string; name?: string; phone?: string }
   /** Erzwingt einen internen Composer-Entwurf; niemals Auto-Send. */
   reviewOnly?: boolean
 }
@@ -150,7 +150,11 @@ export class SupportBrainClient implements SupportBrainPort {
       tenant: request.tenant,
       channel: request.channel,
       ...(request.contact
-        ? { contact: { email: request.contact.email.slice(0, 320) } }
+        ? { contact: {
+            ...(request.contact.email ? { email: request.contact.email.slice(0, 320) } : {}),
+            ...(request.contact.name ? { name: request.contact.name.slice(0, 200) } : {}),
+            ...(request.contact.phone ? { phone: request.contact.phone.slice(0, 40) } : {}),
+          } }
         : {}),
       ...(request.reviewOnly ? { reviewOnly: true } : {}),
     })

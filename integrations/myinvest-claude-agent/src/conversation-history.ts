@@ -1,0 +1,92 @@
+import type { ConversationTurn } from './domain.js'
+import { containsResidualPersonalData, redactSupportText } from './learning/extractor.js'
+
+interface HistoryDatabase {
+  query<Row extends Record<string, unknown>>(sql: string, values: readonly unknown[]): Promise<{ rows: Row[] }>
+}
+interface HistoryRow extends Record<string, unknown> {
+  message_type: number
+  sender_type: string | null
+  content: string
+  from_automation: boolean
+  from_campaign: boolean
+  external_echo: boolean
+}
+
+// Live context is not reusable training material. Keep valid calendar dates and
+// meeting-link presence, but never the URL token or phone number itself.
+export function redactConversationText(input: string): string {
+  const dates: string[] = []
+  const protectedText = input.replace(/\b(?:https?:\/\/|www\.)\S+/giu, (url) =>
+    /^https?:\/\/(?:[\w-]+\.)?zoom\.us(?:\/|$)/iu.test(url) ? '[ZOOM-LINK]' : '[LINK]',
+  ).replace(/(?<![\d./-])(?:([0-2]?\d|3[01])\.(0?[1-9]|1[0-2])\.((?:19|20)\d{2})|((?:19|20)\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01]))(?![\d/-]|\.\d)/gu, (date) => {
+    const token = `CALENDARDATE${dates.length}PLACEHOLDER`
+    dates.push(date)
+    return token
+  })
+  const redacted = redactSupportText(protectedText).text.trim()
+  if (!redacted || containsResidualPersonalData(redacted)) return ''
+  return redacted.replace(/CALENDARDATE(\d+)PLACEHOLDER/gu, (token, index: string) => dates[Number(index)] ?? token)
+}
+
+/** One history projection for both live answers and source-bound learning.
+ * Only persisted public text before the exact source timestamp/id is eligible.
+ * Failed outbound rows and unsent external-channel messages are not evidence. */
+export async function loadConversationHistory(database: HistoryDatabase, input: {
+  accountId: number
+  conversationId: string
+  currentMessageId: number
+  inboxId: number
+}): Promise<ConversationTurn[]> {
+  const result = await database.query<HistoryRow>(`
+    SELECT recent.* FROM (
+      SELECT message.id, message.created_at, message.message_type, message.sender_type,
+        coalesce(nullif(message.content, ''), message.processed_message_content) AS content,
+        (attrs.value ->> 'external_echo') IS NOT NULL AS external_echo,
+        (attrs.value ->> 'automation_rule_id') IS NOT NULL AS from_automation,
+        (message.additional_attributes ? 'campaign_id') AS from_campaign
+      FROM messages message
+      JOIN messages current_message ON current_message.id = $3
+        AND current_message.account_id = $1 AND current_message.conversation_id = $2
+        AND current_message.inbox_id = $4
+      JOIN conversations conversation ON conversation.id = message.conversation_id
+        AND conversation.account_id = $1 AND conversation.inbox_id = $4
+      CROSS JOIN LATERAL (SELECT CASE WHEN json_typeof(message.content_attributes) = 'string'
+        THEN (message.content_attributes #>> '{}')::json ELSE message.content_attributes END AS value) attrs
+      WHERE message.account_id = $1 AND message.conversation_id = $2 AND message.inbox_id = $4
+        AND (message.created_at, message.id) < (current_message.created_at, current_message.id)
+        AND message.private = false AND message.message_type IN (0, 1, 3)
+        AND message.content_type IN (0, 8)
+        AND (message.message_type = 0 OR (message.status IN (0, 1, 2)
+          AND (message.status IN (1, 2) OR nullif(message.source_id, '') IS NOT NULL
+            OR (coalesce(conversation.custom_attributes ->> 'myinvest_channel', 'web') = 'web'
+              AND coalesce(current_message.source_id, '') NOT LIKE 'wamid.%'
+              AND message.sender_type IN ('User', 'AgentBot', 'Captain::Assistant')))))
+        AND coalesce(nullif(message.content, ''), message.processed_message_content, '') <> ''
+        AND (attrs.value ->> 'myinvest_tenant' IS NULL
+          OR attrs.value ->> 'myinvest_tenant' = coalesce(CASE WHEN json_typeof(current_message.content_attributes) = 'string'
+            THEN (current_message.content_attributes #>> '{}')::json ->> 'myinvest_tenant'
+            ELSE current_message.content_attributes ->> 'myinvest_tenant' END, conversation.custom_attributes ->> 'myinvest_tenant'))
+      ORDER BY message.created_at DESC, message.id DESC LIMIT 12
+    ) recent ORDER BY recent.created_at ASC, recent.id ASC`,
+  [input.accountId, input.conversationId, input.currentMessageId, input.inboxId])
+  const turns: ConversationTurn[] = []
+  for (const row of result.rows) {
+    let role: ConversationTurn['role']
+    let prefix = ''
+    if (row.message_type === 0 && (!row.sender_type || row.sender_type === 'Contact')) role = 'customer'
+    else if (row.message_type === 1 || row.message_type === 3) {
+      if (row.from_automation || row.from_campaign) {
+        role = 'assistant'
+        prefix = row.from_campaign ? '[Kampagnennachricht] ' : '[Automatische Nachricht] '
+      } else if (row.sender_type === 'User' || (!row.sender_type && row.external_echo)) role = 'human'
+      else if (!row.sender_type || row.sender_type === 'AgentBot' || row.sender_type === 'Captain::Assistant') {
+        role = 'assistant'
+        if (!row.sender_type) prefix = '[Gesendete Nachricht] '
+      } else continue
+    } else continue
+    const text = typeof row.content === 'string' ? redactConversationText(row.content) : ''
+    if (text) turns.push({ role, text: `${prefix}${text}`.slice(0, 1500) })
+  }
+  return turns.slice(-12)
+}

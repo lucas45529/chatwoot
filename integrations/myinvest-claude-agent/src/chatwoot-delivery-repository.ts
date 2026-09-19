@@ -1,14 +1,7 @@
 import { contactFingerprint } from './auto-send.js'
 import type { DeliveryMessageKind } from './chatwoot-client.js'
-import type {
-  ConversationContext,
-  ConversationTurn,
-  ConversationTurnRole,
-} from './domain.js'
-import {
-  containsResidualPersonalData,
-  redactSupportText,
-} from './learning/extractor.js'
+import type { ConversationContext } from './domain.js'
+import { loadConversationHistory } from './conversation-history.js'
 
 interface QueryResult<Row> {
   rows: Row[]
@@ -44,6 +37,8 @@ interface ContextMetadataRow extends Record<string, unknown> {
   conversation_id: string
   contact_id: string | null
   contact_email: string | null
+  contact_name: string | null
+  contact_phone: string | null
   cached_label_list: string | null
   last_human_message_id: string | null
   last_agent_handoff_id: string | null
@@ -53,23 +48,11 @@ interface ContextMetadataRow extends Record<string, unknown> {
   source_tenant: string | null
 }
 
-interface ContextMessageRow extends Record<string, unknown> {
-  message_id: string
-  message_type: number
-  sender_type: string | null
-  content: string
-  created_at: Date
-  agent_kind: string | null
-  external_echo: boolean
-  from_automation: boolean
-  from_campaign: boolean
-}
-
 /**
  * Account-gebundener Read-only-Blick in Chatwoot. Er dedupliziert AgentBot-
- * Nachrichten und liefert einen kurzen, PII-redigierten Verlauf. Die E-Mail
- * verlaesst ihn nur im signierten Gehirn-Body fuer kontaktgebundene Werkzeuge;
- * sie landet weder im Verlauf noch in Logs.
+ * Nachrichten und liefert einen kurzen, PII-redigierten Verlauf. Kontaktangaben
+ * verlassen ihn nur im signierten Gehirn-Body fuer kontaktgebundene Werkzeuge;
+ * sie landen weder im Verlauf noch in Logs.
  */
 export class PostgresChatwootDeliveryStore
   implements ChatwootDeliveryStore, ChatwootConversationContextStore
@@ -119,6 +102,8 @@ export class PostgresChatwootDeliveryStore
       `SELECT conversation.id::text AS conversation_id,
               conversation.contact_id::text AS contact_id,
               contact.email AS contact_email,
+              contact.name AS contact_name,
+              contact.phone_number AS contact_phone,
               conversation.cached_label_list,
               conversation.custom_attributes ->> 'myinvest_tenant' AS conversation_tenant,
               conversation.custom_attributes ->> 'myinvest_channel' AS conversation_channel,
@@ -182,49 +167,10 @@ export class PostgresChatwootDeliveryStore
     const conversation = metadata.rows[0]
     if (!conversation) return undefined
 
-    const messages = await this.database.query<ContextMessageRow>(
-      `SELECT recent.message_id, recent.message_type, recent.sender_type,
-              recent.content, recent.created_at, recent.agent_kind,
-              recent.external_echo, recent.from_automation, recent.from_campaign
-         FROM (
-           SELECT message.id::text AS message_id, message.message_type,
-                  message.sender_type, message.content, message.created_at,
-                  CASE WHEN json_typeof(message.content_attributes) = 'string'
-                       THEN (message.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
-                       ELSE message.content_attributes ->> 'myinvest_agent_message_kind' END AS agent_kind,
-                  (CASE WHEN json_typeof(message.content_attributes) = 'string'
-                        THEN (message.content_attributes #>> '{}')::json ->> 'external_echo'
-                        ELSE message.content_attributes ->> 'external_echo' END) IS NOT NULL AS external_echo,
-                  (CASE WHEN json_typeof(message.content_attributes) = 'string'
-                        THEN (message.content_attributes #>> '{}')::json ->> 'automation_rule_id'
-                        ELSE message.content_attributes ->> 'automation_rule_id' END) IS NOT NULL AS from_automation,
-                  (message.additional_attributes ? 'campaign_id') AS from_campaign
-             FROM messages AS message
-            WHERE message.account_id = $1
-              AND message.conversation_id = $2
-              AND message.inbox_id = $4
-              AND message.id <> $3
-              AND message.private = false
-              AND message.message_type IN (0, 1)
-              AND message.content_type = 0
-              AND message.content IS NOT NULL
-              AND message.content <> ''
-              AND message.created_at >= now() - interval '30 days'
-            ORDER BY message.created_at DESC, message.id DESC
-            LIMIT 12
-         ) AS recent
-        ORDER BY recent.created_at ASC, recent.message_id::bigint ASC`,
-      [input.accountId, conversation.conversation_id, input.currentMessageId, input.inboxId],
-    )
-
-    const turns: ConversationTurn[] = []
-    for (const message of messages.rows) {
-      const role = conversationRole(message)
-      if (!role) continue
-      const redacted = redactSupportText(message.content).text.trim()
-      if (!redacted || containsResidualPersonalData(redacted)) continue
-      turns.push({ role, text: redacted.slice(0, 1_500) })
-    }
+    const turns = await loadConversationHistory(this.database, {
+      accountId: input.accountId, inboxId: input.inboxId,
+      conversationId: conversation.conversation_id, currentMessageId: input.currentMessageId,
+    })
     const lastHumanMessageId = Number(conversation.last_human_message_id ?? 0)
     const lastBotHandoffId = Number(conversation.last_agent_handoff_id ?? 0)
 
@@ -250,6 +196,10 @@ export class PostgresChatwootDeliveryStore
             conversation.contact_id,
           )
         : undefined,
+      contactName: typeof conversation.contact_name === 'string' && conversation.contact_name.trim().length <= 200
+        ? conversation.contact_name.trim() || undefined : undefined,
+      contactPhone: typeof conversation.contact_phone === 'string' && /^\+?[0-9 ()-]{5,40}$/.test(conversation.contact_phone.trim())
+        ? conversation.contact_phone.trim() : undefined,
       contactEmail:
         typeof conversation.contact_email === 'string' &&
         conversation.contact_email.length <= 320 &&
@@ -273,16 +223,4 @@ export function extractAgentDraft(note: string | null): string | undefined {
   if (sourceStart < 0) return undefined
   const draft = body.slice(0, sourceStart).trim()
   return draft || undefined
-}
-
-function conversationRole(message: ContextMessageRow): ConversationTurnRole | undefined {
-  if (message.from_automation || message.from_campaign) return undefined
-  const sender = message.sender_type
-  if (message.message_type === 0) {
-    return !sender || sender === 'Contact' ? 'customer' : undefined
-  }
-  if (message.message_type !== 1) return undefined
-  if (sender === 'AgentBot' || sender === 'Captain::Assistant') return 'assistant'
-  if (sender === 'User' || (!sender && message.external_echo)) return 'human'
-  return undefined
 }

@@ -67,6 +67,8 @@ export interface ConversationContext {
   contactHash?: string
   /** Nur im signierten Gehirn-Body; nie in Logs oder Verlauf. */
   contactEmail?: string
+  contactName?: string
+  contactPhone?: string
   /** Letzter unveraenderter KI-Composertext; nur als Compare-and-swap-Wert. */
   previousAgentDraft?: string
   /** Serverseitige Produkt-/Kanalidentitaet der aktuellen Eingangsnachricht. */

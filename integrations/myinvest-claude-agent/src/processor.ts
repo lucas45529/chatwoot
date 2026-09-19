@@ -1,3 +1,4 @@
+import { redactConversationText } from './conversation-history.js'
 import {
   autoSendDecision,
   questionFingerprint,
@@ -129,8 +130,9 @@ export class MessageProcessor {
       return
     }
 
-    const question = payload.content.trim()
-    const outcome = triage(question)
+    const rawQuestion = payload.content.trim()
+    const outcome = triage(rawQuestion)
+    const question = redactConversationText(rawQuestion)
     const handoff = async (reason: string, detail?: string, draft?: string, learningSources?: SupportBrainAnswer['learningSources']) => {
       await this.dependencies.autoSend.blockConversation({
         tenantKey: tenant.key,
@@ -222,8 +224,8 @@ export class MessageProcessor {
           ),
           tenant: supportRoute.tenant,
           channel: supportRoute.channel,
-          ...(conversationContext.contactEmail
-            ? { contact: { email: conversationContext.contactEmail } }
+          ...(conversationContext.contactEmail || conversationContext.contactName || conversationContext.contactPhone
+            ? { contact: { email: conversationContext.contactEmail, name: conversationContext.contactName, phone: conversationContext.contactPhone } }
             : {}),
           ...(reviewOnly ? { reviewOnly: true } : {}),
         })

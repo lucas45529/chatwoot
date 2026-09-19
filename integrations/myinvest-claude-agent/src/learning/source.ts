@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { loadConversationHistory } from '../conversation-history.js'
+import type { SupportBrainHistoryTurn, SupportChannel } from '../support-brain.js'
 import type { TenantRegistry } from '../config.js'
 import type { TenantKey } from '../domain.js'
 import { extractAgentDraft } from '../chatwoot-delivery-repository.js'
@@ -18,6 +20,8 @@ export interface ResolvedLearningSource {
   source: LearningSource
   question: string
   previousDraft: string
+  history: SupportBrainHistoryTurn[]
+  channel?: SupportChannel
 }
 export interface LearningSourceResolver {
   resolve(source: LearningSource): Promise<ResolvedLearningSource>
@@ -40,13 +44,14 @@ export class PostgresLearningSourceResolver implements LearningSourceResolver {
     if (!tenant) throw new LearningRequestError(404, 'learning_source_not_found')
     if (!tenant.agentBotId) throw new LearningRequestError(503, 'learning_source_identity_unavailable')
     const result = await this.database.query<{
+      conversation_id: string
       question: string
       draft_note: string
       conversation_tenant: string | null
       conversation_channel: string | null
       source_tenant: string | null
     }>(`
-      SELECT q.content AS question, n.content AS draft_note,
+      SELECT c.id::text AS conversation_id, q.content AS question, n.content AS draft_note,
         c.custom_attributes ->> 'myinvest_tenant' AS conversation_tenant,
         c.custom_attributes ->> 'myinvest_channel' AS conversation_channel,
         CASE WHEN json_typeof(q.content_attributes) = 'string'
@@ -93,9 +98,14 @@ export class PostgresLearningSourceResolver implements LearningSourceResolver {
     if (!route) throw new LearningRequestError(404, 'learning_source_not_found')
     const question = typeof row.question === 'string' ? row.question.trim() : ''
     const previousDraft = extractAgentDraft(row.draft_note)
-    if (question.length < 8 || question.length > 1000 || !previousDraft || previousDraft.length < 10 || previousDraft.length > 4000) {
+    if (question.length < 1 || question.length > 1000 || !previousDraft || previousDraft.length < 10 || previousDraft.length > 4000) {
       throw new LearningRequestError(422, 'learning_source_not_supported')
     }
-    return { tenant: route.tenant, source, question, previousDraft }
+    const turns = await loadConversationHistory(this.database, {
+      accountId: source.accountId, inboxId: tenant.inboxId,
+      conversationId: row.conversation_id, currentMessageId: source.questionMessageId,
+    })
+    const history: SupportBrainHistoryTurn[] = turns.map((turn) => ({ role: turn.role === 'customer' ? 'user' : 'agent', text: turn.text }))
+    return { tenant: route.tenant, source, question, previousDraft, history, channel: route.channel }
   }
 }

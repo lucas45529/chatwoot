@@ -449,3 +449,12 @@ describe('SupportBrainClient · Netzverhalten', () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(2)
   })
 })
+
+
+it('transports known contact name and phone only inside the signed contact envelope', async () => {
+  const request = respondingFetch(jsonResponse(brainPayload()))
+  await clientWith(request).answer(brainRequest({ contact: { name: 'Test Kontakt', phone: '+4917112345678' } }))
+  const body = JSON.parse(String(request.mock.calls[0]?.[1]?.body))
+  expect(body.contact).toEqual({ name: 'Test Kontakt', phone: '+4917112345678' })
+  expect(body.history).toEqual([])
+})

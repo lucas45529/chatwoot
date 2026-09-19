@@ -44,7 +44,7 @@ describe('authenticated conversation learning source', () => {
   it('resolves immutable question and original draft through tenant-bound read-only joins', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [{ question: 'Wie bearbeite ich Kontakte?', draft_note: `KI-Entwurf\n\nAntwortvorschlag:\n${draft}\nQuellen: Hilfe` }] })
     const resolver = new PostgresLearningSourceResolver({ query }, buildTenantRegistry(pinnedTenants))
-    await expect(resolver.resolve(source)).resolves.toEqual({ tenant: 'saas', source, question: 'Wie bearbeite ich Kontakte?', previousDraft: draft })
+    await expect(resolver.resolve(source)).resolves.toEqual({ tenant: 'saas', source, question: 'Wie bearbeite ich Kontakte?', previousDraft: draft, history: [], channel: 'web' })
     expect(query.mock.calls[0]?.[1]).toEqual([101, 77, 55, 61, 801, 17])
     expect(query.mock.calls[0]?.[0]).toContain('c.inbox_id = $6')
     const sql = query.mock.calls[0]?.[0] as string
@@ -114,4 +114,38 @@ describe('authenticated conversation learning source', () => {
     await expect(service.execute({ action: 'save', tenant: 'saas', id: '9', source: { ...source, draftMessageId: 64 }, question: row.question, answer: draft, reason: 'Neue Quelle' })).rejects.toMatchObject({ status: 404 })
     expect(resolve).toHaveBeenCalledWith({ ...source, draftMessageId: 64 })
   })
+})
+
+
+it('resolves a short reply with authoritative preceding public history', async () => {
+  const query = vi.fn().mockResolvedValueOnce({ rows: [{ conversation_id: '700', question: 'Danke!', draft_note: `KI-Entwurf\n\nAntwortvorschlag:\n${draft}\nQuellen: Hilfe` }] })
+    .mockResolvedValueOnce({ rows: [{ message_type: 1, sender_type: null, content: 'Termin am 19.09.2026 bestätigt.', from_automation: true }] })
+  const resolver = new PostgresLearningSourceResolver({ query }, buildTenantRegistry(pinnedTenants))
+  await expect(resolver.resolve(source)).resolves.toMatchObject({ question: 'Danke!', history: [{ role: 'agent', text: '[Automatische Nachricht] Termin am 19.09.2026 bestätigt.' }] })
+  expect(query.mock.calls[1]?.[1]).toEqual([101, '700', 55, 17])
+})
+
+it('audits the redacted full source context after resolving it once', async () => {
+  const query = vi.fn(async (sql: string, _values?: readonly unknown[]) => {
+    if (sql.includes('INSERT INTO agent_knowledge_candidates')) return { rows: [{ id: '10' }] }
+    if (sql.includes('FROM agent_knowledge_candidates')) return { rows: [{ id: '10', tenant: 'saas', question: 'Wie bearbeite ich Kontakte?', answer: draft, status: 'pending_review', reason: '', updatedAt: '' }] }
+    return { rows: [] }
+  })
+  const resolve = vi.fn().mockResolvedValue({ tenant: 'saas', channel: 'whatsapp', source, question: 'Meine E-Mail ist kunde@example.de', previousDraft: draft, history: [{ role: 'agent', text: 'Termin bestätigt.' }] })
+  const service = new LearningReviewService({ connect: async () => ({ query, release() {} }) }, { resolve })
+  await service.execute({ action: 'save', tenant: 'saas', source, question: 'Wie bearbeite ich Kontakte?', answer: draft, reason: 'Korrigierter Ablauf', correctedAnswer: 'Öffne Kontakte und wähle Bearbeiten.' })
+  expect(resolve).toHaveBeenCalledOnce()
+  const event = query.mock.calls.find(([sql, values]) => sql.includes('INSERT INTO agent_learning_audit_events') && values?.[2] === 'feedback_recorded')
+  expect(event?.[1]?.[4]).toMatchObject({ source, sourceContext: { question: 'Meine E-Mail ist [E-MAIL/ACCOUNT]', previousDraft: draft, history: [{ role: 'agent', text: 'Termin bestätigt.' }], channel: 'whatsapp' }, correctedAnswer: draft })
+})
+
+it('preserves the exact legacy source response unless signed includeContext opts in', async () => {
+  const legacy = { tenant: 'saas', source, question: 'Wie bearbeite ich Kontakte?', previousDraft: draft }
+  const context = { ...legacy, history: [{ role: 'agent', text: 'Termin bestätigt.' }], channel: 'whatsapp' }
+  const resolve = vi.fn().mockResolvedValue(context)
+  const connect = vi.fn()
+  const service = new LearningReviewService({ connect }, { resolve })
+  await expect(service.execute({ action: 'source', source })).resolves.toEqual(legacy)
+  await expect(service.execute({ action: 'source', source, includeContext: true })).resolves.toEqual(context)
+  expect(connect).not.toHaveBeenCalled()
 })

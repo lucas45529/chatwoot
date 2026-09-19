@@ -1166,3 +1166,9 @@ describe('MessageProcessor auto-send', () => {
     expect(failed.autoSend.markSent).not.toHaveBeenCalled()
   })
 })
+
+it('preserves a newly requested numeric reschedule date while redacting contact data in the live processor', async () => {
+  const flow = setup()
+  await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Bitte auf den 22.09.2026 um 15:30 Uhr verschieben. Meine Rufnummer ist +49 171 12345678.' }) })
+  expect(flow.answer).toHaveBeenCalledWith(expect.objectContaining({ question: 'Bitte auf den 22.09.2026 um 15:30 Uhr verschieben. Meine Rufnummer ist [TELEFON/NUMMER]' }))
+})

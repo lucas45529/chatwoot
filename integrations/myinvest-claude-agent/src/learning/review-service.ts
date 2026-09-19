@@ -4,15 +4,18 @@ import { tenantKeySchema } from '../domain.js'
 import { containsResidualPersonalData, directPersonalization, likelySecret, redactSupportText, sensitiveTopic } from './extractor.js'
 import type { LearningPool } from './repository.js'
 import { LearningRequestError } from './review-auth.js'
-import { learningSourceSchema, type LearningSource, type LearningSourceResolver } from './source.js'
+import { learningSourceSchema, type LearningSource, type LearningSourceResolver, type ResolvedLearningSource } from './source.js'
 
+const historySchema = z.array(z.object({ role: z.enum(['user', 'agent']), text: z.string().min(1).max(1500) }).strict()).max(12)
+const exampleSchema = z.object({ question: z.string().trim().min(8).max(1000), answer: z.string().trim().min(10).max(4000), reason: z.string().trim().min(3).max(1000) }).strict()
 const id = z.string().regex(/^[1-9]\d{0,18}$/)
 export const learningCommandSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('source'), source: learningSourceSchema }).strict(),
+  z.object({ action: z.literal('source'), source: learningSourceSchema, includeContext: z.literal(true).optional() }).strict(),
   z.object({ action: z.literal('list'), tenant: tenantKeySchema }).strict(),
-  z.object({ action: z.literal('save'), tenant: tenantKeySchema, id: id.optional(), source: learningSourceSchema.optional(), question: z.string().trim().min(8).max(1000), answer: z.string().trim().min(10).max(4000), reason: z.string().trim().min(3).max(1000) }).strict(),
+  z.object({ action: z.literal('save'), tenant: tenantKeySchema, id: id.optional(), source: learningSourceSchema.optional(), correctedAnswer: z.string().trim().min(10).max(4000).optional(), question: z.string().trim().min(8).max(1000), answer: z.string().trim().min(10).max(4000), reason: z.string().trim().min(3).max(1000) }).strict(),
   z.object({ action: z.enum(['publish', 'reject']), tenant: tenantKeySchema, id }).strict(),
-  z.object({ action: z.literal('retrieve'), tenant: tenantKeySchema, question: z.string().trim().min(1).max(1000) }).strict(),
+  z.object({ action: z.literal('retrieve'), tenant: tenantKeySchema, question: z.string().trim().min(1).max(1000), history: historySchema.optional() }).strict(),
+  z.object({ action: z.literal('preview'), tenant: tenantKeySchema, question: z.string().trim().min(1).max(1000), history: historySchema.optional(), example: exampleSchema }).strict(),
 ])
 export type LearningCommand = z.infer<typeof learningCommandSchema>
 
@@ -46,24 +49,59 @@ function present(row: ReviewCandidate): ReviewCandidate {
   return { id: row.id, tenant: row.tenant, question: row.question, answer: row.answer, status, reason: row.reason, updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt, ...(source.success ? { source: source.data } : {}) }
 }
 
-const STOP_WORDS = new Set('aber alle alles auch auf aus bei bin bitte das dass dem den der des die diese dieser doch du ein eine einem einen einer es etwas für habe haben hier ich im in ist kann kannst können machen man mein meine mich mir mit muss nach nicht noch nun oder schon sein sind so um und uns vom von vor wann warum was welche welcher welches wenn wer wie wird wir wo zu zum zur'.split(' '))
+const STOP_WORDS = new Set('kunde kunden nennt nannte seine seiner sein ihre ihrer bereits obwohl per wäre würde dein deine hey hi gespräch gesprächskontext aktuell danke aber alle alles auch auf aus bei bin bitte das dass dem den der des die diese dieser doch du ein eine einem einen einer es etwas für habe haben hier ich im in ist kann kannst können machen man mein meine mich mir mit muss nach nicht noch nun oder schon sein sind so um und uns vom von vor wann warum was welche welcher welches wenn wer wie wird wir wo zu zum zur'.split(' '))
+const TERM_ALIASES: Record<string, string> = {
+  rufnummer: 'telefonnummer', telefon: 'telefonnummer', handynummer: 'telefonnummer',
+  call: 'termin', videocall: 'termin', meeting: 'termin', gesprächstermin: 'termin',
+  vereinbart: 'bestätigt', vereinbarter: 'bestätigt', vereinbarten: 'bestätigt', bestätigter: 'bestätigt', bestätigten: 'bestätigt',
+}
 function terms(question: string): string[] {
-  return [...new Set(question.toLocaleLowerCase('de').normalize('NFC').match(/[\p{L}\p{N}]{3,40}/gu) ?? [])]
-    .filter((term) => !STOP_WORDS.has(term)).slice(0, 20)
+  return [...new Set((question.toLocaleLowerCase('de').normalize('NFC').match(/[\p{L}\p{N}]{3,40}/gu) ?? [])
+    .filter((term) => !STOP_WORDS.has(term) && !/^\d+$/.test(term))
+    .map((term) => TERM_ALIASES[term] ?? term))].slice(0, 80)
+}
+function searchTerms(question: string): string[] {
+  const normalized = terms(question)
+  return [...new Set([...normalized, ...Object.entries(TERM_ALIASES).filter(([, term]) => normalized.includes(term)).map(([alias]) => alias)])]
 }
 
-/** Conservative examples: at least two specific terms, and most of the new
- * question must match. These are context examples, never automatic answers. */
+// Candidate coverage keeps a long conversation from diluting a precise situation.
+// Short overlapping fragments (especially phone presence alone) cannot qualify.
 export function matchReviewedExamples(question: string, rows: readonly ReviewCandidate[]): Array<{ id: string; question: string; answer: string }> {
   const queryTerms = terms(question)
   if (queryTerms.length < 2) return []
-  return rows.map((row) => {
+  return rows.filter((row) => {
+    const candidate = terms(row.question)
+    if (candidate.includes('bestätigt') && /\b(?:kein\w*|nicht)\b[^.!?]{0,50}\b(?:termin|call|vereinbart\w*|bestätigt\w*)\b/iu.test(question)) return false
+    if (candidate.includes('termin') && /\b(?:absag\w*|stornier\w*|verschieb\w*)\b/iu.test(question) && !/\b(?:absag\w*|stornier\w*|verschieb\w*)\b/iu.test(row.question)) return false
+    return true
+  }).map((row) => {
     const candidateTerms = new Set(terms(row.question))
     const shared = queryTerms.filter((term) => candidateTerms.has(term)).length
-    return { row, score: shared / Math.max(queryTerms.length, candidateTerms.size), shared }
-  }).filter(({ score, shared }) => shared >= 2 && score >= 0.66)
+    return { row, score: shared / candidateTerms.size, shared, candidateTerms }
+  }).filter(({ score, shared, candidateTerms }) => shared >= 2 && score >= 0.75 &&
+    !(shared < 3 && candidateTerms.size > 3) &&
+    queryTerms.some((term) => candidateTerms.has(term) && !/^(?:telefon|telefonnummer|nummer|erhalten|gesendet|angegeben|kontakt|danke|vorhanden)$/.test(term)))
     .sort((a, b) => b.score - a.score)
     .slice(0, 3).map(({ row }) => ({ id: row.id, question: row.question, answer: row.answer }))
+}
+
+function retrievalQuestion(question: string, history?: Array<{ role: 'user' | 'agent'; text: string }>): string {
+  if (!history?.length) return question.slice(0, 1000)
+  const prefix = question.slice(0, 500) + '\nGesprächskontext:\n'
+  return prefix + history.slice(-12).map((turn) => turn.text).join('\n').slice(-(1000 - prefix.length))
+}
+
+function sourceSnapshot(source: ResolvedLearningSource): Record<string, unknown> {
+  const scrub = (text: string) => {
+    const value = redactSupportText(text).text.replace(/\b(?:sk|pk|api|access|secret|token)[-_][a-z0-9_-]{12,}\b/giu, '[SECRET]')
+    return containsResidualPersonalData(value) ? '[INHALT REDIGIERT]' : value
+  }
+  return {
+    question: scrub(source.question), previousDraft: scrub(source.previousDraft),
+    history: source.history.map((turn) => ({ role: turn.role, text: scrub(turn.text) })),
+    ...(source.channel ? { channel: source.channel } : {}),
+  }
 }
 
 async function audit(client: Client, candidate: string, tenant: string, action: string, details: Record<string, unknown> = {}): Promise<void> {
@@ -113,15 +151,32 @@ export class LearningReviewService {
     const parsed = learningCommandSchema.safeParse(input)
     if (!parsed.success) throw new LearningRequestError(422, 'invalid_learning_command')
     const command = parsed.data
-    if (command.action === 'source') return this.resolveSource(command.source)
+    if (command.action === 'source') {
+      const resolved = await this.resolveSource(command.source)
+      if (command.includeContext) return resolved
+      // Older website deployments validate the original response strictly.
+      // The internal resolver still returns context for audit persistence.
+      return { tenant: resolved.tenant, source: resolved.source, question: resolved.question, previousDraft: resolved.previousDraft }
+    }
+    let resolvedSource: ResolvedLearningSource | undefined
     if (command.action === 'save' && command.source && !command.id) {
       const resolved = await this.resolveSource(command.source)
+      resolvedSource = resolved
       if (resolved.tenant !== command.tenant) throw new LearningRequestError(422, 'learning_source_tenant_mismatch')
     }
     const cleaned = command.action === 'save' ? {
-      question: cleanInput(command.question), answer: cleanInput(command.answer), reason: cleanInput(command.reason).text,
+      question: cleanInput(command.question), answer: cleanInput(command.answer), reason: cleanInput(command.reason).text, correctedAnswer: command.correctedAnswer ? cleanInput(command.correctedAnswer).text : undefined,
     } : undefined
     if (cleaned && (cleaned.question.text.length < 8 || cleaned.answer.text.length < 10 || cleaned.reason.length < 3)) throw new LearningRequestError(422, 'learning_text_too_short')
+    let previewMatches: boolean | undefined
+    let previewCandidate: { question: string; answer: string } | undefined
+    if (command.action === 'preview') {
+      const example = { question: cleanInput(command.example.question), answer: cleanInput(command.example.answer), reason: cleanInput(command.example.reason) }
+      if (example.question.text.length < 8 || example.answer.text.length < 10 || example.reason.text.length < 3) throw new LearningRequestError(422, 'learning_text_too_short')
+      previewCandidate = { question: example.question.text, answer: example.answer.text }
+      // Evaluate exactly what a save and publication would make retrievable.
+      previewMatches = matchReviewedExamples(retrievalQuestion(command.question, command.history), [{ id: 'preview', tenant: command.tenant, question: example.question.text, answer: example.answer.text, reason: '', status: 'preview', updatedAt: '' }]).length > 0
+    }
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')
@@ -129,8 +184,9 @@ export class LearningReviewService {
       if (command.action === 'list') {
         const rows = await client.query<ReviewCandidate>(`SELECT ${COLUMNS} FROM agent_knowledge_candidates c WHERE c.target_tenant = $1 ORDER BY c.updated_at DESC, c.id DESC LIMIT 100`, [command.tenant])
         result = { mode: 'review_required', candidates: rows.rows.map(present) }
-      } else if (command.action === 'retrieve') {
-        const queryTerms = terms(command.question)
+      } else if (command.action === 'retrieve' || command.action === 'preview') {
+        const query = retrievalQuestion(command.question, command.history)
+        const queryTerms = terms(query)
         if (queryTerms.length < 2) result = { examples: [] }
         else {
           const rows = await client.query<ReviewCandidate>(`SELECT ${COLUMNS}
@@ -141,9 +197,10 @@ export class LearningReviewService {
               AND d.active = true AND d.publication_status = 'published'
               AND EXISTS (SELECT 1 FROM agent_learning_audit_events a WHERE a.candidate_id = c.id AND a.tenant_key = c.target_tenant AND a.actor = 'intern-support-review' AND a.action = 'published')
               AND regexp_split_to_array(lower(c.question_redacted), '[^[:alnum:]]+') && $2::text[]
-            ORDER BY c.published_at DESC, c.id DESC LIMIT 300`, [command.tenant, queryTerms])
-          result = { examples: matchReviewedExamples(command.question, rows.rows) }
+            ORDER BY c.published_at DESC, c.id DESC LIMIT 300`, [command.tenant, searchTerms(query)])
+          result = { examples: matchReviewedExamples(query, rows.rows) }
         }
+        if (command.action === 'preview') result = { ...(result as { examples: unknown[] }), eligible: previewMatches, candidateMatches: previewMatches, ...(previewMatches ? { candidate: previewCandidate } : {}) }
       } else {
         let existing: LockedCandidate | undefined
         if (command.id) {
@@ -164,6 +221,7 @@ export class LearningReviewService {
             source.draftMessageId === storedSource.data.draftMessageId
           if (command.id && source && !inheritsSource) {
             const resolved = await this.resolveSource(source)
+            resolvedSource = resolved
             if (resolved.tenant !== command.tenant) throw new LearningRequestError(422, 'learning_source_tenant_mismatch')
           }
           // Every edit creates a new ID, including pending drafts. An old tab
@@ -177,7 +235,7 @@ export class LearningReviewService {
             VALUES ($1, 'intern-support-review-v1', $2, $1, $3, $4, $5, $6, $7, '{}', 'pending_review', 3) RETURNING id::text`, [key, nonce, command.tenant, cleaned.question.text, cleaned.answer.text, hash, cleaned.question.redactionCount + cleaned.answer.redactionCount])
           candidateId = created.rows[0]?.id
           if (!candidateId) throw new Error('Learning candidate insert failed')
-          await audit(client, candidateId, command.tenant, 'feedback_recorded', { reason: cleaned.reason, ...(source ? { source } : {}), ...(existing ? { previous_candidate_id: existing.id } : {}) })
+          await audit(client, candidateId, command.tenant, 'feedback_recorded', { reason: cleaned.reason, ...(resolvedSource ? { sourceContext: sourceSnapshot(resolvedSource) } : {}), ...(cleaned.correctedAnswer ? { correctedAnswer: cleaned.correctedAnswer } : {}), ...(source ? { source } : {}), ...(existing ? { previous_candidate_id: existing.id } : {}) })
         } else if (command.action === 'reject' && existing) {
           await retire(client, existing, 'rejected_by_reviewer')
         } else if (command.action === 'publish' && existing) {

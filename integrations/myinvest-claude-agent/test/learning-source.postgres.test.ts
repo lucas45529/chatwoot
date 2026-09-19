@@ -12,9 +12,9 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('rejects consumed drafts and 
   try {
     await client.query('CREATE TEMP TABLE conversations (id bigint, account_id bigint, display_id bigint, inbox_id bigint, custom_attributes jsonb)')
     await client.query(`CREATE TEMP TABLE messages (id bigint, account_id bigint, conversation_id bigint, inbox_id bigint,
-      message_type integer, private boolean, sender_type text, sender_id bigint, content text, content_attributes json)`)
+      message_type integer, private boolean, sender_type text, sender_id bigint, content text, content_attributes json, created_at timestamptz DEFAULT now(), additional_attributes jsonb DEFAULT '{}', processed_message_content text, content_type integer DEFAULT 0, status integer DEFAULT 0, source_id text)`)
     await client.query("INSERT INTO conversations VALUES (700, 101, 77, 17, '{}')")
-    await client.query(`INSERT INTO messages VALUES
+    await client.query(`INSERT INTO messages (id, account_id, conversation_id, inbox_id, message_type, private, sender_type, sender_id, content, content_attributes) VALUES
       (55, 101, 700, 17, 0, false, 'Contact', 900, 'Wie bearbeite ich Kontakte?', '{}'),
       (61, 101, 700, 17, 1, true, 'AgentBot', 801, E'KI-Entwurf\n\nAntwortvorschlag:\nÖffne Kontakte und wähle Bearbeiten.\nQuellen: Hilfe', '{"myinvest_agent_delivery_id":"55","myinvest_agent_message_kind":"draft_note"}')`)
     const resolver = new PostgresLearningSourceResolver({ query: (sql, values) => client.query(sql, [...values]) }, buildTenantRegistry(tenants.map((tenant, index) => ({ ...tenant, agentBotId: 801 + index }))))
@@ -30,10 +30,10 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('rejects consumed drafts and 
     await expect(resolver.resolve(source)).rejects.toMatchObject({ status: 404 })
     await client.query('UPDATE conversations SET inbox_id = 17')
     await client.query('UPDATE messages SET inbox_id = 17')
-    await client.query("INSERT INTO messages VALUES (57, 101, 700, 17, 1, false, 'User', 901, 'Gesendet vor der verzögerten privaten Notiz.', '{}')")
+    await client.query("INSERT INTO messages (id, account_id, conversation_id, inbox_id, message_type, private, sender_type, sender_id, content, content_attributes) VALUES (57, 101, 700, 17, 1, false, 'User', 901, 'Gesendet vor der verzögerten privaten Notiz.', '{}')")
     await expect(resolver.resolve(source)).rejects.toMatchObject({ status: 404 })
     await client.query('DELETE FROM messages WHERE id = 57')
-    await client.query("INSERT INTO messages VALUES (59, 101, 700, 17, 0, false, 'Contact', 900, 'Eine neue Kundenfrage.', '{}')")
+    await client.query("INSERT INTO messages (id, account_id, conversation_id, inbox_id, message_type, private, sender_type, sender_id, content, content_attributes) VALUES (59, 101, 700, 17, 0, false, 'Contact', 900, 'Eine neue Kundenfrage.', '{}')")
     await expect(resolver.resolve(source)).rejects.toMatchObject({ status: 404 })
     await client.query('DELETE FROM messages WHERE id = 59')
     await client.query("UPDATE messages SET inbox_id = 18 WHERE id = 61")
@@ -41,9 +41,9 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('rejects consumed drafts and 
     await client.query("UPDATE messages SET inbox_id = 17, sender_id = 802 WHERE id = 61")
     await expect(resolver.resolve(source)).rejects.toMatchObject({ status: 404 })
     await client.query("UPDATE messages SET sender_id = 801 WHERE id = 61")
-    await client.query(`INSERT INTO messages VALUES
+    await client.query(`INSERT INTO messages (id, account_id, conversation_id, inbox_id, message_type, private, sender_type, sender_id, content, content_attributes) VALUES
       (62, 101, 700, 17, 1, false, 'User', 901, 'Antwort zu Kontakten.', '{}'),
-      (63, 101, 700, 17, 0, false, 'Contact', 900, 'Wo finde ich die Rechnung?', '{}'),
+      (63, 101, 700, 17, 0, false, 'Contact', 900, 'Wo finde ich die Rechnung?', '{"myinvest_tenant":"new_academy"}'),
       (64, 101, 700, 17, 1, true, 'AgentBot', 801, E'Vorschlag zur Referenz:\nDie Rechnung findest du im Konto.', '{"myinvest_agent_delivery_id":"63","myinvest_agent_message_kind":"draft_note"}')`)
     await expect(resolver.resolve(source)).rejects.toMatchObject({ status: 404 })
     await expect(resolver.resolve({ ...source, questionMessageId: 63, draftMessageId: 64 })).rejects.toMatchObject({ status: 422 })

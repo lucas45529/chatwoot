@@ -1,13 +1,10 @@
+import { redactConversationText } from './conversation-history.js'
 import { createHmac } from 'node:crypto'
 import { z } from 'zod'
 import type { ChatwootPort } from './chatwoot-client.js'
 import type { ChatwootConversationContextStore } from './chatwoot-delivery-repository.js'
 import type { TenantConfig, TenantRegistry } from './config.js'
 import type { ConversationContext, TenantKey } from './domain.js'
-import {
-  containsResidualPersonalData,
-  redactSupportText,
-} from './learning/extractor.js'
 import {
   privateLearningReferences,
   type SupportBrainAnswer,
@@ -471,8 +468,8 @@ export class ManualDraftService {
       }
     }
 
-    const question = redactSupportText(rawQuestion).text.trim()
-    if (!question || containsResidualPersonalData(question)) return undefined
+    const question = redactConversationText(rawQuestion)
+    if (!question) return undefined
     input.signal?.throwIfAborted()
     return this.dependencies.brain.answer({
       requestId: manualReviewRequestId(
@@ -489,8 +486,8 @@ export class ManualDraftService {
       ),
       tenant: input.route.tenant,
       channel: input.route.channel,
-      ...(input.context.contactEmail
-        ? { contact: { email: input.context.contactEmail } }
+      ...(input.context.contactEmail || input.context.contactName || input.context.contactPhone
+        ? { contact: { email: input.context.contactEmail, name: input.context.contactName, phone: input.context.contactPhone } }
         : {}),
       reviewOnly: true,
     }, input.signal)
