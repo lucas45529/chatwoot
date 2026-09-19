@@ -58,6 +58,13 @@ class Myinvest::SupportExperience
         let learningHost = null;
         let pendingDraft = null;
         let pendingRegeneration = null;
+        let regenerationCapability = false;
+        let lastCapabilityRequest = 0;
+        const requestCapabilities = () => {
+          if (!learningHost || regenerationCapability || Date.now() - lastCapabilityRequest < 5000) return;
+          lastCapabilityRequest = Date.now();
+          window.parent.postMessage({ type: 'myinvest-support-capabilities-request', version: 1 }, learningHost);
+        };
         const attemptedDrafts = new Set();
         const currentEditor = (box = document.querySelector('.reply-box')) => {
           const bridge = box?.myinvestSupportReplyBox;
@@ -135,7 +142,7 @@ class Myinvest::SupportExperience
         };
         const regenerationIntent = () => {
           const current = currentConversation();
-          if (!learningHost || !current || pendingDraft || pendingRegeneration || !window.crypto?.randomUUID) return null;
+          if (!regenerationCapability || !learningHost || !current || pendingDraft || pendingRegeneration || !window.crypto?.randomUUID) return null;
           const { accountId, conversationId, editor } = current;
           if (editor.isPrivate || editor.isEditorDisabled || editor.replyType !== 'REPLY') return null;
           const notes = [...(editor.currentChat.messages || [])].sort((a, b) => b.id - a.id);
@@ -235,26 +242,28 @@ class Myinvest::SupportExperience
           }
           const visible = currentConversation();
           if (pendingRegeneration && (visible?.accountId !== pendingRegeneration.accountId || visible?.conversationId !== pendingRegeneration.conversationId)) pendingRegeneration = null;
-          let regenerate = actions.querySelector('[data-myinvest-regenerate]');
-          if (!regenerate) {
-            regenerate = document.createElement('button');
-            regenerate.type = 'button';
-            regenerate.dataset.myinvestRegenerate = '1';
-            regenerate.className = actions.querySelector('button')?.className || '';
-            regenerate.textContent = 'Mit aktuellem Wissen neu erstellen';
-            regenerate.addEventListener('click', () => {
-              const intent = regenerationIntent();
-              if (!intent) return;
-              const generationId = window.crypto.randomUUID();
-              pendingRegeneration = { ...intent, generationId };
-              const { previousDraft, ...source } = intent;
-              window.parent.postMessage({ type: 'myinvest-support-regenerate', version: 1, ...source, generationId }, learningHost);
-              draftStatus('Neue Vorschau wird vorbereitet…');
-            });
-            actions.prepend(regenerate);
-          }
-          regenerate.disabled = !regenerationIntent();
-          regenerate.title = regenerate.disabled ? 'Nur einen unveränderten KI-Entwurf zur aktuellen Anfrage neu erstellen.' : 'Neue Antwort vergleichen und bewusst übernehmen';
+          if (regenerationCapability) {
+            let regenerate = actions.querySelector('[data-myinvest-regenerate]');
+            if (!regenerate) {
+              regenerate = document.createElement('button');
+              regenerate.type = 'button';
+              regenerate.dataset.myinvestRegenerate = '1';
+              regenerate.className = actions.querySelector('button')?.className || '';
+              regenerate.textContent = 'Mit aktuellem Wissen neu erstellen';
+              regenerate.addEventListener('click', () => {
+                const intent = regenerationIntent();
+                if (!intent) return;
+                const generationId = window.crypto.randomUUID();
+                pendingRegeneration = { ...intent, generationId };
+                const { previousDraft, ...source } = intent;
+                window.parent.postMessage({ type: 'myinvest-support-regenerate', version: 1, ...source, generationId }, learningHost);
+                draftStatus('Neue Vorschau wird vorbereitet…');
+              });
+              actions.prepend(regenerate);
+            }
+            regenerate.disabled = !regenerationIntent();
+            regenerate.title = regenerate.disabled ? 'Nur einen unveränderten KI-Entwurf zur aktuellen Anfrage neu erstellen.' : 'Neue Antwort vergleichen und bewusst übernehmen';
+          } else actions.querySelector('[data-myinvest-regenerate]')?.remove();
           let button = actions.querySelector('[data-myinvest-learning]');
           if (!button) {
             actions.classList.add('gap-2');
@@ -279,7 +288,14 @@ class Myinvest::SupportExperience
           if (window.parent === window || event.source !== window.parent || !learningHosts.has(event.origin)) return;
           if (!data || data.version !== 1) return;
           if (Object.keys(data).length === 2 && data.type === 'myinvest-support-learning-host') {
+            if (learningHost !== event.origin) { regenerationCapability = false; lastCapabilityRequest = 0; }
             learningHost = event.origin;
+            updateLearningButton();
+            return;
+          }
+          if (event.origin === learningHost && Object.keys(data).length === 3 &&
+            data.type === 'myinvest-support-capabilities' && data.regenerate === true) {
+            regenerationCapability = true;
             updateLearningButton();
             return;
           }
@@ -319,6 +335,7 @@ class Myinvest::SupportExperience
         document.addEventListener('input', updateLearningButton);
         window.setInterval(updateLearningButton, 300);
         const syncDraft = async () => {
+          requestCapabilities();
           if (syncing || pendingDraft || pendingRegeneration || !window.axios) return;
           const route = window.location.pathname.match(routePattern);
           if (!route) return;

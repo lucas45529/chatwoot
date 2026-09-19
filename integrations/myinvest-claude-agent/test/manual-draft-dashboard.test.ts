@@ -44,10 +44,11 @@ function dashboard() {
     addEventListener: (name: string, listener: (event: unknown) => void) => documentListeners.set(name, listener),
     createElement: () => ({ dataset: {}, click: undefined as (() => void) | undefined, addEventListener(_name: string, handler: () => void) { this.click = handler }, setAttribute() {} }),
   }
-  runInNewContext(script, { window, document })
+  let now = 10_000
+  runInNewContext(script, { window, document, Date: class extends Date { static now() { return now } } })
   const message = (data: unknown, origin = 'https://www.myinvest-pro.de', source: unknown = parent) => listeners.get('message')?.({ data, origin, source })
   const click = () => { const event = { target: { closest: () => native }, preventDefault: vi.fn(), stopImmediatePropagation: vi.fn() }; documentListeners.get('click')?.(event); return event }
-  return { parent, editor, box, window, axios, storage, native, message, click, regenerate: () => elements.find(el => el.dataset.myinvestRegenerate), host: () => message({ type: 'myinvest-support-learning-host', version: 1 }), sync: () => intervals[1]?.(), tick: () => intervals[0]?.(), timeout: () => timeouts.at(-1)?.(), status: () => elements.find(el => el.dataset.myinvestDraftStatus)?.textContent }
+  return { parent, editor, box, window, axios, storage, native, message, click, advance: (ms: number) => { now += ms }, regenerate: () => elements.find(el => el.dataset.myinvestRegenerate), host: () => message({ type: 'myinvest-support-learning-host', version: 1 }), sync: () => intervals[1]?.(), tick: () => intervals[0]?.(), timeout: () => timeouts.at(-1)?.(), status: () => elements.find(el => el.dataset.myinvestDraftStatus)?.textContent }
 }
 
 describe('MyInvest draft composer bridge', () => {
@@ -73,14 +74,14 @@ describe('MyInvest draft composer bridge', () => {
 
   it('automatically prepares an unanswered conversation once, preserving manual edits and private notes', async () => {
     const ui = dashboard(); ui.host(); await ui.sync(); await ui.sync()
-    expect(ui.parent.postMessage).toHaveBeenCalledTimes(1)
+    expect(ui.parent.postMessage.mock.calls.filter(call => call[0].type === 'myinvest-support-draft')).toHaveLength(1)
     for (const mode of ['human', 'private', 'answered']) {
       const other = dashboard(); other.host()
       if (mode === 'human') other.editor.message = 'Meine eigene Antwort'
       if (mode === 'private') other.editor.isPrivate = true
       if (mode === 'answered') other.editor.currentChat.messages[0]!.message_type = 1
       await other.sync()
-      expect(other.parent.postMessage).not.toHaveBeenCalled()
+      expect(other.parent.postMessage.mock.calls.filter(call => call[0].type === 'myinvest-support-draft')).toHaveLength(0)
     }
   })
 
@@ -146,7 +147,7 @@ describe('explicit regeneration composer bridge', () => {
     ui.editor.message = 'Alter KI-Entwurf'
     ui.storage.set('draftMessages', JSON.stringify({ 'draft-77-REPLY': 'Alter KI-Entwurf' }))
     ui.storage.set('myinvest-synced-draft-101-77', 'Alter KI-Entwurf')
-    ui.host(); ui.tick()
+    ui.host(); ui.message({ type: 'myinvest-support-capabilities', version: 1, regenerate: true }); ui.tick()
     return ui
   }
   it('opens an explicit source-bound preview without removing or transmitting composer text', async () => {
@@ -187,5 +188,29 @@ describe('explicit regeneration composer bridge', () => {
     ui.regenerate()?.click?.(); ui.editor.currentChat.id = 78; ui.window.location.pathname = '/app/accounts/101/conversations/78'
     ui.message({ type: 'myinvest-support-regenerate-result', version: 1, generationId: requestId, status: 'ready' })
     expect(ui.axios).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('regeneration capability rollout', () => {
+  it('keeps regeneration absent for an old parent and accepts only an exact trusted capability', () => {
+    const ui = dashboard(); ui.host()
+    expect(ui.regenerate()).toBeUndefined()
+    const capability = { type: 'myinvest-support-capabilities', version: 1, regenerate: true }
+    ui.message(capability, 'https://evil.example'); ui.message(capability, undefined, {})
+    ui.message({ ...capability, regenerate: false }); ui.message({ ...capability, extra: true })
+    expect(ui.regenerate()).toBeUndefined()
+    ui.message(capability)
+    expect(ui.regenerate()?.textContent).toBe('Mit aktuellem Wissen neu erstellen')
+  })
+  it('requests capabilities at most every5seconds and stops after the late parent confirms', async () => {
+    const ui = dashboard(); ui.host(); ui.editor.message = 'Menschlicher Entwurf'
+    const requests = () => ui.parent.postMessage.mock.calls.filter(call => call[0].type === 'myinvest-support-capabilities-request')
+    await ui.sync(); await ui.sync(); ui.advance(4999); await ui.sync()
+    expect(requests()).toHaveLength(1)
+    expect(requests()[0]).toEqual([{ type: 'myinvest-support-capabilities-request', version: 1 }, 'https://www.myinvest-pro.de'])
+    ui.advance(1); await ui.sync(); expect(requests()).toHaveLength(2)
+    ui.message({ type: 'myinvest-support-capabilities', version: 1, regenerate: true })
+    ui.advance(5000); await ui.sync(); expect(requests()).toHaveLength(2)
   })
 })
