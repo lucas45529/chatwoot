@@ -5,6 +5,8 @@ interface HistoryDatabase {
   query<Row extends Record<string, unknown>>(sql: string, values: readonly unknown[]): Promise<{ rows: Row[] }>
 }
 interface HistoryRow extends Record<string, unknown> {
+  id: string | number
+  created_at: Date | string
   message_type: number
   sender_type: string | null
   content: string
@@ -41,7 +43,7 @@ export async function loadConversationHistory(database: HistoryDatabase, input: 
   const result = await database.query<HistoryRow>(`
     SELECT recent.* FROM (
       SELECT message.id, message.created_at, message.message_type, message.sender_type,
-        coalesce(nullif(message.content, ''), message.processed_message_content) AS content,
+        left(coalesce(nullif(message.content, ''), message.processed_message_content), 6000) AS content,
         (attrs.value ->> 'external_echo') IS NOT NULL AS external_echo,
         (attrs.value ->> 'automation_rule_id') IS NOT NULL AS from_automation,
         (message.additional_attributes ? 'campaign_id') AS from_campaign
@@ -67,10 +69,11 @@ export async function loadConversationHistory(database: HistoryDatabase, input: 
           OR attrs.value ->> 'myinvest_tenant' = coalesce(CASE WHEN json_typeof(current_message.content_attributes) = 'string'
             THEN (current_message.content_attributes #>> '{}')::json ->> 'myinvest_tenant'
             ELSE current_message.content_attributes ->> 'myinvest_tenant' END, conversation.custom_attributes ->> 'myinvest_tenant'))
-      ORDER BY message.created_at DESC, message.id DESC LIMIT 12
+      ORDER BY message.created_at DESC, message.id DESC LIMIT 100
     ) recent ORDER BY recent.created_at ASC, recent.id ASC`,
   [input.accountId, input.conversationId, input.currentMessageId, input.inboxId])
   const turns: ConversationTurn[] = []
+  const olderQuotes: Array<{ index: number; text: string }> = []
   for (const row of result.rows) {
     let role: ConversationTurn['role']
     let prefix = ''
@@ -86,7 +89,35 @@ export async function loadConversationHistory(database: HistoryDatabase, input: 
       } else continue
     } else continue
     const text = typeof row.content === 'string' ? redactConversationText(row.content) : ''
-    if (text) turns.push({ role, text: `${prefix}${text}`.slice(0, 1500) })
+    if (!text) continue
+    const excerpt = role === 'customer' ? contactExcerpt(row.content) : undefined
+    if (excerpt) {
+      const date = row.created_at instanceof Date ? row.created_at : new Date(row.created_at)
+      if (/^[1-9]\d{0,18}$/.test(String(row.id)) && Number.isFinite(date.getTime())) {
+        olderQuotes.push({ index: turns.length, text: `#${row.id} · ${date.toISOString()}: „${excerpt}“` })
+      }
+    }
+    turns.push({ role, text: `${prefix}${text}`.slice(0, 1500) })
+  }
+  if (turns.length > 12) {
+    const quotes = olderQuotes.filter(quote => quote.index < turns.length - 11).slice(-4)
+    if (quotes.length) return [{
+      role: 'customer',
+      text: 'Ältere Kundenangaben (redigierte Originalauszüge; kein neuer Stand). Spätere Korrekturen haben Vorrang:\n' + quotes.map(quote => quote.text).join('\n'),
+    }, ...turns.slice(-11)]
   }
   return turns.slice(-12)
+}
+
+// Selection identifies supplied contact data, not facts inferred from AI text.
+// The same public, tenant-bound SQL projection supplies recent and older turns.
+function contactExcerpt(text: string): string | undefined {
+  const contact = /[^\s@]+@[^\s@]+\.[^\s@]+|(?:\+\d{1,3}|\b0[1-9])[\d ()/-]{7,}/u.exec(text)
+  if (!contact) return undefined
+  // Center on the actual match so a long introduction cannot hide the evidence.
+  const start = Math.max(0, contact.index - 100)
+  const end = Math.min(text.length, contact.index + contact[0].length + 100)
+  const excerpt = redactConversationText(text.slice(start, end))
+  if (!excerpt) return undefined
+  return `${start > 0 ? '[gekürzt] … ' : ''}${excerpt.slice(0, 250)}${end < text.length || excerpt.length > 250 ? ' … [gekürzt]' : ''}`
 }

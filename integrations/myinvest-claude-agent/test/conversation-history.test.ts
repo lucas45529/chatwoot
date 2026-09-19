@@ -25,7 +25,7 @@ describe('delivered conversation history', () => {
       { role: 'customer', text: 'Alles klar.' },
     ])
     const sql = query.mock.calls[0]![0]
-    for (const clause of ['message.private = false', 'message.account_id = $1', 'message.inbox_id = $4', 'message.conversation_id = $2', '(message.created_at, message.id) < (current_message.created_at, current_message.id)', 'message.status IN (0, 1, 2)', 'LIMIT 12']) expect(sql).toContain(clause)
+    for (const clause of ['message.private = false', 'message.account_id = $1', 'message.inbox_id = $4', 'message.conversation_id = $2', '(message.created_at, message.id) < (current_message.created_at, current_message.id)', 'message.status IN (0, 1, 2)', 'LIMIT 100']) expect(sql).toContain(clause)
     expect(sql).toContain('processed_message_content')
     expect(sql).not.toContain('draft_note')
   })
@@ -35,4 +35,54 @@ it('restores more than26 calendar dates without leaking internal placeholders', 
   const dates = Array.from({ length: 40 }, (_, index) => `${String(index % 28 + 1).padStart(2, '0')}.09.2026`)
   const text = dates.map((date) => `Termin: ${date}.`).join(' ')
   expect(redactConversationText(text)).toBe(text)
+})
+
+describe('bounded older customer evidence', () => {
+  const row = (id: number, content: string, sender_type = 'Contact') => ({ id: String(id), created_at: new Date(`2026-09-01T10:00:00Z`), message_type: sender_type === 'Contact' ? 0 : 1, sender_type, content })
+  it('keeps original customer quotes400/402 before source836 alongside the latest11 turns', async () => {
+    const recent = Array.from({ length: 20 }, (_, n) => row(600 + n, `Aktueller Verlauf ${n}`))
+    const query = vi.fn().mockResolvedValue({ rows: [row(400, 'Erster Lead: alpha@example.test'), row(402, 'Zweiter Lead: beta@example.test; nur Anrufbeantworter erreichbar.'), ...recent] })
+    const history = await loadConversationHistory({ query }, { accountId: 1, inboxId: 2, conversationId: '16', currentMessageId: 836 })
+    expect(history).toHaveLength(12)
+    expect(history[0]?.role).toBe('customer')
+    expect(history[0]?.text).toContain('Ältere Kundenangaben')
+    expect(history[0]?.text).toContain('#400 · 2026-09-01T10:00:00.000Z')
+    expect(history[0]?.text).toContain('#402 · 2026-09-01T10:00:00.000Z')
+    expect(history[0]?.text).toContain('Erster Lead: [E-MAIL/ACCOUNT]')
+    expect(history[0]?.text).toContain('nur Anrufbeantworter erreichbar.')
+    expect(history[0]?.text).not.toContain('@example.test')
+    expect(history.slice(1).map(t => t.text)).toEqual(recent.slice(-11).map(r => r.content))
+    expect(query.mock.calls[0]?.[0]).toContain('LIMIT 100')
+    expect(query.mock.calls[0]?.[0]).toContain('6000')
+  })
+  it('marks older evidence as historical and keeps the newer correction last', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [row(400, 'Meine Nummer: +49 171 12345678'), ...Array.from({ length: 12 }, (_, n) => row(600 + n, 'Eine Nachfrage')), row(835, 'Korrektur: Die alte Nummer gilt nicht mehr, bitte ausschließlich neu@example.test verwenden.')] })
+    const history = await loadConversationHistory({ query }, { accountId: 1, inboxId: 2, conversationId: '16', currentMessageId: 836 })
+    expect(history[0]?.text).toContain('kein neuer Stand')
+    expect(history[0]?.text).toContain('Spätere Korrekturen haben Vorrang')
+    expect(history.at(-1)?.text).toContain('Die alte Nummer gilt nicht mehr')
+    expect(history).toHaveLength(12)
+  })
+  it('reserves no evidence slot for old agent text or contact-free chatter', async () => {
+    const rows = [row(400, 'Kunde hat alpha@example.test genannt.', 'AgentBot'), row(402, 'Hallo'), ...Array.from({ length: 12 }, (_, n) => row(600 + n, `Nachfrage ${n}`))]
+    const history = await loadConversationHistory({ query: vi.fn().mockResolvedValue({ rows }) }, { accountId: 1, inboxId: 2, conversationId: '16', currentMessageId: 836 })
+    expect(history.map(t => t.text)).toEqual(rows.slice(-12).map(r => r.content))
+  })
+  it('centers long excerpts on the actual supplied contact detail', async () => {
+    const rows = [row(400, 'Langer Hintergrund. '.repeat(80) + 'Kontakt: exact@example.test. Bitte diesen prüfen.'), ...Array.from({ length: 12 }, (_, n) => row(600 + n, 'Neu'))]
+    const history = await loadConversationHistory({ query: vi.fn().mockResolvedValue({ rows }) }, { accountId: 1, inboxId: 2, conversationId: '16', currentMessageId: 836 })
+    expect(history[0]?.text).toContain('Kontakt: [E-MAIL/ACCOUNT]')
+    expect(history[0]?.text).toContain('Bitte diesen prüfen.')
+    expect(history[0]?.text).toContain('[gekürzt]')
+  })
+  it('bounds historical quotes and never invents provenance for missing source metadata', async () => {
+    const rows = [...Array.from({ length: 10 }, (_, n) => row(400 + n, `Kontakt ${n}: test@example.test ${'Text '.repeat(200)}`)), ...Array.from({ length: 12 }, (_, n) => row(600 + n, 'Neu'))]
+    const history = await loadConversationHistory({ query: vi.fn().mockResolvedValue({ rows }) }, { accountId: 1, inboxId: 2, conversationId: '16', currentMessageId: 836 })
+    expect(history[0]?.text.match(/#\d+ ·/g)).toHaveLength(4)
+    expect(history.every(t => t.text.length <= 1500)).toBe(true)
+    expect(history[0]?.text).toContain('[gekürzt]')
+    const noMetadata = rows.map(r => ({ ...r, created_at: undefined, id: undefined }))
+    const plain = await loadConversationHistory({ query: vi.fn().mockResolvedValue({ rows: noMetadata }) }, { accountId: 1, inboxId: 2, conversationId: '16', currentMessageId: 836 })
+    expect(plain[0]?.text).not.toContain('Ältere Kundenangaben')
+  })
 })
