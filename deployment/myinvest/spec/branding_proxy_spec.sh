@@ -14,6 +14,12 @@ grep -Eq '^[[:space:]]*redir[[:space:]]+@root[[:space:]]+/app/login[[:space:]]+3
   exit 1
 }
 
+expected_csp="frame-ancestors 'self' https://www.myinvest-pro.de https://app.myinvest-pro.de https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app"
+grep -Fq "header_down Content-Security-Policy \"$expected_csp\"" "$caddyfile" || {
+  printf 'Caddy must allow only production and the fixed Beta frame ancestors.\n' >&2
+  exit 1
+}
+
 redirect_line="$(grep -En '^[[:space:]]*redir[[:space:]]+@root[[:space:]]+/app/login[[:space:]]+302[[:space:]]*(#.*)?$' "$caddyfile" | head -n 1 | cut -d: -f1)"
 proxy_line="$(grep -En '^[[:space:]]*handle[[:space:]]*\{' "$caddyfile" | tail -n 1 | cut -d: -f1)"
 if [[ -z "$proxy_line" || "$redirect_line" -ge "$proxy_line" ]]; then

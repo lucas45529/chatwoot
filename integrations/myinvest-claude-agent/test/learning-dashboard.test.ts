@@ -65,6 +65,17 @@ describe('embedded draft learning bridge', () => {
     ui.host(); expect(ui.button()?.disabled).toBe(false)
   })
 
+  it('accepts only the fixed Beta host alongside production parents', () => {
+    const beta = 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app'
+    for (const origin of ['https://another-preview.vercel.app', `${beta}.evil.example`, beta.replace('https:', 'http:')]) {
+      const denied = dashboard(); denied.host(origin)
+      expect(denied.button()).toBeUndefined()
+    }
+    const ui = dashboard(); ui.host(beta); ui.click()
+    expect(ui.button()?.disabled).toBe(false)
+    expect(ui.parent.postMessage.mock.calls[0]?.[1]).toBe(beta)
+  })
+
   it('hands corrected live editor text and immutable source IDs to the exact parent only', () => {
     const ui = dashboard()
     ui.host('https://app.myinvest-pro.de'); ui.click()

@@ -53,6 +53,7 @@ class Myinvest::SupportExperience
         const learningHosts = new Set([
           'https://www.myinvest-pro.de',
           'https://app.myinvest-pro.de',
+          'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app',
         ]);
         let learningHost = null;
         let pendingDraft = null;
