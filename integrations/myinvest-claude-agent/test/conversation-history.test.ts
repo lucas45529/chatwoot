@@ -55,6 +55,37 @@ describe('bounded older customer evidence', () => {
     expect(query.mock.calls[0]?.[0]).toContain('LIMIT 100')
     expect(query.mock.calls[0]?.[0]).toContain('6000')
   })
+  it('keeps the public question and customer request binding contact400, without assigning contact402 the same role', async () => {
+    const recent = Array.from({ length: 20 }, (_, n) => row(600 + n, `Aktueller Verlauf ${n}`))
+    const rows = [row(352, 'Bitte den ersten Kontakt ersetzen, weil er nicht qualifiziert war.'),
+      row(354, 'Teile uns bitte Namen und E-Mail des Kunden mit, der kein Interesse hat.', 'User'),
+      row(360, 'Der Support lässt zu wünschen übrig.'), row(365, 'Da passt etwas nicht.'),
+      row(400, 'Sven Beispiel alpha@example.test'),
+      row(402, 'Dieser hier ist nur auf dem AB erreichbar: Thomas Beispiel beta@example.test'), ...recent]
+    const history = await loadConversationHistory({ query: vi.fn().mockResolvedValue({ rows }) }, { accountId: 1, inboxId: 2, conversationId: '16', currentMessageId: 836 })
+    const anchor = history[0]!.text
+    expect(anchor).toContain('Bitte den ersten Kontakt ersetzen, weil er nicht qualifiziert war.')
+    expect(anchor).toContain('#354 · 2026-09-01T10:00:00.000Z · Mitarbeiter:')
+    expect(anchor).toContain('Teile uns bitte Namen und E-Mail des Kunden mit, der kein Interesse hat.')
+    expect(anchor).toContain('#400 · 2026-09-01T10:00:00.000Z · Kunde:')
+    expect(anchor).toContain('Sven Beispiel [E-MAIL/ACCOUNT]')
+    expect(anchor).toContain('nur auf dem AB erreichbar: Thomas Beispiel')
+    expect(anchor.match(/#354 ·/g)).toHaveLength(1)
+    expect(anchor.indexOf('#354')).toBeLessThan(anchor.indexOf('#400'))
+    expect(anchor.indexOf('#400')).toBeLessThan(anchor.indexOf('#402'))
+    expect(history.slice(1).map(t => t.text)).toEqual(recent.slice(-11).map(r => r.content))
+    expect(history.every(t => t.text.length <= 1500)).toBe(true)
+  })
+  it('budgets linked public context and keeps contact evidence even after long introductions', async () => {
+    const rows = Array.from({ length: 4 }, (_, n) => [row(300 + n * 3, 'Kundenanliegen. '.repeat(100)), row(301 + n * 3, 'Öffentliche Frage. '.repeat(100), 'User'), row(302 + n * 3, 'Lange Einleitung. '.repeat(100) + `Kontakt ${n}: test@example.test`)]).flat()
+    rows.push(...Array.from({ length: 12 }, (_, n) => row(600 + n, 'Neue Korrektur hat Vorrang.')))
+    const history = await loadConversationHistory({ query: vi.fn().mockResolvedValue({ rows }) }, { accountId: 1, inboxId: 2, conversationId: '16', currentMessageId: 836 })
+    expect(history).toHaveLength(12)
+    expect(history[0]!.text.match(/Mitarbeiter:/g)).toHaveLength(4)
+    expect(history[0]!.text.match(/\[E-MAIL\/ACCOUNT\]/g)).toHaveLength(4)
+    expect(history.every(t => t.text.length <= 1500)).toBe(true)
+    expect(history.at(-1)?.text).toBe('Neue Korrektur hat Vorrang.')
+  })
   it('marks older evidence as historical and keeps the newer correction last', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [row(400, 'Meine Nummer: +49 171 12345678'), ...Array.from({ length: 12 }, (_, n) => row(600 + n, 'Eine Nachfrage')), row(835, 'Korrektur: Die alte Nummer gilt nicht mehr, bitte ausschließlich neu@example.test verwenden.')] })
     const history = await loadConversationHistory({ query }, { accountId: 1, inboxId: 2, conversationId: '16', currentMessageId: 836 })

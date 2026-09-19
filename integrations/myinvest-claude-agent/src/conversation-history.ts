@@ -73,7 +73,7 @@ export async function loadConversationHistory(database: HistoryDatabase, input: 
     ) recent ORDER BY recent.created_at ASC, recent.id ASC`,
   [input.accountId, input.conversationId, input.currentMessageId, input.inboxId])
   const turns: ConversationTurn[] = []
-  const olderQuotes: Array<{ index: number; text: string }> = []
+  const evidence: Array<{ index: number; role: ConversationTurn['role']; label: string; text: string; contact: boolean }> = []
   for (const row of result.rows) {
     let role: ConversationTurn['role']
     let prefix = ''
@@ -91,20 +91,31 @@ export async function loadConversationHistory(database: HistoryDatabase, input: 
     const text = typeof row.content === 'string' ? redactConversationText(row.content) : ''
     if (!text) continue
     const excerpt = role === 'customer' ? contactExcerpt(row.content) : undefined
-    if (excerpt) {
-      const date = row.created_at instanceof Date ? row.created_at : new Date(row.created_at)
-      if (/^[1-9]\d{0,18}$/.test(String(row.id)) && Number.isFinite(date.getTime())) {
-        olderQuotes.push({ index: turns.length, text: `#${row.id} · ${date.toISOString()}: „${excerpt}“` })
-      }
+    const date = row.created_at instanceof Date ? row.created_at : new Date(row.created_at)
+    if (/^[1-9]\d{0,18}$/.test(String(row.id)) && Number.isFinite(date.getTime())) {
+      const speaker = role === 'customer' ? 'Kunde' : role === 'human' ? 'Mitarbeiter' : 'Assistent'
+      evidence.push({ index: turns.length, role, label: `#${row.id} · ${date.toISOString()} · ${speaker}: `, text: excerpt ?? `${prefix}${text}`, contact: Boolean(excerpt) })
     }
     turns.push({ role, text: `${prefix}${text}`.slice(0, 1500) })
   }
   if (turns.length > 12) {
-    const quotes = olderQuotes.filter(quote => quote.index < turns.length - 11).slice(-4)
-    if (quotes.length) return [{
-      role: 'customer',
-      text: 'Ältere Kundenangaben (redigierte Originalauszüge; kein neuer Stand). Spätere Korrekturen haben Vorrang:\n' + quotes.map(quote => quote.text).join('\n'),
-    }, ...turns.slice(-11)]
+    const contacts = evidence.filter(quote => quote.contact && quote.index < turns.length - 11).slice(-4)
+    if (contacts.length) {
+      const selected = new Set(contacts)
+      for (const contact of contacts) {
+        // Preserve the preceding exchange as evidence, without inferring which
+        // contact answers which question. Every quoted role remains explicit.
+        const previousAgent = evidence.filter(quote => quote.index < contact.index && quote.role !== 'customer').at(-1)
+        if (!previousAgent) continue
+        selected.add(previousAgent)
+        const previousCustomer = evidence.find(quote => quote.index === previousAgent.index - 1 && quote.role === 'customer')
+        if (previousCustomer) selected.add(previousCustomer)
+      }
+      const quotes = [...selected].sort((a, b) => a.index - b.index)
+      const heading = 'Ältere Kundenangaben mit öffentlichem Gesprächskontext (redigierte Originalauszüge; kein neuer Stand). Spätere Korrekturen haben Vorrang:\n'
+      const quoteBudget = Math.min(250, Math.floor((1500 - heading.length - quotes.reduce((sum, quote) => sum + quote.label.length + 3, 0)) / quotes.length))
+      return [{ role: 'customer', text: heading + quotes.map(quote => `${quote.label}„${boundedQuote(quote.text, quoteBudget, quote.contact)}“`).join('\n') }, ...turns.slice(-11)]
+    }
   }
   return turns.slice(-12)
 }
@@ -120,4 +131,14 @@ function contactExcerpt(text: string): string | undefined {
   const excerpt = redactConversationText(text.slice(start, end))
   if (!excerpt) return undefined
   return `${start > 0 ? '[gekürzt] … ' : ''}${excerpt.slice(0, 250)}${end < text.length || excerpt.length > 250 ? ' … [gekürzt]' : ''}`
+}
+
+
+function boundedQuote(text: string, limit: number, contact: boolean): string {
+  if (text.length <= limit) return text
+  const marker = ' … [gekürzt]'
+  const available = Math.max(0, limit - marker.length * 2)
+  const match = contact ? /\[(?:E-MAIL\/ACCOUNT|TELEFON\/NUMMER)\]/u.exec(text) : null
+  const start = match ? Math.max(0, match.index - Math.floor((available - match[0].length) / 2)) : 0
+  return `${start ? '[gekürzt] … ' : ''}${text.slice(start, start + available)}${start + available < text.length ? marker : ''}`
 }

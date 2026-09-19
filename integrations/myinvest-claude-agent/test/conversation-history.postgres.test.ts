@@ -53,6 +53,9 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('retains customer evidence400
       status integer DEFAULT 1, source_id text)`)
     await client.query(`INSERT INTO conversations VALUES (16,1,2,'{"myinvest_tenant":"new_academy","myinvest_channel":"whatsapp"}')`)
     await client.query(`INSERT INTO messages (id,content) VALUES
+      (352,'Bitte den ersten Kontakt ohne Interesse ersetzen.'),
+      (354,'Wie heißt der Kunde ohne Interesse?'),
+      (355,'Fremde Bezugsfrage'), (356,'Private Bezugsfrage'),
       (400,'Erster Lead: alpha@example.test'), (402,'Zweiter Lead: beta@example.test; nur Anrufbeantworter.'),
       (450,'Privater KI-Vorschlag: private@example.test'), (451,'Interne Mitarbeiternotiz: internal@example.test'),
       (452,'Anderes Produkt: tenant@example.test'), (453,'Anderer Account: account@example.test'),
@@ -61,6 +64,9 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('retains customer evidence400
       (458,'Öffentliche KI-Behauptung: bot@example.test'),
       (830,'Korrektur: Den ersten Kontakt bitte nicht mehr verwenden, ausschließlich corrected@example.test.'),
       (836,'Ich habe die Kontaktdaten schon genannt.'), (837,'Privater KI-Entwurf fragt erneut nach Kontakt: draft@example.test')`)
+    await client.query(`UPDATE messages SET message_type=1, sender_type='User' WHERE id IN (354,355,356)`)
+    await client.query(`UPDATE messages SET content_attributes='{"myinvest_tenant":"saas"}' WHERE id=355`)
+    await client.query(`UPDATE messages SET private=true WHERE id=356`)
     await client.query(`UPDATE messages SET private=true, message_type=1, sender_type='AgentBot' WHERE id IN (450,837)`)
     await client.query(`UPDATE messages SET private=true, message_type=1, sender_type='User' WHERE id=451`)
     await client.query(`UPDATE messages SET content_attributes='{"myinvest_tenant":"saas"}' WHERE id=452`)
@@ -74,6 +80,9 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('retains customer evidence400
     const read = () => loadConversationHistory({ query: (sql, values) => client.query(sql, [...values]) }, { accountId: 1, inboxId: 2, conversationId: '16', currentMessageId: 836 })
     const history = await read()
     expect(history).toHaveLength(12)
+    expect(history[0]?.text).toContain('#354 · 2026-09-01T10:00:00.000Z · Mitarbeiter:')
+    expect(history[0]?.text).toContain('Wie heißt der Kunde ohne Interesse?')
+    expect(history[0]?.text).not.toMatch(/#35[56]/)
     expect(history[0]?.text).toContain('#400 · 2026-09-01T10:00:00.000Z')
     expect(history[0]?.text).toContain('#402 · 2026-09-01T10:00:00.000Z')
     expect(history[0]?.text).not.toMatch(/#45[0-8]|#837|private|internal|tenant|account|inbox|other|future|bot|draft/)
