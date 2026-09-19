@@ -21,7 +21,7 @@ import type {
 } from './support-brain.js'
 import { privateLearningReferences } from './support-brain.js'
 import { resolveSupportRoute, type SupportRoute } from './support-routing.js'
-import { directSupportReply, handoffNote, triage, type TriageOutcome } from './triage.js'
+import { directSupportReply, handoffNote, normalizeForTriage, triage, type TriageOutcome } from './triage.js'
 
 /**
  * Spiegel der humanOnly-Kategorien der Triage: wer eines dieser Labels traegt,
@@ -41,6 +41,20 @@ const HUMAN_ONLY_LABELS: Record<string, true> = {
 
 const ATTACHMENT_REVIEW_DRAFT =
   'Danke für den Anhang. Was genau sollen wir darin prüfen, und an welcher Stelle tritt das Problem auf?'
+
+/** Narrow read-only exception for copies of the customer's own documents.
+ * Remove document nouns before reusing triage so an invoice cannot mask an
+ * explicit human request (the billing rule normally wins before that rule). */
+function isOwnDocumentReview(question: string, outcome: TriageOutcome, labels: readonly string[]): boolean {
+  const text = normalizeForTriage(question)
+  const document = /\b(?:vertrag\w*|vertraege\w*|rechnung\w*|invoices?)\b/g
+  if (!document.test(text) || !/\b(?:mein\w*|mir|kopie|pdf|send\w*|schick\w*|bekomm\w*|sehen|vertragsfrage)\b/.test(text)) return false
+  if (!['zahlung', 'beratung', 'allgemein'].includes(outcome.category)) return false
+  if (labels.some(label => HUMAN_ONLY_LABELS[label] && !['zahlung', 'beratung'].includes(label))) return false
+  if (/\b(?:dringend|urgent|sofort|rechts\w*|rechtlich\w*|berat\w*|klausel\w*|haftung\w*|pruef\w*|kuendig\w*|widerruf\w*|storn\w*|erstatt\w*|kund\w*|fremd\w*)\b/.test(text)) return false
+  const residual = triage(text.replace(document, ' '))
+  return !residual.humanOnly && residual.category !== 'beratung'
+}
 
 export class MessageProcessor {
   constructor(
@@ -143,6 +157,7 @@ export class MessageProcessor {
       executionContext = identity
     }
     const outcome = triage(rawQuestion)
+    let documentAssistance = Boolean(executionContext && isOwnDocumentReview(rawQuestion, outcome, conversationContext.labels))
     const question = redactConversationText(rawQuestion)
     const handoff = async (reason: string, detail?: string, draft?: string, learningSources?: SupportBrainAnswer['learningSources']) => {
       await this.dependencies.autoSend.blockConversation({
@@ -172,7 +187,7 @@ export class MessageProcessor {
         isFinalAttempt,
         draft,
         learningSources,
-        notifyCustomer: !wasHandedOff && !crossProduct,
+        notifyCustomer: !wasHandedOff && !crossProduct && !documentAssistance,
         canNotifyCustomer: async () => {
           if (!this.dependencies.context.loadCurrentSource) return true
           const current = await this.dependencies.context.loadCurrentSource({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: conversationId, currentMessageId: payload.id, tenant: supportRoute.tenant, channel: supportRoute.channel })
@@ -203,7 +218,7 @@ export class MessageProcessor {
             : 'agent_handoff',
       })
     }
-    if (outcome.humanOnly && !humanOwned) {
+    if (outcome.humanOnly && !humanOwned && !documentAssistance) {
       await handoff(
         `triage_${outcome.category}`,
         undefined,
@@ -211,7 +226,7 @@ export class MessageProcessor {
       )
       return
     }
-    const reviewOnly = crossProduct || humanOwned || outcome.category === 'beratung'
+    const reviewOnly = documentAssistance || crossProduct || humanOwned || outcome.category === 'beratung'
     const directReply = reviewOnly ? undefined : directSupportReply(question)
     let answer: SupportBrainAnswer
     if (directReply) {
@@ -231,7 +246,7 @@ export class MessageProcessor {
             tenant.accountId,
             payload.id,
           ),
-          ...(!reviewOnly && this.dependencies.autoSendEnabled && executionContext ? { executionContext } : {}),
+          ...(executionContext ? { executionContext } : {}),
           question,
           questionReceivedAt: payload.created_at,
           history: conversationContext.turns.map(
@@ -245,7 +260,9 @@ export class MessageProcessor {
           ...(conversationContext.contactEmail || conversationContext.contactName || conversationContext.contactPhone
             ? { contact: { email: conversationContext.contactEmail, name: conversationContext.contactName, phone: conversationContext.contactPhone } }
             : {}),
-          ...(reviewOnly ? { reviewOnly: true } : {}),
+          // A source-bound read can run in a draft; the kill switch must still
+          // forbid calendar writes even though the verified source is present.
+          ...(reviewOnly || (executionContext && !this.dependencies.autoSendEnabled) ? { reviewOnly: true } : {}),
         })
       } catch (error) {
         console.error(
@@ -280,12 +297,13 @@ export class MessageProcessor {
       }
     }
 
-    if (answer.action === 'handoff' && !humanOwned) {
+    documentAssistance ||= answer.reason?.startsWith('document_assistance:') === true
+    if (answer.action === 'handoff' && !humanOwned && !documentAssistance) {
       await handoff('brain_handoff', answer.reason, answer.text, answer.learningSources)
       return
     }
 
-    const verdict: AutoSendVerdict | 'manual_review' = crossProduct
+    const verdict: AutoSendVerdict | 'manual_review' = crossProduct || documentAssistance
       ? 'manual_review'
       : autoSendDecision({
           enabled: this.dependencies.autoSendEnabled,
@@ -319,8 +337,9 @@ export class MessageProcessor {
         deliveryId: payload.id,
         answer,
         verdict,
+        documentAssistance,
         labels:
-          reviewOnly && outcome.category === 'beratung'
+          reviewOnly && outcome.category === 'beratung' && !documentAssistance
             ? outcome.labels
             : undefined,
         previousAgentDraft: conversationContext.previousAgentDraft,
@@ -505,6 +524,7 @@ export class MessageProcessor {
     answer: SupportBrainAnswer
     verdict: AutoSendVerdict | 'manual_review'
     labels?: readonly string[]
+    documentAssistance?: boolean
     previousAgentDraft?: string
   }): Promise<void> {
     const { tenant, conversationId, deliveryId, answer, verdict } = input
@@ -537,7 +557,7 @@ export class MessageProcessor {
       conversationId,
       noteContent,
       deliveryId,
-      answer.action === 'clarify' ? 'clarify_draft_note' : 'draft_note',
+      input.documentAssistance || answer.reason?.startsWith('document_assistance:') ? 'document_assistance_note' : answer.action === 'clarify' ? 'clarify_draft_note' : 'draft_note',
     )
     await this.dependencies.chatwoot.assign(
       tenant,

@@ -322,3 +322,10 @@ describe('live conversation mining', () => {
     expect(extract([late]).candidates).toHaveLength(0)
   })
 })
+
+
+it('never mines a conversation marked as private document assistance, including later human delivery', () => {
+  const flow = conversation({})
+  flow.messages.splice(1, 0, message({ messageId: 3, messageType: 1, private: true, senderType: 'AgentBot', agentKind: 'document_assistance_note', content: 'Bitte prüfe den zugeschickten Code.' }))
+  expect(extract([flow]).candidates).toEqual([])
+})

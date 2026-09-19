@@ -264,3 +264,11 @@ it('keeps original source identity while deduplicating regenerated private notes
   expect(body.private).toBe(true)
   expect(body.content_attributes).toEqual({ myinvest_agent_delivery_id: '243', myinvest_agent_message_kind: 'draft_note', myinvest_agent_generation_id: '5360ea90-7d1a-4055-9271-1d3b10386a81', myinvest_agent_replaces_note_id: '250' })
 })
+
+
+it('stores document-assistance provenance as a private non-learning note', async () => {
+  const request = vi.fn().mockResolvedValue(new Response('{}'))
+  const client = new ChatwootClient('https://chat.example.test', { exists: vi.fn().mockResolvedValue(false) }, request)
+  await client.sendPrivateNote(tenants[0]!, 77, 'Bitte Code prüfen.', 55, 'document_assistance_note')
+  expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toMatchObject({ private: true, content_attributes: { myinvest_agent_message_kind: 'document_assistance_note' } })
+})

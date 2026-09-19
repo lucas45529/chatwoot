@@ -32,6 +32,7 @@ describe('explicit draft preview and apply', () => {
     await expect(f.service.previewDraft(input)).resolves.toEqual(preview)
     expect(f.brain.answer).toHaveBeenCalledOnce()
     expect(f.brain.answer).toHaveBeenCalledWith(expect.objectContaining({ reviewOnly: true }), undefined)
+    expect(f.brain.answer.mock.calls[0]?.[0]).not.toHaveProperty('executionContext')
     expect(f.saveDraft).not.toHaveBeenCalled(); expect(f.sendPrivateNote).not.toHaveBeenCalled()
   })
   it('applies only its stored proposal with CAS and generation-bound private provenance', async () => {

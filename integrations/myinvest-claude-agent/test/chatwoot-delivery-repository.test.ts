@@ -171,7 +171,7 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     expect(query.mock.calls[0]![0]).toContain('source_message.id = $3')
     expect(query.mock.calls[0]![0]).toContain('conversation.inbox_id = $4')
     expect(query.mock.calls[0]![0]).toContain(
-      "IN ('handoff_note', 'draft_note', 'clarify_draft_note')",
+      "IN ('handoff_note', 'draft_note', 'clarify_draft_note', 'document_assistance_note')",
     )
     expect(query.mock.calls[0]![0]).toContain(
       "draft_note.content LIKE '%Antwortvorschlag:%'",

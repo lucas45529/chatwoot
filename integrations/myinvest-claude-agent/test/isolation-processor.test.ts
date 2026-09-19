@@ -1218,16 +1218,56 @@ describe('trusted customer execution context', () => {
     expect(f.sendMessage).not.toHaveBeenCalled()
   })
   it('rejects source text, timestamp, account or message substitution', async () => {
-    for (const change of [{ content: 'Andere Frage' }, { created_at: '2026-08-17T18:30:44.414Z' }, { account: { id: 202 } }, { id: 56 }]) {
+    for (const change of [{ content: 'Andere Frage' }, { created_at: '2026-08-17T18:30:44.414Z' }, { account: { id: 202 } }, { id: 56 }, { event: 'message_updated' }, { message_type: 'outgoing' }, { private: true }, { agentAction: 'preprocessed' }]) {
       const f = setup({ trustedSource: true, autoSendEnabled: true })
       await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload(change) })
       expect(f.answer).not.toHaveBeenCalled()
       expect(f.sendMessage).not.toHaveBeenCalled()
     }
   })
-  it.each([false, true])('never grants execution with disabled sending or existing human ownership: %s', async human => {
+  it.each([false, true])('retains verified source context but requires review when sending is disabled or a human owns the conversation: %s', async human => {
     const f = setup({ trustedSource: true, autoSendEnabled: human, context: { humanEverReplied: human } })
     await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
-    expect(f.answer.mock.calls[0]?.[0].executionContext).toBeUndefined()
+    expect(f.answer.mock.calls[0]?.[0]).toMatchObject({ executionContext: { accountId: 101, inboxId: 17, conversationId: 77, sourceMessageId: 55, contactId: 4242, mode: 'customer_message' }, reviewOnly: true })
+    expect(f.sendMessage).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('reviewed own-document assistance', () => {
+  async function fixture(content: string, action: 'answer' | 'handoff' = 'answer') {
+    const flow = setup({ trustedSource: true, autoSendEnabled: true, answer: { ...SAFE_ANSWER, action, reason: 'document_assistance:verification_required' } })
+    const source = await flow.loadCurrentSource()
+    flow.loadCurrentSource.mockResolvedValue({ ...source, content })
+    flow.loadCurrentSource.mockClear()
+    return flow
+  }
+  it.each(['Bitte schicke mir meine Rechnung als PDF.', 'Kann ich meinen Vertrag als Kopie bekommen?', 'Ich möchte meine invoices sehen.', 'Vertragsfrage: Kannst du mir die Kopie senden?'])('allows only an internal source-bound document review: %s', async content => {
+    const flow = await fixture(content)
+    await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
+    expect(flow.answer).toHaveBeenCalledWith(expect.objectContaining({ reviewOnly: true, executionContext: expect.objectContaining({ sourceMessageId: 55 }) }))
+    expect(flow.saveDraft).toHaveBeenCalled()
+    expect(flow.sendPrivateNote).toHaveBeenCalledWith(tenants[0], 77, expect.any(String), 55, 'document_assistance_note')
+    expect(flow.addLabels).toHaveBeenCalledWith(tenants[0], 77, ['ki-entwurf'])
+    expect(flow.sendMessage).not.toHaveBeenCalled()
+    expect(flow.autoSend.reserve).not.toHaveBeenCalled()
+  })
+  it.each(['Ich möchte meinen Vertrag kündigen.', 'Bitte schicke mir die Rechnung und einen Mitarbeiter.', 'Meine Vertragsfrage braucht Rechtsberatung.', 'Prüfe bitte die Haftungsklausel in meinem Vertrag.', 'Mein Vertrag ist Betrug, bitte senden.', 'Meine Rechnung: Beschwerde wegen Datenschutz.', 'Bitte schicke mir die Rechnung, es ist dringend.'])('does not bypass protected human triage: %s', async content => {
+    const flow = await fixture(content)
+    await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
+    expect(flow.answer).not.toHaveBeenCalled()
+  })
+  it('does not open a document path without verified current source', async () => {
+    const flow = setup({ autoSendEnabled: true })
+    await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Bitte schicke mir meine Rechnung.' }) })
+    expect(flow.answer).not.toHaveBeenCalled()
+  })
+  it('never sends a document-assistance handoff acknowledgement or OTP followup result', async () => {
+    for (const content of ['Bitte schicke mir meine Rechnung.', '123456']) {
+      const flow = await fixture(content, 'handoff')
+      await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
+      expect(flow.sendMessage).not.toHaveBeenCalled()
+      expect(flow.sendPrivateNote).toHaveBeenCalledWith(tenants[0], 77, expect.any(String), 55, 'document_assistance_note')
+    }
   })
 })

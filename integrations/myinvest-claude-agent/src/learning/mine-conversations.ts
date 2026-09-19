@@ -118,6 +118,10 @@ export function extractLiveCandidates(input: {
   for (const conversation of input.conversations) {
     if (!conversation.handedOff) continue
     examinedConversations += 1
+    if (conversation.messages.some(message => message.agentKind === 'document_assistance_note')) {
+      rejectedConversations += 1
+      continue
+    }
     const candidatesBeforeConversation = candidates.length
     const redactedConversation = redactSupportText(
       conversation.messages.map((message) => message.content).join(' '),

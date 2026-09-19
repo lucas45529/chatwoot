@@ -173,7 +173,7 @@ export class PostgresChatwootDeliveryStore
                    AND CASE WHEN json_typeof(marker.content_attributes) = 'string'
                             THEN (marker.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
                             ELSE marker.content_attributes ->> 'myinvest_agent_message_kind' END
-                       IN ('handoff_ack', 'handoff_note', 'draft_note', 'clarify_draft_note')
+                       IN ('handoff_ack', 'handoff_note', 'draft_note', 'clarify_draft_note', 'document_assistance_note')
               ) AS last_agent_handoff_id,
               (
                 SELECT draft_note.content
@@ -186,7 +186,7 @@ export class PostgresChatwootDeliveryStore
                    AND CASE WHEN json_typeof(draft_note.content_attributes) = 'string'
                             THEN (draft_note.content_attributes #>> '{}')::json ->> 'myinvest_agent_message_kind'
                             ELSE draft_note.content_attributes ->> 'myinvest_agent_message_kind' END
-                       IN ('handoff_note', 'draft_note', 'clarify_draft_note')
+                       IN ('handoff_note', 'draft_note', 'clarify_draft_note', 'document_assistance_note')
                    AND draft_note.content LIKE '%Antwortvorschlag:%'
                  ORDER BY draft_note.id DESC
                  LIMIT 1

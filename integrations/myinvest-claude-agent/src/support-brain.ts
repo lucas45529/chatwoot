@@ -32,6 +32,7 @@ export type SupportExecutionContext = z.infer<typeof executionContextSchema>
 
 export interface SupportBrainRequest {
   requestId: string
+  /** Verified source identity; reviewOnly independently restricts actions. */
   executionContext?: SupportExecutionContext
   question: string
   /** Verified source timestamp for interpreting historical relative dates. */
@@ -157,7 +158,7 @@ export class SupportBrainClient implements SupportBrainPort {
     // Genau ein JSON.stringify: der gesendete Body muss byteidentisch der
     // signierte Body sein.
     const rawBody = JSON.stringify({
-      ...(!request.reviewOnly && request.executionContext ? { executionContext: executionContextSchema.parse(request.executionContext), reviewOnly: false } : {}),
+      ...(request.executionContext ? { executionContext: executionContextSchema.parse(request.executionContext), reviewOnly: Boolean(request.reviewOnly) } : {}),
       question: request.question.slice(0, MAX_QUESTION_CHARS),
       ...(request.questionReceivedAt ? { questionReceivedAt: z.string().datetime().parse(request.questionReceivedAt) } : {}),
       history: request.history.slice(-MAX_HISTORY_TURNS).map((turn) => ({

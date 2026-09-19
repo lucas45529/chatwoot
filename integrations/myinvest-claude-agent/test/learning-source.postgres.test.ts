@@ -1,8 +1,9 @@
 import { Client } from 'pg'
+import { PostgresChatwootDeliveryStore } from '../src/chatwoot-delivery-repository.js'
 import { expect, it } from 'vitest'
 import { buildTenantRegistry } from '../src/config.js'
 import { PostgresLearningSourceResolver } from '../src/learning/source.js'
-import { tenants } from './fixtures.js'
+import { PSEUDONYMIZATION_KEY, tenants } from './fixtures.js'
 
 // All source rows are synthetic connection-local temporary tables. The query
 // needs only messages/conversations, matching the deployed read-only grants.
@@ -14,12 +15,21 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('rejects consumed drafts and 
     await client.query(`CREATE TEMP TABLE messages (id bigint, account_id bigint, conversation_id bigint, inbox_id bigint,
       message_type integer, private boolean, sender_type text, sender_id bigint, content text, content_attributes json, created_at timestamptz DEFAULT now(), additional_attributes jsonb DEFAULT '{}', processed_message_content text, content_type integer DEFAULT 0, status integer DEFAULT 0, source_id text)`)
     await client.query("INSERT INTO conversations VALUES (700, 101, 77, 17, '{}')")
+    await client.query("ALTER TABLE conversations ADD COLUMN contact_id bigint DEFAULT 900, ADD COLUMN cached_label_list text DEFAULT ''")
+    await client.query('CREATE TEMP TABLE contacts (id bigint, account_id bigint, email text, name text, phone_number text)')
+    await client.query("INSERT INTO contacts VALUES (900, 101, 'synthetic@example.test', 'Synthetic', '+4915112345678')")
     await client.query(`INSERT INTO messages (id, account_id, conversation_id, inbox_id, message_type, private, sender_type, sender_id, content, content_attributes) VALUES
       (55, 101, 700, 17, 0, false, 'Contact', 900, 'Wie bearbeite ich Kontakte?', '{}'),
       (61, 101, 700, 17, 1, true, 'AgentBot', 801, E'KI-Entwurf\n\nAntwortvorschlag:\nÖffne Kontakte und wähle Bearbeiten.\nQuellen: Hilfe', '{"myinvest_agent_delivery_id":"55","myinvest_agent_message_kind":"draft_note"}')`)
     const resolver = new PostgresLearningSourceResolver({ query: (sql, values) => client.query(sql, [...values]) }, buildTenantRegistry(tenants.map((tenant, index) => ({ ...tenant, agentBotId: 801 + index }))))
     const source = { accountId: 101, conversationId: 77, questionMessageId: 55, draftMessageId: 61 }
     await expect(resolver.resolve(source)).resolves.toMatchObject({ tenant: 'saas', question: 'Wie bearbeite ich Kontakte?' })
+    await client.query(`UPDATE messages SET content_attributes='{"myinvest_agent_delivery_id":"55","myinvest_agent_message_kind":"document_assistance_note"}' WHERE id=61`)
+    await expect(resolver.resolve(source)).rejects.toMatchObject({ status: 404 })
+    const context = new PostgresChatwootDeliveryStore({ query: (sql, values) => client.query(sql, values ? [...values] : []) }, PSEUDONYMIZATION_KEY)
+    await expect(context.loadContext({ accountId: 101, inboxId: 17, conversationDisplayId: 77, currentMessageId: 55 })).resolves.toMatchObject({ previousAgentDraft: 'Öffne Kontakte und wähle Bearbeiten.' })
+    await client.query(`UPDATE messages SET content_attributes='{"myinvest_agent_delivery_id":"55","myinvest_agent_message_kind":"draft_note"}' WHERE id=61`)
+
     await client.query(`UPDATE conversations SET custom_attributes = '{"myinvest_tenant":"new_academy","myinvest_channel":"whatsapp"}'`)
     await client.query(`UPDATE messages SET content_attributes = '{"myinvest_tenant":"new_academy"}' WHERE id = 55`)
     await expect(resolver.resolve(source)).resolves.toMatchObject({ tenant: 'new_academy', question: 'Wie bearbeite ich Kontakte?' })

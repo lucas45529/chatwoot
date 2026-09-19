@@ -479,14 +479,16 @@ it('uses the fixed approved Beta endpoint with the same signed request contract'
 })
 
 
-it('signs strict execution context and strips execution authority in review-only calls', async () => {
+it('signs strict source context while keeping review calls explicitly read-only', async () => {
   const executionContext = { accountId: 101, inboxId: 17, conversationId: 77, sourceMessageId: 55, contactId: 4242, sourceChannel: 'whatsapp' as const, sourceReceivedAt: '2026-09-19T10:00:00.000Z', mode: 'customer_message' as const }
   const fetchImplementation = respondingFetch(jsonResponse(brainPayload()), jsonResponse(brainPayload()))
   await clientWith(fetchImplementation).answer(brainRequest({ executionContext }))
-  expect(JSON.parse(sentRawBody(fetchImplementation)).executionContext).toEqual(executionContext)
+  expect(JSON.parse(sentRawBody(fetchImplementation))).toMatchObject({ executionContext, reviewOnly: false })
   const review = respondingFetch(jsonResponse(brainPayload()))
   await clientWith(review).answer(brainRequest({ executionContext, reviewOnly: true }))
-  expect(JSON.parse(sentRawBody(review)).executionContext).toBeUndefined()
+  expect(JSON.parse(sentRawBody(review))).toMatchObject({ executionContext, reviewOnly: true })
+  const reviewHeaders = new Headers(requestInit(review).headers)
+  expect(reviewHeaders.get('x-support-signature')).toBe(supportAnswerSignature({ rawBody: sentRawBody(review), timestamp: FIXED_TIMESTAMP, requestId: REQUEST_ID, secret: TEST_SECRET }))
   const invalid = respondingFetch(jsonResponse(brainPayload()))
   await expect(clientWith(invalid).answer(brainRequest({ executionContext: { ...executionContext, callbackUrl: 'https://evil.example' } }))).rejects.toThrow()
   expect(invalid).not.toHaveBeenCalled()

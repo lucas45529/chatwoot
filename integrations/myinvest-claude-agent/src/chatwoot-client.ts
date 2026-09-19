@@ -9,6 +9,7 @@ export type PrivateMessageKind =
   | 'handoff_note'
   | 'draft_note'
   | 'clarify_draft_note'
+  | 'document_assistance_note'
 /** deliveryId + kind ist der Idempotenzschluessel jeder gesendeten Nachricht. */
 export type DeliveryMessageKind = PublicMessageKind | PrivateMessageKind
 
@@ -74,6 +75,7 @@ const PRIVATE_BY_KIND: Record<DeliveryMessageKind, boolean> = {
   draft_note: true,
   clarify_draft_note: true,
   handoff_note: true,
+  document_assistance_note: true,
 }
 
 export class ChatwootClient implements ChatwootPort {
