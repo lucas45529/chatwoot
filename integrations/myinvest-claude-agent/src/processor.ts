@@ -15,6 +15,7 @@ import type { ChatwootWebhookPayload, ConversationContext, TenantKey } from './d
 import type { AgentState } from './state.js'
 import type {
   SupportBrainAnswer,
+  SupportExecutionContext,
   SupportBrainHistoryTurn,
   SupportBrainPort,
 } from './support-brain.js'
@@ -131,6 +132,16 @@ export class MessageProcessor {
     }
 
     const rawQuestion = payload.content.trim()
+    let executionContext: SupportExecutionContext | undefined
+    if (this.dependencies.context.loadCurrentSource) {
+      const fresh = await this.dependencies.context.loadCurrentSource({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: conversationId, currentMessageId: payload.id, tenant: supportRoute.tenant, channel: supportRoute.channel })
+      const identity = fresh?.executionContext
+      if (!identity || identity.accountId !== payload.account.id || identity.accountId !== tenant.accountId || identity.inboxId !== tenant.inboxId || (payload.inboxId !== undefined && identity.inboxId !== payload.inboxId) || identity.conversationId !== conversationId || identity.sourceMessageId !== payload.id || Date.parse(identity.sourceReceivedAt) !== Date.parse(payload.created_at) || fresh.content.trim() !== rawQuestion || payload.event !== 'message_created' || payload.message_type !== 'incoming' || payload.private || payload.agentAction === 'preprocessed') {
+        await this.completeSuperseded(tenant.key, payload.id)
+        return
+      }
+      executionContext = identity
+    }
     const outcome = triage(rawQuestion)
     const question = redactConversationText(rawQuestion)
     const handoff = async (reason: string, detail?: string, draft?: string, learningSources?: SupportBrainAnswer['learningSources']) => {
@@ -162,6 +173,11 @@ export class MessageProcessor {
         draft,
         learningSources,
         notifyCustomer: !wasHandedOff && !crossProduct,
+        canNotifyCustomer: async () => {
+          if (!this.dependencies.context.loadCurrentSource) return true
+          const current = await this.dependencies.context.loadCurrentSource({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: conversationId, currentMessageId: payload.id, tenant: supportRoute.tenant, channel: supportRoute.channel })
+          return Boolean(current && JSON.stringify(current.executionContext) === JSON.stringify(executionContext) && current.content.trim() === rawQuestion)
+        },
       })
       await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
     }
@@ -215,6 +231,7 @@ export class MessageProcessor {
             tenant.accountId,
             payload.id,
           ),
+          ...(!reviewOnly && this.dependencies.autoSendEnabled && executionContext ? { executionContext } : {}),
           question,
           questionReceivedAt: payload.created_at,
           history: conversationContext.turns.map(
@@ -289,6 +306,7 @@ export class MessageProcessor {
         answer,
         contactHash: conversationContext.contactHash,
         previousAgentDraft: conversationContext.previousAgentDraft,
+        executionContext,
       })
       return
     }
@@ -323,6 +341,11 @@ export class MessageProcessor {
    * Eine atomare Reservierung beansprucht genau einen Slot. Erst danach wird
    * die live Chatwoot-/AgentState-Autorisierung direkt vor dem Send erneuert.
    */
+  private async completeSuperseded(tenant: TenantKey, messageId: number): Promise<void> {
+    if (!this.dependencies.state.completeWithoutReply) throw new Error('Source changed; terminal completion unavailable')
+    await this.dependencies.state.completeWithoutReply(tenant, messageId)
+  }
+
   private async autoAnswer(input: {
     tenant: TenantConfig
     productTenant: TenantKey
@@ -332,6 +355,7 @@ export class MessageProcessor {
     question: string
     answer: SupportBrainAnswer
     contactHash?: string
+    executionContext?: SupportExecutionContext
     previousAgentDraft?: string
   }): Promise<void> {
     const { tenant, conversationId, deliveryId, answer } = input
@@ -417,6 +441,14 @@ export class MessageProcessor {
       })
       await this.dependencies.state.completeHandoff(tenant.key, deliveryId, conversationId)
       return
+    }
+
+    if (this.dependencies.context.loadCurrentSource) {
+      const current = await this.dependencies.context.loadCurrentSource({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: conversationId, currentMessageId: deliveryId, tenant: input.productTenant, channel: input.productChannel })
+      if (!current || JSON.stringify(current.executionContext) !== JSON.stringify(input.executionContext) || redactConversationText(current.content.trim()) !== input.question) {
+        await this.completeSuperseded(tenant.key, deliveryId)
+        return
+      }
     }
 
     const reservedEntry = reservation.entry
@@ -543,6 +575,7 @@ export class MessageProcessor {
     draft?: string
     learningSources?: SupportBrainAnswer['learningSources']
     notifyCustomer?: boolean
+    canNotifyCustomer?: () => Promise<boolean>
   }): Promise<void> {
     const { tenant, conversationId, deliveryId, outcome } = input
     const { chatwoot } = this.dependencies
@@ -619,15 +652,16 @@ export class MessageProcessor {
     await run('open', true, () => chatwoot.handoff(tenant, conversationId))
     // Der Review-Schalter gilt auch fuer Uebergabe- und Fehlerbestaetigungen.
     if (this.dependencies.autoSendEnabled && input.notifyCustomer !== false) {
-      await run('customer_ack', true, () =>
-        chatwoot.sendMessage(
+      await run('customer_ack', true, async () => {
+        if (input.canNotifyCustomer && !await input.canNotifyCustomer()) return
+        await chatwoot.sendMessage(
           tenant,
           conversationId,
           outcome.customerAck,
           deliveryId,
           'handoff_ack',
-        ),
-      )
+        )
+      })
     }
 
     const essentialFailures = failures.filter(({ essential }) => essential)

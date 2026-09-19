@@ -1,3 +1,5 @@
+import { executionContextSchema, type SupportExecutionContext, type SupportChannel } from './support-brain.js'
+import type { TenantKey } from './domain.js'
 import { contactFingerprint } from './auto-send.js'
 import type { DeliveryMessageKind } from './chatwoot-client.js'
 import type { ConversationContext } from './domain.js'
@@ -30,7 +32,10 @@ export interface ConversationContextRequest {
   conversationDisplayId: number
   currentMessageId: number
 }
+export interface CurrentCustomerSource { executionContext: SupportExecutionContext; content: string }
+export interface CurrentCustomerSourceRequest extends ConversationContextRequest { tenant: TenantKey; channel: SupportChannel }
 export interface ChatwootConversationContextStore {
+  loadCurrentSource?(input: CurrentCustomerSourceRequest): Promise<CurrentCustomerSource | undefined>
   loadContext(input: ConversationContextRequest): Promise<ConversationContext | undefined>
 }
 
@@ -98,6 +103,40 @@ export class PostgresChatwootDeliveryStore
       [input.accountId, input.conversationDisplayId, String(input.deliveryId), input.kind, ...(input.generationId ? [input.generationId] : [])],
     )
     return result.rows[0]?.exists === true
+  }
+
+  async loadCurrentSource(input: CurrentCustomerSourceRequest): Promise<CurrentCustomerSource | undefined> {
+    const result = await this.database.query<Record<string, unknown>>(`
+      SELECT conversation.account_id, conversation.inbox_id, conversation.display_id,
+        contact.id AS contact_id, source.id AS source_id, source.created_at,
+        coalesce(source.content, '') AS content,
+        CASE WHEN inbox.channel_type = 'Channel::Email' THEN 'email' ELSE $6 END AS source_channel
+      FROM conversations conversation
+      JOIN inboxes inbox ON inbox.id = conversation.inbox_id AND inbox.account_id = conversation.account_id
+      JOIN contacts contact ON contact.id = conversation.contact_id AND contact.account_id = conversation.account_id
+      JOIN messages source ON source.id = $3 AND source.conversation_id = conversation.id
+        AND source.account_id = conversation.account_id AND source.inbox_id = conversation.inbox_id
+      WHERE conversation.account_id = $1 AND conversation.display_id = $2 AND conversation.inbox_id = $4
+        AND source.private = false AND source.message_type = 0
+        AND (source.sender_type IS NULL OR (source.sender_type = 'Contact' AND source.sender_id = contact.id))
+        AND (conversation.custom_attributes ->> 'myinvest_tenant' IS NULL OR conversation.custom_attributes ->> 'myinvest_tenant' = $5)
+        AND (conversation.custom_attributes ->> 'myinvest_channel' IS NULL OR conversation.custom_attributes ->> 'myinvest_channel' = $6)
+        AND coalesce(CASE WHEN json_typeof(source.content_attributes) = 'string'
+          THEN (source.content_attributes #>> '{}')::json ->> 'myinvest_tenant'
+          ELSE source.content_attributes ->> 'myinvest_tenant' END, $5) = $5
+        AND NOT EXISTS (
+          SELECT 1 FROM messages newer WHERE newer.account_id = conversation.account_id
+            AND newer.conversation_id = conversation.id AND newer.inbox_id = conversation.inbox_id
+            AND newer.private = false AND (newer.created_at, newer.id) > (source.created_at, source.id)
+            AND ((newer.message_type = 0 AND (newer.sender_type IS NULL OR newer.sender_type = 'Contact'))
+              OR (newer.message_type IN (1,3) AND newer.sender_type = 'User'))
+        )`, [input.accountId, input.conversationDisplayId, input.currentMessageId, input.inboxId, input.tenant, input.channel])
+    const row = result.rows[0]
+    if (!row) return undefined
+    const date = row.created_at instanceof Date ? row.created_at : new Date(String(row.created_at))
+    if (!Number.isFinite(date.getTime())) return undefined
+    const parsed = executionContextSchema.safeParse({ accountId: Number(row.account_id), inboxId: Number(row.inbox_id), conversationId: Number(row.display_id), sourceMessageId: Number(row.source_id), contactId: Number(row.contact_id), sourceChannel: row.source_channel, sourceReceivedAt: date.toISOString(), mode: 'customer_message' })
+    return parsed.success && typeof row.content === 'string' ? { executionContext: parsed.data, content: row.content } : undefined
   }
 
   async loadContext(

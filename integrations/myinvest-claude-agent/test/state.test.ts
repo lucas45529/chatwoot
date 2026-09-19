@@ -66,3 +66,13 @@ describe('PostgresAgentState', () => {
     expect(query.mock.calls[0]![1]).toEqual(['saas', 55])
   })
 })
+
+
+it('terminally discards a superseded claim without marking the conversation handed off or a message sent', async () => {
+  const query = vi.fn().mockResolvedValue({ rows: [{ updated: 1 }] })
+  await new PostgresAgentState({ query }).completeWithoutReply('saas', 55)
+  expect(query.mock.calls[0]![1]).toEqual(['saas', 55])
+  expect(query.mock.calls[0]![0]).toContain("status = 'handed_off'")
+  expect(query.mock.calls[0]![0]).not.toContain('agent_conversation_states')
+  expect(query.mock.calls[0]![0]).not.toContain("status = 'replied'")
+})

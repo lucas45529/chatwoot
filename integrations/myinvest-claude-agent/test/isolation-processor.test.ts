@@ -65,6 +65,7 @@ function setup(
     usage?: Partial<AutoSendUsage>
     autoSendEnabled?: boolean
     limits?: AutoSendLimits
+    trustedSource?: boolean
   } = {},
 ) {
   // Reihenfolge des gefaehrlichen Pfads: die atomare Reservierung muss vor
@@ -93,6 +94,7 @@ function setup(
     contactHash: CONTACT_HASH,
     ...options.context,
   })
+  const loadCurrentSource = vi.fn().mockResolvedValue({ executionContext: { accountId: 101, inboxId: 17, conversationId: 77, sourceMessageId: 55, contactId: 4242, sourceChannel: 'web', sourceReceivedAt: incomingPayload().created_at, mode: 'customer_message' }, content: incomingPayload().content })
   const usage: AutoSendUsage = {
     blocked: false,
     conversationCount: 0,
@@ -123,12 +125,13 @@ function setup(
     markSending: vi.fn().mockResolvedValue(undefined),
     completeReply: vi.fn().mockResolvedValue(undefined),
     completeHandoff: vi.fn().mockResolvedValue(undefined),
+    completeWithoutReply: vi.fn().mockResolvedValue(undefined),
     failDelivery: vi.fn().mockResolvedValue(undefined),
   }
   const processor = new MessageProcessor({
     brain: { answer },
     chatwoot: { sendMessage, sendPrivateNote, saveDraft, setPriority, addLabels, assign, handoff },
-    context: { loadContext },
+    context: { loadContext, ...(options.trustedSource ? { loadCurrentSource } : {}) },
     state,
     autoSend: { reserve, blockConversation, markSent },
     conversationLock: {
@@ -156,6 +159,7 @@ function setup(
     assign,
     handoff,
     loadContext,
+    loadCurrentSource,
     state,
     autoSend: { reserve, blockConversation, markSent },
     sequence,
@@ -1178,4 +1182,52 @@ it('forwards the original signed webhook timestamp for relative dates', async ()
   const flow = setup()
   await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Kannst du mir morgen beim Zugang helfen?', created_at: '2026-08-01T08:30:00.000Z' }) })
   expect(flow.answer).toHaveBeenCalledWith(expect.objectContaining({ questionReceivedAt: '2026-08-01T08:30:00.000Z' }))
+})
+
+
+describe('trusted customer execution context', () => {
+  it('adds source-bound IDs only to current live customer requests and keeps the request ID stable', async () => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true, answer: SAFE_ANSWER })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(f.answer).toHaveBeenCalledWith(expect.objectContaining({ requestId: supportBrainRequestId(PSEUDONYMIZATION_KEY, 101, 55), executionContext: { accountId: 101, inboxId: 17, conversationId: 77, sourceMessageId: 55, contactId: 4242, sourceChannel: 'web', sourceReceivedAt: incomingPayload().created_at, mode: 'customer_message' } }))
+    expect(f.loadCurrentSource).toHaveBeenCalledTimes(2)
+  })
+  it.each(['before_brain', 'before_send'])('does not act/send when superseded: %s', async stage => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true, answer: SAFE_ANSWER })
+    if (stage === 'before_brain') f.loadCurrentSource.mockResolvedValueOnce(undefined)
+    else f.answer.mockImplementationOnce(async () => { f.loadCurrentSource.mockResolvedValue(undefined); return SAFE_ANSWER })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    if (stage === 'before_brain') expect(f.answer).not.toHaveBeenCalled()
+    expect(f.sendMessage).not.toHaveBeenCalled()
+    expect(f.saveDraft).not.toHaveBeenCalled()
+    expect(f.state.completeWithoutReply).toHaveBeenCalledWith('saas', 55)
+    expect(f.state.completeHandoff).not.toHaveBeenCalled()
+  })
+  it('does not acknowledge an already superseded sensitive request', async () => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true })
+    f.loadCurrentSource.mockResolvedValue(undefined)
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Ich möchte meinen Vertrag kündigen.' }) })
+    expect(f.sendMessage).not.toHaveBeenCalled()
+    expect(f.saveDraft).not.toHaveBeenCalled()
+    expect(f.state.completeWithoutReply).toHaveBeenCalledWith('saas', 55)
+  })
+  it('does not send a handoff acknowledgement if the customer source changes during the brain call', async () => {
+    const f = setup({ trustedSource: true, autoSendEnabled: true })
+    f.answer.mockImplementationOnce(async () => { f.loadCurrentSource.mockResolvedValue(undefined); return { ...SAFE_ANSWER, action: 'handoff', safeToAutoSend: false } })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(f.sendMessage).not.toHaveBeenCalled()
+  })
+  it('rejects source text, timestamp, account or message substitution', async () => {
+    for (const change of [{ content: 'Andere Frage' }, { created_at: '2026-08-17T18:30:44.414Z' }, { account: { id: 202 } }, { id: 56 }]) {
+      const f = setup({ trustedSource: true, autoSendEnabled: true })
+      await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload(change) })
+      expect(f.answer).not.toHaveBeenCalled()
+      expect(f.sendMessage).not.toHaveBeenCalled()
+    }
+  })
+  it.each([false, true])('never grants execution with disabled sending or existing human ownership: %s', async human => {
+    const f = setup({ trustedSource: true, autoSendEnabled: human, context: { humanEverReplied: human } })
+    await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(f.answer.mock.calls[0]?.[0].executionContext).toBeUndefined()
+  })
 })

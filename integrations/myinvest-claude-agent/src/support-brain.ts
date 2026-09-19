@@ -18,8 +18,21 @@ export interface SupportBrainHistoryTurn {
   text: string
 }
 
+export const executionContextSchema = z.object({
+  accountId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  inboxId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  conversationId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  sourceMessageId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  contactId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  sourceChannel: z.enum(['whatsapp', 'email', 'web']),
+  sourceReceivedAt: z.string().datetime(),
+  mode: z.literal('customer_message'),
+}).strict()
+export type SupportExecutionContext = z.infer<typeof executionContextSchema>
+
 export interface SupportBrainRequest {
   requestId: string
+  executionContext?: SupportExecutionContext
   question: string
   /** Verified source timestamp for interpreting historical relative dates. */
   questionReceivedAt?: string
@@ -144,6 +157,7 @@ export class SupportBrainClient implements SupportBrainPort {
     // Genau ein JSON.stringify: der gesendete Body muss byteidentisch der
     // signierte Body sein.
     const rawBody = JSON.stringify({
+      ...(!request.reviewOnly && request.executionContext ? { executionContext: executionContextSchema.parse(request.executionContext), reviewOnly: false } : {}),
       question: request.question.slice(0, MAX_QUESTION_CHARS),
       ...(request.questionReceivedAt ? { questionReceivedAt: z.string().datetime().parse(request.questionReceivedAt) } : {}),
       history: request.history.slice(-MAX_HISTORY_TURNS).map((turn) => ({

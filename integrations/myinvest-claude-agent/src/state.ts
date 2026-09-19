@@ -32,6 +32,7 @@ export interface AgentState {
     messageId: number,
     conversationId: number,
   ): Promise<void>
+  completeWithoutReply?(tenantKey: TenantKey, messageId: number): Promise<void>
   failDelivery(tenantKey: TenantKey, messageId: number): Promise<void>
 }
 
@@ -141,6 +142,16 @@ export class PostgresAgentState implements AgentState {
       [tenantKey, messageId, conversationId],
     )
     if (!result.rows[0]) throw new Error('Delivery and conversation could not complete handoff')
+  }
+
+  /** Existing terminal no-public-reply state, without changing ownership. */
+  async completeWithoutReply(tenantKey: TenantKey, messageId: number): Promise<void> {
+    const result = await this.database.query<{ updated: number }>(
+      `UPDATE agent_delivery_ledger SET status = 'handed_off', updated_at = now()
+       WHERE tenant_key = $1 AND message_id = $2 AND status = 'processing' RETURNING 1 AS updated`,
+      [tenantKey, messageId],
+    )
+    if (!result.rows[0]) throw new Error('Superseded delivery could not complete')
   }
 
   /**
