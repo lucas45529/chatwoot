@@ -49,8 +49,11 @@ function present(row: ReviewCandidate): ReviewCandidate {
   return { id: row.id, tenant: row.tenant, question: row.question, answer: row.answer, status, reason: row.reason, updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt, ...(source.success ? { source: source.data } : {}) }
 }
 
-const STOP_WORDS = new Set('wurde wurden verbindlich dazu bereitgestellt sendet schickt daraufhin lediglich sollte sollten darauf reagiert reagieren werden nachträglich kunde kunden nennt nannte seine seiner sein ihre ihrer bereits obwohl per wäre würde dein deine hey hi gespräch gesprächskontext aktuell danke aber alle alles auch auf aus bei bin bitte das dass dem den der des die diese dieser doch du ein eine einem einen einer es etwas für habe haben hier ich im in ist kann kannst können machen man mein meine mich mir mit muss nach nicht noch nun oder schon sein sind so um und uns vom von vor wann warum was welche welcher welches wenn wer wie wird wir wo zu zum zur'.split(' '))
+const STOP_WORDS = new Set('interessent interessenten teilt mitteilt zusendung lautet passende passenden rückmeldung eines erhalt inklusive erhalten bereitgestellt wurde wurden verbindlich dazu bereitgestellt sendet schickt daraufhin lediglich sollte sollten darauf reagiert reagieren werden nachträglich kunde kunden nennt nannte seine seiner sein ihre ihrer bereits obwohl per wäre würde dein deine hey hi gespräch gesprächskontext aktuell danke aber alle alles auch auf aus bei bin bitte das dass dem den der des die diese dieser doch du ein eine einem einen einer es etwas für habe haben hier ich im in ist kann kannst können machen man mein meine mich mir mit muss nach nicht noch nun oder schon sein sind so um und uns vom von vor wann warum was welche welcher welches wenn wer wie wird wir wo zu zum zur'.split(' '))
 const TERM_ALIASES: Record<string, string> = {
+  links: 'link', zugangslink: 'link', meetinglink: 'link',
+  bestätigung: 'bestätigt', terminbestätigung: 'bestätigt',
+  beratungstermin: 'termin', beratungstermins: 'termin', beratungsterminen: 'termin', erstgespräch: 'termin',
   rufnummer: 'telefonnummer', telefon: 'telefonnummer', handynummer: 'telefonnummer',
   call: 'termin', videocall: 'termin', meeting: 'termin', gesprächstermin: 'termin',
   vereinbart: 'bestätigt', vereinbarter: 'bestätigt', vereinbarten: 'bestätigt', bestätigter: 'bestätigt', bestätigten: 'bestätigt',
@@ -72,14 +75,18 @@ export function matchReviewedExamples(question: string, rows: readonly ReviewCan
   if (queryTerms.length < 2) return []
   return rows.filter((row) => {
     const candidate = terms(row.question)
-    if (candidate.includes('bestätigt') && /\b(?:kein\w*|nicht)\b[^.!?]{0,50}\b(?:termin|call|vereinbart\w*|bestätigt\w*|gebucht)\b/iu.test(question)) return false
-    if (candidate.includes('termin') && candidate.includes('bestätigt') && !queryTerms.includes('bestätigt')) {
+    if (candidate.includes('bestätigt') && /\b(?:kein\w*|nicht)\b[^.!?]{0,50}\b(?:\w*termin\w*|call|vereinbart\w*|bestätig\w*|gebucht)\b/iu.test(question)) return false
+    if (candidate.includes('termin') && candidate.includes('bestätigt')) {
+      // Nouns normalize for retrieval, but asking for a confirmation does not
+      // establish that a booking exists. Require completed state or receipt.
+      const established = /\b(?:bestätigt\w*|vereinbart\w*|gebucht)\b/iu.test(question)
+      const received = /\b(?:nach\s+(?:der\s+)?(?:termin)?bestätigung|(?:erhalt|zusendung)\s+der\s+(?:termin)?bestätigung|(?:termin)?bestätigung\s+(?:bereits\s+)?erhalten)\b/iu.test(question)
       // A delivered invitation can express an established appointment without
       // the literal word 'confirmed'. Require both the invitation and a time;
       // merely asking about a Zoom link or supplying a phone never establishes it.
       const invitation = /\bfreut\s+sich\s+auf\s+(?:den|unseren)\s+(?:call|termin|videocall|meeting)\b/iu.test(question)
       const scheduled = /\b(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|\d{1,2}:\d{2})\b/iu.test(question)
-      if (!invitation || !scheduled) return false
+      if (!established && !received && !(invitation && scheduled)) return false
     }
     if (candidate.includes('termin') && /\b(?:absag\w*|stornier\w*|verschieb\w*)\b/iu.test(question) && !/\b(?:absag\w*|stornier\w*|verschieb\w*)\b/iu.test(row.question)) return false
     return true

@@ -170,3 +170,24 @@ describe('actual generalized appointment example', () => {
     expect(matchReviewedExamples(query, [row])).toEqual([])
   })
 })
+
+describe('live generalized German appointment vocabulary', () => {
+  const row = { ...fixture(), question: 'Ein Interessent teilt nach der Bestätigung eines Beratungstermins per Zoom und der Zusendung des Meeting-Links nachträglich seine Telefonnummer mit. Wie lautet die passende Rückmeldung?' }
+  it.each([
+    'Hi, das wäre meine Rufnummer [TELEFON]. Gesprächskontext: Fabian freut sich auf den Call mit dir. Montag um 14:00 Uhr. Zoom: [ZOOM-LINK].',
+    'Ein Kunde sendet nach Erhalt der Terminbestätigung inklusive Zoom-Link für ein Erstgespräch seine Handynummer, ohne ein weiteres Anliegen zu nennen. Wie reagiert das Team?',
+  ])('matches normalized appointment compounds: %s', (query) => {
+    expect(matchReviewedExamples(query, [row])).toHaveLength(1)
+  })
+  it.each([
+    'Hier ist meine Telefonnummer.',
+    'Ich möchte einen Beratungstermin per Zoom buchen und brauche die Bestätigung und den Link. Hier ist meine Telefonnummer.',
+    'Bitte schickt mir eine Bestätigung für den Beratungstermin per Zoom samt Link. Hier ist meine Telefonnummer.',
+    'Ich habe die Bestätigung für den Beratungstermin per Zoom samt Link angefordert, aber noch nichts bekommen. Hier ist meine Telefonnummer.',
+    'Ich habe keine Bestätigung eines Beratungstermins erhalten. Hier ist meine Telefonnummer, bitte schickt mir einen Zoom-Link.',
+    'Den bestätigten Beratungstermin per Zoom möchte ich absagen. Hier ist meine Telefonnummer.',
+    'Ich möchte einen Beratungstermin per Zoom buchen, meine Telefonnummer liegt vor.',
+  ])('keeps confirmation and cancellation boundaries: %s', (query) => {
+    expect(matchReviewedExamples(query, [row])).toEqual([])
+  })
+})
