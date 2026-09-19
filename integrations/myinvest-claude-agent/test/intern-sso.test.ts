@@ -174,3 +174,42 @@ describe('Intern-SSO', () => {
     })
   })
 })
+
+const BETA_ORIGIN = 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app'
+
+describe('Beta embedded SSO cookie isolation', () => {
+  it('creates a host-only partitioned secure session only for the exact approved Beta parent', async () => {
+    const service = new InternSsoService(config, { set: vi.fn().mockResolvedValue('OK') }, vi.fn().mockResolvedValue(authResponse()), () => NOW)
+    const session = await service.createSession(ticket(), BETA_ORIGIN)
+    expect(session.cookie).toContain('; Secure; SameSite=None; Partitioned')
+    expect(session.cookie).not.toMatch(/;\s*(?:Domain|HttpOnly)(?:=|;|$)/i)
+    expect(session.location).toBe(config.returnPath)
+    expect(session.cookie).not.toContain(config.password)
+  })
+
+  it.each([
+    undefined, 'null', 'https://www.myinvest-pro.de', 'https://app.myinvest-pro.de',
+    'https://evil.example', 'https://another-preview.vercel.app', `${BETA_ORIGIN}.evil.example`,
+    `${BETA_ORIGIN}/`, `${BETA_ORIGIN}:443`, BETA_ORIGIN.replace('https:', 'http:'),
+    `${BETA_ORIGIN}\nhttps://evil.example`,
+  ])('keeps the original same-site cookie for non-Beta or malformed origins: %s', async (origin) => {
+    const service = new InternSsoService(config, { set: vi.fn().mockResolvedValue('OK') }, vi.fn().mockResolvedValue(authResponse()), () => NOW)
+    const session = await service.createSession(ticket(), origin)
+    expect(session.cookie).toContain('; Secure; SameSite=Lax')
+    expect(session.cookie).not.toContain('Partitioned')
+    expect(session.cookie).not.toContain('SameSite=None')
+  })
+
+  it('never treats the approved Beta origin as authentication or a replay exemption', async () => {
+    const request = vi.fn().mockResolvedValue(authResponse())
+    const set = vi.fn().mockResolvedValue('OK')
+    const service = new InternSsoService(config, { set }, request, () => NOW)
+    await expect(service.createSession(ticket({}, 'wrong-secret'), BETA_ORIGIN)).rejects.toMatchObject({ status: 401 })
+    await expect(service.createSession(ticket({ accountId: 2 }), BETA_ORIGIN)).rejects.toMatchObject({ status: 401 })
+    expect(set).not.toHaveBeenCalled()
+    expect(request).not.toHaveBeenCalled()
+    set.mockResolvedValue(null)
+    await expect(service.createSession(ticket(), BETA_ORIGIN)).rejects.toMatchObject({ status: 409 })
+    expect(request).not.toHaveBeenCalled()
+  })
+})

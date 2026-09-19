@@ -3,6 +3,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 const SIGNATURE_DOMAIN = 'myinvest-support-sso/v1'
 const MAX_TOKEN_AGE_SECONDS = 60
 const NONCE_PATTERN = /^[A-Za-z0-9_-]{20,64}$/
+const BETA_EMBED_ORIGIN = 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app'
 
 interface TokenPayload {
   v: 1
@@ -115,10 +116,16 @@ function sessionCookie(
   headers: Record<string, string>,
   expiry: number,
   nowSeconds: number,
+  requestOrigin?: string,
 ): string {
   const value = encodeURIComponent(JSON.stringify(headers))
   const maxAge = Math.max(1, expiry - nowSeconds)
-  return `cw_d_session_info=${value}; Path=/; Max-Age=${maxAge}; Expires=${new Date(expiry * 1_000).toUTCString()}; Secure; SameSite=Lax`
+  // The dashboard must read these auth headers in its own frame. Keep the
+  // cookie host-only and partition the approved cross-site Beta embed; the
+  // production same-site session retains its existing cookie policy. Origin
+  // selects storage only: ticket verification and nonce claiming happen first.
+  const isolation = requestOrigin === BETA_EMBED_ORIGIN ? 'SameSite=None; Partitioned' : 'SameSite=Lax'
+  return `cw_d_session_info=${value}; Path=/; Max-Age=${maxAge}; Expires=${new Date(expiry * 1_000).toUTCString()}; Secure; ${isolation}`
 }
 
 export class InternSsoService {
@@ -129,7 +136,7 @@ export class InternSsoService {
     private readonly now: () => number = () => Math.floor(Date.now() / 1000),
   ) {}
 
-  async createSession(token: string): Promise<InternSsoSession> {
+  async createSession(token: string, requestOrigin?: string): Promise<InternSsoSession> {
     const now = this.now()
     const payload = verifyInternSsoToken(
       token,
@@ -207,7 +214,7 @@ export class InternSsoService {
 
     return {
       location: this.config.returnPath,
-      cookie: sessionCookie(authHeaders, expiry, now),
+      cookie: sessionCookie(authHeaders, expiry, now, requestOrigin),
     }
   }
 }

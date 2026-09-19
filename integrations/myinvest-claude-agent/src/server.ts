@@ -219,7 +219,7 @@ app.post(
   async (request, response) => {
     const token = typeof request.body?.token === 'string' ? request.body.token : ''
     try {
-      const session = await internSso.createSession(token)
+      const session = await internSso.createSession(token, request.get('origin'))
       response.setHeader('Cache-Control', 'no-store')
       response.setHeader('Referrer-Policy', 'no-referrer')
       response.setHeader('Set-Cookie', session.cookie)
