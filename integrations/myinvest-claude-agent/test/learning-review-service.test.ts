@@ -148,3 +148,25 @@ it('returns the sanitized preview candidate used for matching', async () => {
   const { service } = database()
   await expect(service.execute({ action: 'preview', tenant: 'saas', question: 'Wie bearbeite ich Kontakte?', example: { question: 'Wie bearbeite ich Kontakte?', answer: 'Öffne den Kontakt kunde@example.de und wähle Bearbeiten.', reason: 'Ablauf' } })).resolves.toMatchObject({ candidate: { question: 'Wie bearbeite ich Kontakte?', answer: 'Öffne den Kontakt [E-MAIL/ACCOUNT] und wähle Bearbeiten.' } })
 })
+
+
+describe('actual generalized appointment example', () => {
+  const example = {"question": "Ein Termin per Zoom wurde bereits verbindlich bestätigt und der Link dazu bereitgestellt. Der Kunde sendet daraufhin lediglich seine Telefonnummer (z. B. 'Hi, das wäre meine Rufnummer'). Wie sollte darauf reagiert werden?", "answer": "Danke dir für deine Telefonnummer! Dein Termin bleibt wie vereinbart per Zoom bestehen. Den Zoom-Link findest du in der vorherigen Nachricht.", "reason": "Der Termin war bereits bestätigt. Die Telefonnummer ist kein Wunsch nach einem neuen Termin oder einem Wechsel zu Telefon. Bereits bekannte Zeiten nicht erneut erfragen. Nicht behaupten, eine Nummer sei im CRM gespeichert."}
+  const row = { ...fixture(), ...example }
+  const incoming = 'Hi, das wäre meine Rufnummer [TELEFON].'
+  it.each([
+    'Der Termin ist für Montag um 14:00 Uhr per Zoom bestätigt. Den Zoom-Link findest du hier: [ZOOM-LINK].',
+    'Fabian freut sich auf den Call mit dir am Montag um 14:00 Uhr. Zoom: [ZOOM-LINK].',
+  ])('retrieves the actual model output for delivered appointment context: %s', (history) => {
+    expect(matchReviewedExamples(`${incoming}\nGesprächskontext:\n${history}`, [row])).toHaveLength(1)
+  })
+  it.each([
+    incoming,
+    `${incoming} Einen Termin haben wir noch nicht vereinbart.`,
+    `${incoming} Ich möchte einen Termin per Zoom buchen und brauche dafür einen Link.`,
+    `${incoming} Ich möchte den bestätigten Termin per Zoom absagen, der Link liegt vor.`,
+    'Wie bearbeite ich Kontakte und hinterlege eine Telefonnummer?',
+  ])('does not retrieve the appointment confirmation for another situation: %s', (query) => {
+    expect(matchReviewedExamples(query, [row])).toEqual([])
+  })
+})
