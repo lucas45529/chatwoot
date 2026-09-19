@@ -1242,7 +1242,7 @@ describe('reviewed own-document assistance', () => {
     flow.loadCurrentSource.mockClear()
     return flow
   }
-  it.each(['Bitte schicke mir meine Rechnung als PDF.', 'Kann ich meinen Vertrag als Kopie bekommen?', 'Ich möchte meine invoices sehen.', 'Vertragsfrage: Kannst du mir die Kopie senden?'])('allows only an internal source-bound document review: %s', async content => {
+  it.each(['Die Rechnung bitte', 'Bitte meine Rechnung', 'Bitte schicke mir meine Rechnung als PDF.', 'Kann ich meinen Vertrag als Kopie bekommen?', 'Ich möchte meine invoices sehen.', 'Vertragsfrage: Kannst du mir die Kopie senden?'])('allows only an internal source-bound document review: %s', async content => {
     const flow = await fixture(content)
     await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
     expect(flow.answer).toHaveBeenCalledWith(expect.objectContaining({ reviewOnly: true, executionContext: expect.objectContaining({ sourceMessageId: 55 }) }))
@@ -1252,7 +1252,7 @@ describe('reviewed own-document assistance', () => {
     expect(flow.sendMessage).not.toHaveBeenCalled()
     expect(flow.autoSend.reserve).not.toHaveBeenCalled()
   })
-  it.each(['Ich möchte meinen Vertrag kündigen.', 'Bitte schicke mir die Rechnung und einen Mitarbeiter.', 'Meine Vertragsfrage braucht Rechtsberatung.', 'Prüfe bitte die Haftungsklausel in meinem Vertrag.', 'Mein Vertrag ist Betrug, bitte senden.', 'Meine Rechnung: Beschwerde wegen Datenschutz.', 'Bitte schicke mir die Rechnung, es ist dringend.'])('does not bypass protected human triage: %s', async content => {
+  it.each(['Rechnung eines fremden Kunden bitte', 'Ich möchte meinen Vertrag kündigen.', 'Bitte schicke mir die Rechnung und einen Mitarbeiter.', 'Meine Vertragsfrage braucht Rechtsberatung.', 'Prüfe bitte die Haftungsklausel in meinem Vertrag.', 'Mein Vertrag ist Betrug, bitte senden.', 'Meine Rechnung: Beschwerde wegen Datenschutz.', 'Bitte schicke mir die Rechnung, es ist dringend.'])('does not bypass protected human triage: %s', async content => {
     const flow = await fixture(content)
     await flow.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
     expect(flow.answer).not.toHaveBeenCalled()

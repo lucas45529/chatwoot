@@ -48,7 +48,7 @@ const ATTACHMENT_REVIEW_DRAFT =
 function isOwnDocumentReview(question: string, outcome: TriageOutcome, labels: readonly string[]): boolean {
   const text = normalizeForTriage(question)
   const document = /\b(?:vertrag\w*|vertraege\w*|rechnung\w*|invoices?)\b/g
-  if (!document.test(text) || !/\b(?:mein\w*|mir|kopie|pdf|send\w*|schick\w*|bekomm\w*|sehen|vertragsfrage)\b/.test(text)) return false
+  if (!document.test(text) || !/\b(?:mein\w*|mir|bitte|kopie|pdf|send\w*|schick\w*|bekomm\w*|sehen|vertragsfrage)\b/.test(text)) return false
   if (!['zahlung', 'beratung', 'allgemein'].includes(outcome.category)) return false
   if (labels.some(label => HUMAN_ONLY_LABELS[label] && !['zahlung', 'beratung'].includes(label))) return false
   if (/\b(?:dringend|urgent|sofort|rechts\w*|rechtlich\w*|berat\w*|klausel\w*|haftung\w*|pruef\w*|kuendig\w*|widerruf\w*|storn\w*|erstatt\w*|kund\w*|fremd\w*)\b/.test(text)) return false
