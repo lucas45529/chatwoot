@@ -46,10 +46,11 @@ const ATTACHMENT_REVIEW_DRAFT =
 /** Narrow read-only exception for copies of the customer's own documents.
  * Remove document nouns before reusing triage so an invoice cannot mask an
  * explicit human request (the billing rule normally wins before that rule). */
-function isOwnDocumentReview(question: string, outcome: TriageOutcome, labels: readonly string[]): boolean {
+function isOwnDocumentReview(question: string, outcome: TriageOutcome, labels: readonly string[], documentFlowActive = false): boolean {
   const text = normalizeForTriage(question)
   const document = /\b(?:vertrag\w*|vertraege\w*|rechnung\w*|invoices?)\b/g
-  if (!document.test(text) || !/\b(?:mein\w*|mir|bitte|kopie|pdf|send\w*|schick\w*|bekomm\w*|sehen|vertragsfrage)\b/.test(text)) return false
+  const invoiceStatusFollowup = documentFlowActive && /^(?:im portal bestaetigt[.!? ]*)?welche rechnung(?:en)? (?:ist|sind) (?:noch )?(?:offen|bezahlt)[.!? ]*$/.test(text)
+  if (!document.test(text) || (!invoiceStatusFollowup && !/\b(?:mein\w*|mir|bitte|kopie|pdf|send\w*|schick\w*|bekomm\w*|sehen|vertragsfrage)\b/.test(text))) return false
   if (!['zahlung', 'beratung', 'allgemein'].includes(outcome.category)) return false
   if (labels.some(label => HUMAN_ONLY_LABELS[label] && !['zahlung', 'beratung'].includes(label))) return false
   if (/\b(?:dringend|urgent|sofort|rechts\w*|rechtlich\w*|berat\w*|klausel\w*|haftung\w*|pruef\w*|kuendig\w*|widerruf\w*|storn\w*|erstatt\w*|kund\w*|fremd\w*)\b/.test(text)) return false
@@ -158,7 +159,7 @@ export class MessageProcessor {
       executionContext = identity
     }
     const outcome = triage(rawQuestion)
-    let documentAssistance = Boolean(executionContext && isOwnDocumentReview(rawQuestion, outcome, conversationContext.labels))
+    let documentAssistance = Boolean(executionContext && isOwnDocumentReview(rawQuestion, outcome, conversationContext.labels, conversationContext.documentAssistanceActive))
     const question = redactConversationText(rawQuestion)
     const handoff = async (reason: string, detail?: string, draft?: string, learningSources?: SupportBrainAnswer['learningSources']) => {
       await this.dependencies.autoSend.blockConversation({

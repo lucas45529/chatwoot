@@ -71,6 +71,8 @@ export interface ConversationContext {
   contactPhone?: string
   /** Letzter unveraenderter KI-Composertext; nur als Compare-and-swap-Wert. */
   previousAgentDraft?: string
+  /** Recent private bot marker tied to an earlier customer source; routing only, never a document grant. */
+  documentAssistanceActive?: boolean
   /** Serverseitige Produkt-/Kanalidentitaet der aktuellen Eingangsnachricht. */
   supportRouting?: SupportRoutingMetadata
 }

@@ -49,6 +49,7 @@ interface ContextMetadataRow extends Record<string, unknown> {
   last_human_message_id: string | null
   last_agent_handoff_id: string | null
   last_agent_draft_note: string | null
+  document_assistance_active: boolean
   conversation_tenant: string | null
   conversation_channel: string | null
   source_tenant: string | null
@@ -175,6 +176,33 @@ export class PostgresChatwootDeliveryStore
                             ELSE marker.content_attributes ->> 'myinvest_agent_message_kind' END
                        IN ('handoff_ack', 'handoff_note', 'draft_note', 'clarify_draft_note', 'document_assistance_note')
               ) AS last_agent_handoff_id,
+              EXISTS (
+                SELECT 1 FROM messages AS document_marker
+                CROSS JOIN LATERAL (SELECT CASE WHEN json_typeof(document_marker.content_attributes) = 'string'
+                  THEN (document_marker.content_attributes #>> '{}')::json ELSE document_marker.content_attributes END AS attrs) marker_data
+                JOIN messages AS document_source
+                  ON document_source.id::text = marker_data.attrs ->> 'myinvest_agent_delivery_id'
+                 AND document_source.account_id = $1
+                 AND document_source.conversation_id = conversation.id
+                 AND document_source.inbox_id = conversation.inbox_id
+                 AND document_source.private = false AND document_source.message_type = 0
+                 AND document_source.sender_type = 'Contact'
+                 AND document_source.sender_id = conversation.contact_id
+                 AND (document_source.created_at, document_source.id) < (document_marker.created_at, document_marker.id)
+                 AND coalesce(CASE WHEN json_typeof(document_source.content_attributes) = 'string'
+                   THEN (document_source.content_attributes #>> '{}')::json ->> 'myinvest_tenant'
+                   ELSE document_source.content_attributes ->> 'myinvest_tenant' END, conversation.custom_attributes ->> 'myinvest_tenant')
+                   IS NOT DISTINCT FROM coalesce(CASE WHEN json_typeof(source_message.content_attributes) = 'string'
+                     THEN (source_message.content_attributes #>> '{}')::json ->> 'myinvest_tenant'
+                     ELSE source_message.content_attributes ->> 'myinvest_tenant' END, conversation.custom_attributes ->> 'myinvest_tenant')
+                WHERE document_marker.account_id = $1
+                  AND document_marker.conversation_id = conversation.id
+                  AND document_marker.inbox_id = conversation.inbox_id
+                  AND document_marker.private = true AND document_marker.sender_type = 'AgentBot'
+                  AND marker_data.attrs ->> 'myinvest_agent_message_kind' = 'document_assistance_note'
+                  AND document_marker.created_at >= source_message.created_at - interval '24 hours'
+                  AND (document_marker.created_at, document_marker.id) < (source_message.created_at, source_message.id)
+              ) AS document_assistance_active,
               (
                 SELECT draft_note.content
                   FROM messages AS draft_note
@@ -227,6 +255,7 @@ export class PostgresChatwootDeliveryStore
       humanRepliedAfterBot: lastBotHandoffId > 0 && lastHumanMessageId > lastBotHandoffId,
       humanEverReplied: lastHumanMessageId > 0,
       previousAgentDraft: extractAgentDraft(conversation.last_agent_draft_note),
+      ...(conversation.document_assistance_active === true ? { documentAssistanceActive: true } : {}),
       supportRouting: {
         conversationTenant: conversation.conversation_tenant,
         conversationChannel: conversation.conversation_channel,
