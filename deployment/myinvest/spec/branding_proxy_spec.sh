@@ -15,6 +15,10 @@ grep -Eq '^[[:space:]]*redir[[:space:]]+@root[[:space:]]+/app/login[[:space:]]+3
 }
 
 expected_csp="frame-ancestors 'self' https://www.myinvest-pro.de https://app.myinvest-pro.de https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app"
+grep -Fq 'https://app-my-invest-pro-git-main-lucas-projects-ac052665.vercel.app https://app-my-invest-pro-lucas-projects-ac052665.vercel.app {$INTERN_EMBED_ORIGIN:' "$caddyfile" || {
+  printf 'Missing exact nested App origins and configurable pinned Website origin.\n' >&2
+  exit 1
+}
 grep -Fq "header_down Content-Security-Policy \"$expected_csp\"" "$caddyfile" || {
   printf 'Caddy must allow only production and the fixed Beta frame ancestors.\n' >&2
   exit 1

@@ -27,6 +27,13 @@ const baseEnvironment = {
 }
 
 describe('tenant configuration', () => {
+  it('allows exactly one pinned website deployment as nested Intern origin', () => {
+    const origin = 'https://webseite-software-my-invest-59y5oogio-lucas-projects-ac052665.vercel.app'
+    expect(loadConfig({ ...baseEnvironment, INTERN_EMBED_ORIGIN: origin }).INTERN_EMBED_ORIGIN).toBe(origin)
+    for (const invalid of ['https://evil.example', 'https://*.vercel.app', `${origin}/`, `${origin}\n`, `${origin} https://evil.example`, origin.replace('https:', 'http:')]) {
+      expect(() => loadConfig({ ...baseEnvironment, INTERN_EMBED_ORIGIN: invalid })).toThrow()
+    }
+  })
   it('requires three independent tenants, accounts, and credentials', () => {
     const registry = buildTenantRegistry(tenants)
     expect(registry.requireByAccountId(202).key).toBe('new_academy')

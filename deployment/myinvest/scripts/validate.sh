@@ -23,6 +23,11 @@ CADDY_SITE_SCHEME="${CADDY_SITE_SCHEME:-https}"
 INGRESS_MODE="${INGRESS_MODE:-direct}"
 STORAGE_LOCAL_MINIO="${STORAGE_LOCAL_MINIO:-false}"
 DIRECT_UPLOADS_ENABLED="${DIRECT_UPLOADS_ENABLED:-false}"
+INTERN_EMBED_ORIGIN="${INTERN_EMBED_ORIGIN:-https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app}"
+if [[ "$INTERN_EMBED_ORIGIN" != https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app && ! "$INTERN_EMBED_ORIGIN" =~ ^https://webseite-software-my-invest-[a-z0-9]{9}-lucas-projects-ac052665\.vercel\.app$ ]]; then
+  printf 'INTERN_EMBED_ORIGIN must be one exact approved Website deployment origin.\n' >&2
+  exit 1
+fi
 
 required=(
   CADDY_SITE_ADDRESS ACME_EMAIL BIND_ADDRESS FRONTEND_URL FORCE_SSL ENABLE_ACCOUNT_SIGNUP

@@ -3,7 +3,15 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 const SIGNATURE_DOMAIN = 'myinvest-support-sso/v1'
 const MAX_TOKEN_AGE_SECONDS = 60
 const NONCE_PATTERN = /^[A-Za-z0-9_-]{20,64}$/
-const BETA_EMBED_ORIGIN = 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app'
+export const BETA_EMBED_ORIGIN = 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app'
+const APP_BETA_ORIGINS = [
+  'https://app-my-invest-pro-git-main-lucas-projects-ac052665.vercel.app',
+  'https://app-my-invest-pro-lucas-projects-ac052665.vercel.app',
+]
+
+export function isInternEmbedOrigin(origin: string): boolean {
+  return origin === BETA_EMBED_ORIGIN || (origin === origin.trim() && /^https:\/\/webseite-software-my-invest-[a-z0-9]{9}-lucas-projects-ac052665\.vercel\.app$/.test(origin))
+}
 
 interface TokenPayload {
   v: 1
@@ -24,6 +32,7 @@ export interface InternSsoConfig {
   inboxId: number
   returnPath: string
   chatwootBaseUrl: string
+  embedOrigin?: string
 }
 
 export interface NonceStore {
@@ -117,6 +126,7 @@ function sessionCookie(
   expiry: number,
   nowSeconds: number,
   requestOrigin?: string,
+  embedOrigin = BETA_EMBED_ORIGIN,
 ): string {
   const value = encodeURIComponent(JSON.stringify(headers))
   const maxAge = Math.max(1, expiry - nowSeconds)
@@ -124,7 +134,8 @@ function sessionCookie(
   // cookie host-only and partition the approved cross-site Beta embed; the
   // production same-site session retains its existing cookie policy. Origin
   // selects storage only: ticket verification and nonce claiming happen first.
-  const isolation = requestOrigin === BETA_EMBED_ORIGIN ? 'SameSite=None; Partitioned' : 'SameSite=Lax'
+  const partitioned = typeof requestOrigin === 'string' && [BETA_EMBED_ORIGIN, ...APP_BETA_ORIGINS, embedOrigin].includes(requestOrigin)
+  const isolation = partitioned ? 'SameSite=None; Partitioned' : 'SameSite=Lax'
   return `cw_d_session_info=${value}; Path=/; Max-Age=${maxAge}; Expires=${new Date(expiry * 1_000).toUTCString()}; Secure; ${isolation}`
 }
 
@@ -137,6 +148,9 @@ export class InternSsoService {
   ) {}
 
   async createSession(token: string, requestOrigin?: string): Promise<InternSsoSession> {
+    if (!isInternEmbedOrigin(this.config.embedOrigin ?? BETA_EMBED_ORIGIN)) {
+      throw new InternSsoError(503, 'invalid embed origin')
+    }
     const now = this.now()
     const payload = verifyInternSsoToken(
       token,
@@ -214,7 +228,7 @@ export class InternSsoService {
 
     return {
       location: this.config.returnPath,
-      cookie: sessionCookie(authHeaders, expiry, now, requestOrigin),
+      cookie: sessionCookie(authHeaders, expiry, now, requestOrigin, this.config.embedOrigin),
     }
   }
 }

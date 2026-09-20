@@ -176,6 +176,41 @@ describe('Intern-SSO', () => {
 })
 
 const BETA_ORIGIN = 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app'
+const PINNED_ORIGIN = 'https://webseite-software-my-invest-59y5oogio-lucas-projects-ac052665.vercel.app'
+
+describe('pinned nested Intern support origins', () => {
+  it('preserves valid legacy tickets without Origin while still requiring signature and nonce', async () => {
+    const set = vi.fn().mockResolvedValue('OK')
+    const request = vi.fn().mockResolvedValue(authResponse())
+    const service = new InternSsoService({ ...config, embedOrigin: PINNED_ORIGIN }, { set }, request, () => NOW)
+    for (const origin of [undefined, 'null', 'https://evil.example', `${PINNED_ORIGIN}/`]) {
+      expect((await service.createSession(ticket(), origin)).cookie).toContain('; Secure; SameSite=Lax')
+    }
+    expect(set).toHaveBeenCalledTimes(4)
+    expect(request).toHaveBeenCalledTimes(4)
+    await expect(service.createSession(ticket({}, 'wrong-secret'))).rejects.toMatchObject({ status: 401 })
+    set.mockResolvedValue(null)
+    await expect(service.createSession(ticket())).rejects.toMatchObject({ status: 409 })
+    expect(request).toHaveBeenCalledTimes(4)
+  })
+  it.each([
+    PINNED_ORIGIN,
+    'https://app-my-invest-pro-git-main-lucas-projects-ac052665.vercel.app',
+    'https://app-my-invest-pro-lucas-projects-ac052665.vercel.app',
+  ])('uses partitioned storage for exactly the configured nested parent: %s', async (origin) => {
+    const service = new InternSsoService({ ...config, embedOrigin: PINNED_ORIGIN }, { set: vi.fn().mockResolvedValue('OK') }, vi.fn().mockResolvedValue(authResponse()), () => NOW)
+    expect((await service.createSession(ticket(), origin)).cookie).toContain('; Secure; SameSite=None; Partitioned')
+  })
+
+  it('does not allow a sibling deployment or malformed configured origin', async () => {
+    for (const embedOrigin of [`${PINNED_ORIGIN}/`, `${PINNED_ORIGIN} https://evil.example`, 'https://evil.example']) {
+      const service = new InternSsoService({ ...config, embedOrigin }, { set: vi.fn().mockResolvedValue('OK') }, vi.fn().mockResolvedValue(authResponse()), () => NOW)
+      await expect(service.createSession(ticket(), embedOrigin)).rejects.toMatchObject({ status: 503 })
+    }
+    const service = new InternSsoService({ ...config, embedOrigin: PINNED_ORIGIN }, { set: vi.fn().mockResolvedValue('OK') }, vi.fn().mockResolvedValue(authResponse()), () => NOW)
+    expect((await service.createSession(ticket(), PINNED_ORIGIN.replace('59y5oogio', 'aaaaaaaaa'))).cookie).toContain('SameSite=Lax')
+  })
+})
 
 describe('Beta embedded SSO cookie isolation', () => {
   it('creates a host-only partitioned secure session only for the exact approved Beta parent', async () => {

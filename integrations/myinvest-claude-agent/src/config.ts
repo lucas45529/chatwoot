@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { tenantKeySchema, type TenantKey } from './domain.js'
+import { BETA_EMBED_ORIGIN, isInternEmbedOrigin } from './intern-sso.js'
 
 // Fixed approved embedded Beta; request bodies may select it, never supply a URL.
 export const SUPPORT_BETA_ANSWER_URL = 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app'
@@ -96,6 +97,7 @@ const envSchema = z.object({
     .max(253)
     .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i),
   INTERN_SSO_EMAIL: z.string().email().max(320),
+  INTERN_EMBED_ORIGIN: z.string().refine(isInternEmbedOrigin).default(BETA_EMBED_ORIGIN),
   INTERN_SSO_PASSWORD: z.string().min(12).max(1_024),
   INTERN_SSO_RETURN_PATH: z
     .string()

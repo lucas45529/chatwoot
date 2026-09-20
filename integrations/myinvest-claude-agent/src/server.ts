@@ -88,6 +88,7 @@ const internSso = new InternSsoService(
     inboxId: config.tenants.requireByKey('saas').inboxId,
     returnPath: config.INTERN_SSO_RETURN_PATH,
     chatwootBaseUrl: config.CHATWOOT_BASE_URL,
+    embedOrigin: config.INTERN_EMBED_ORIGIN,
   },
   redis,
 )

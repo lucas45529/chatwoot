@@ -4,7 +4,8 @@ import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 
 const bootstrap = fileURLToPath(new URL('../../../deployment/myinvest/bootstrap/support_experience.rb', import.meta.url))
-const html = execFileSync('ruby', ['-e', 'require ARGV[0]; print Myinvest::SupportExperience::DASHBOARD_SCRIPT', bootstrap], { encoding: 'utf8' })
+const pinnedOrigin = 'https://webseite-software-my-invest-59y5oogio-lucas-projects-ac052665.vercel.app'
+const html = execFileSync('ruby', ['-e', 'require ARGV[0]; print Myinvest::SupportExperience::DASHBOARD_SCRIPT', bootstrap], { encoding: 'utf8', env: { ...process.env, INTERN_EMBED_ORIGIN: pinnedOrigin } })
 const script = html.replace(/^\s*<script[^>]*>/, '').replace(/<\/script>\s*$/, '')
 const original = 'Öffne Kontakte und wähle Bearbeiten.'
 const correction = 'Öffne Kontakte und wähle den Namen.'
@@ -58,6 +59,17 @@ function dashboard(pathname = '/app/accounts/101/inbox/17/conversations/77') {
 }
 
 describe('embedded draft learning bridge', () => {
+  it('accepts the configured pinned parent and App aliases without allowing sibling previews', () => {
+    for (const origin of [pinnedOrigin, 'https://app-my-invest-pro-git-main-lucas-projects-ac052665.vercel.app', 'https://app-my-invest-pro-lucas-projects-ac052665.vercel.app']) {
+      const ui = dashboard(); ui.host(origin)
+      expect(ui.button()?.disabled).toBe(false)
+    }
+    for (const origin of [pinnedOrigin.replace('59y5oogio', 'aaaaaaaaa'), `${pinnedOrigin}/`, `${pinnedOrigin}.evil.example`]) {
+      const ui = dashboard(); ui.host(origin)
+      expect(ui.button()).toBeUndefined()
+    }
+    expect(() => execFileSync('ruby', ['-e', 'require ARGV[0]', bootstrap], { stdio: 'pipe', env: { ...process.env, INTERN_EMBED_ORIGIN: 'https://evil.example' } })).toThrow()
+  })
   it('requires exact host origin, parent window and handshake schema before showing action', () => {
     const ui = dashboard()
     expect('__vueParentComponent' in ui.box).toBe(false)
