@@ -42,14 +42,35 @@ const SEARCH_BODY = `
              WHERE c.id = d.learning_candidate_id
                AND c.target_tenant = d.tenant_key
                AND c.published_document_id = d.id
+               AND d.content_hash = c.content_hash
                AND c.status = 'published'
-               AND c.reviewed_by = 'intern-support-review'
-               AND EXISTS (
-                 SELECT 1 FROM agent_learning_audit_events a
-                 WHERE a.candidate_id = c.id
-                   AND a.tenant_key = c.target_tenant
-                   AND a.action = 'published'
-                   AND a.actor = 'intern-support-review'
+               AND (
+                 (c.reviewed_by = 'intern-support-review' AND EXISTS (
+                   SELECT 1 FROM agent_learning_audit_events a
+                   WHERE a.candidate_id = c.id AND a.tenant_key = c.target_tenant
+                     AND a.action = 'published' AND a.actor = 'intern-support-review'
+                 ))
+                 OR
+                 (c.reviewed_by = 'automatic-support-learning'
+                   AND EXISTS (
+                     SELECT 1 FROM agent_learning_audit_events e
+                     WHERE e.candidate_id = c.id AND e.tenant_key = c.target_tenant
+                       AND e.actor = 'automatic-support-learning' AND e.action = 'published'
+                       AND e.details->>'kind' = 'automatic_evaluation'
+                       AND e.details->'evaluation'->>'passed' = 'true'
+                       AND e.details->'evaluation'->>'groundedProposal' = 'true'
+                       AND e.details->>'sourceContentHash' = e.details->'evaluation'->>'sourceContentHash'
+                       AND e.details->>'proposalHash' = e.details->'evaluation'->>'proposalHash'
+                       AND e.details->>'proposalHash' = c.content_hash
+                       AND EXISTS (
+                         SELECT 1 FROM agent_learning_audit_events p
+                         WHERE p.candidate_id = c.id AND p.tenant_key = c.target_tenant
+                           AND p.actor = 'automatic-support-learning' AND p.action = 'feedback_recorded'
+                           AND p.details->>'kind' = 'automatic_source'
+                           AND p.details->>'contentHash' = e.details->>'sourceContentHash'
+                       )
+                   )
+                 )
                )
            )
          )

@@ -313,6 +313,9 @@ async function lockedCandidate(client: TransactionClient, candidateId: string): 
     [candidateId],
   )
   if (!result.rows[0]) throw new Error('Candidate not found')
+  if (result.rows[0].source_namespace === 'automatic-support-learning-cursor-v1') {
+    throw new Error('Internal candidate cannot be reviewed')
+  }
   return result.rows[0]
 }
 

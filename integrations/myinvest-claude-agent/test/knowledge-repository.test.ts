@@ -6,7 +6,7 @@ function row(title: string, score: number) {
 }
 
 describe('knowledge search', () => {
-  it('requires explicit human publication and a live tenant/document binding in both query paths', async () => {
+  it('requires human review or source-bound passing automatic evaluation in both query paths', async () => {
     const query = vi.fn().mockResolvedValue({ rows: [] })
     await new PostgresKnowledgeRepository({ query }).search('saas', 'Kontakt bearbeiten', 4)
 
@@ -17,12 +17,22 @@ describe('knowledge search', () => {
       expect(sql).toContain('c.id = d.learning_candidate_id')
       expect(sql).toContain('c.target_tenant = d.tenant_key')
       expect(sql).toContain('c.published_document_id = d.id')
+      expect(sql).toContain('d.content_hash = c.content_hash')
       expect(sql).toContain("c.status = 'published'")
       expect(sql).toContain("c.reviewed_by = 'intern-support-review'")
       expect(sql).toContain('a.candidate_id = c.id')
       expect(sql).toContain('a.tenant_key = c.target_tenant')
       expect(sql).toContain("a.action = 'published'")
       expect(sql).toContain("a.actor = 'intern-support-review'")
+      expect(sql).toContain("c.reviewed_by = 'automatic-support-learning'")
+      expect(sql).toContain("p.details->>'kind' = 'automatic_source'")
+      expect(sql).toContain("e.details->>'kind' = 'automatic_evaluation'")
+      expect(sql).toContain("e.details->'evaluation'->>'passed' = 'true'")
+      expect(sql).toContain("e.details->'evaluation'->>'groundedProposal' = 'true'")
+      expect(sql).toContain("e.details->>'sourceContentHash' = e.details->'evaluation'->>'sourceContentHash'")
+      expect(sql).toContain("e.details->>'proposalHash' = e.details->'evaluation'->>'proposalHash'")
+      expect(sql).toContain("p.details->>'contentHash' = e.details->>'sourceContentHash'")
+      expect(sql).toContain("e.details->>'proposalHash' = c.content_hash")
       expect(sql).toContain("d.publication_status = 'published'")
       expect(sql).toContain('d.active = true')
     }

@@ -5,17 +5,19 @@ import { containsResidualPersonalData, directPersonalization, likelySecret, reda
 import type { LearningPool } from './repository.js'
 import { LearningRequestError } from './review-auth.js'
 import { learningSourceSchema, type LearningSource, type LearningSourceResolver, type ResolvedLearningSource } from './source.js'
+import { automaticLearningCommandSchemas, type AutomaticLearningCommand } from './automatic-schema.js'
 
 const historySchema = z.array(z.object({ role: z.enum(['user', 'agent']), text: z.string().min(1).max(1500) }).strict()).max(12)
 const exampleSchema = z.object({ question: z.string().trim().min(8).max(1000), answer: z.string().trim().min(10).max(4000), reason: z.string().trim().min(3).max(1000) }).strict()
 const id = z.string().regex(/^[1-9]\d{0,18}$/)
-export const learningCommandSchema = z.discriminatedUnion('action', [
+export const learningCommandSchema = z.union([
   z.object({ action: z.literal('source'), source: learningSourceSchema, includeContext: z.literal(true).optional() }).strict(),
   z.object({ action: z.literal('list'), tenant: tenantKeySchema }).strict(),
   z.object({ action: z.literal('save'), tenant: tenantKeySchema, id: id.optional(), source: learningSourceSchema.optional(), correctedAnswer: z.string().trim().min(10).max(4000).optional(), question: z.string().trim().min(8).max(1000), answer: z.string().trim().min(10).max(4000), reason: z.string().trim().min(3).max(1000) }).strict(),
   z.object({ action: z.enum(['publish', 'reject']), tenant: tenantKeySchema, id }).strict(),
   z.object({ action: z.literal('retrieve'), tenant: tenantKeySchema, question: z.string().trim().min(1).max(1000), history: historySchema.optional() }).strict(),
   z.object({ action: z.literal('preview'), tenant: tenantKeySchema, question: z.string().trim().min(1).max(1000), history: historySchema.optional(), example: exampleSchema }).strict(),
+  ...automaticLearningCommandSchemas,
 ])
 export type LearningCommand = z.infer<typeof learningCommandSchema>
 
@@ -25,6 +27,7 @@ export interface ReviewCandidate extends Record<string, unknown> {
   question: string
   answer: string
   status: string
+  reviewed_by?: string | null
   reason: string
   updatedAt: string | Date
   source?: LearningSource
@@ -32,6 +35,7 @@ export interface ReviewCandidate extends Record<string, unknown> {
 interface LockedCandidate extends ReviewCandidate {
   published_document_id: string | null
   reviewed_by: string | null
+  source_namespace?: string
 }
 type Client = Awaited<ReturnType<LearningPool['connect']>>
 const ACTOR = 'intern-support-review'
@@ -44,7 +48,7 @@ const COLUMNS = `c.id::text, c.target_tenant AS tenant, c.question_redacted AS q
       AND a.action = 'feedback_recorded' AND a.details ? 'source' ORDER BY a.id DESC LIMIT 1) AS source`
 
 function present(row: ReviewCandidate): ReviewCandidate {
-  const status = row.status === 'published' && row.reviewed_by !== ACTOR ? 'pending_review' : row.status
+  const status = row.status === 'published' && ![ACTOR, 'automatic-support-learning'].includes(row.reviewed_by ?? '') ? 'pending_review' : row.status
   const source = learningSourceSchema.safeParse(row.source)
   return { id: row.id, tenant: row.tenant, question: row.question, answer: row.answer, status, reason: row.reason, updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt, ...(source.success ? { source: source.data } : {}) }
 }
@@ -161,7 +165,7 @@ async function retire(client: Client, candidate: LockedCandidate, reason: string
   await audit(client, candidate.id, candidate.tenant, 'rejected', { reason })
 }
 
-function cleanInput(value: string): { text: string; redactionCount: number } {
+export function cleanInput(value: string): { text: string; redactionCount: number } {
   const credentialAlias = /\b(?:passwords?|passcodes?|pins?|api[-_\s]*(?:keys?|schlüssel|schluessel)|(?:access|recovery|backup|verification|security)[-_\s]*(?:codes?|keys?|tokens?)|(?:zugangs|zugriffs|wiederherstellungs|sicherheits|verifizierungs|bestätigungs|bestaetigungs)codes?|(?:client|private|secret)[-_\s]*(?:keys?|secrets?))\b/iu
   if (likelySecret.test(value) || credentialAlias.test(value)) throw new LearningRequestError(422, 'credentials_not_allowed')
   // Reuse the miner's content perimeter for manual review too. Generic reset
@@ -184,7 +188,11 @@ function cleanInput(value: string): { text: string; redactionCount: number } {
 }
 
 export class LearningReviewService {
-  constructor(private readonly pool: LearningPool, private readonly sourceResolver?: LearningSourceResolver) {}
+  constructor(
+    private readonly pool: LearningPool,
+    private readonly sourceResolver?: LearningSourceResolver,
+    private readonly automatic?: { execute(command: AutomaticLearningCommand): Promise<unknown> },
+  ) {}
 
   private async resolveSource(source: LearningSource) {
     if (!this.sourceResolver) throw new LearningRequestError(503, 'learning_source_unavailable')
@@ -195,6 +203,10 @@ export class LearningReviewService {
     const parsed = learningCommandSchema.safeParse(input)
     if (!parsed.success) throw new LearningRequestError(422, 'invalid_learning_command')
     const command = parsed.data
+    if (command.action === 'automatic') {
+      if (!this.automatic) throw new LearningRequestError(503, 'automatic_learning_unavailable')
+      return this.automatic.execute(command)
+    }
     if (command.action === 'source') {
       const resolved = await this.resolveSource(command.source)
       if (command.includeContext) return resolved
@@ -226,7 +238,9 @@ export class LearningReviewService {
       await client.query('BEGIN')
       let result: unknown
       if (command.action === 'list') {
-        const rows = await client.query<ReviewCandidate>(`SELECT ${COLUMNS} FROM agent_knowledge_candidates c WHERE c.target_tenant = $1 ORDER BY c.updated_at DESC, c.id DESC LIMIT 100`, [command.tenant])
+        const rows = await client.query<ReviewCandidate>(`SELECT ${COLUMNS} FROM agent_knowledge_candidates c
+          WHERE c.target_tenant = $1 AND c.source_namespace <> 'automatic-support-learning-cursor-v1'
+          ORDER BY c.updated_at DESC, c.id DESC LIMIT 100`, [command.tenant])
         result = { mode: 'review_required', candidates: rows.rows.map(present) }
       } else if (command.action === 'retrieve' || command.action === 'preview') {
         const query = retrievalQuestion(command.question, command.history)
@@ -237,9 +251,26 @@ export class LearningReviewService {
             FROM agent_knowledge_candidates c
             JOIN agent_knowledge_documents d ON d.id = c.published_document_id AND d.learning_candidate_id = c.id AND d.tenant_key = c.target_tenant
             WHERE c.target_tenant = $1 AND c.status = 'published'
-              AND c.reviewed_by = 'intern-support-review'
-              AND d.active = true AND d.publication_status = 'published'
-              AND EXISTS (SELECT 1 FROM agent_learning_audit_events a WHERE a.candidate_id = c.id AND a.tenant_key = c.target_tenant AND a.actor = 'intern-support-review' AND a.action = 'published')
+              AND (
+                (c.reviewed_by = 'intern-support-review' AND EXISTS (
+                  SELECT 1 FROM agent_learning_audit_events h WHERE h.candidate_id = c.id
+                    AND h.tenant_key = c.target_tenant AND h.actor = 'intern-support-review' AND h.action = 'published'))
+                OR
+                (c.reviewed_by = 'automatic-support-learning'
+                  AND EXISTS (SELECT 1 FROM agent_learning_audit_events e WHERE e.candidate_id = c.id
+                    AND e.tenant_key = c.target_tenant AND e.actor = 'automatic-support-learning'
+                    AND e.action = 'published' AND e.details->>'kind' = 'automatic_evaluation'
+                    AND e.details->'evaluation'->>'passed' = 'true'
+                    AND e.details->'evaluation'->>'groundedProposal' = 'true'
+                    AND e.details->>'sourceContentHash' = e.details->'evaluation'->>'sourceContentHash'
+                    AND e.details->>'proposalHash' = e.details->'evaluation'->>'proposalHash'
+                    AND e.details->>'proposalHash' = c.content_hash
+                    AND EXISTS (SELECT 1 FROM agent_learning_audit_events p WHERE p.candidate_id = c.id
+                      AND p.tenant_key = c.target_tenant AND p.actor = 'automatic-support-learning'
+                      AND p.action = 'feedback_recorded' AND p.details->>'kind' = 'automatic_source'
+                      AND p.details->>'contentHash' = e.details->>'sourceContentHash')))
+              )
+              AND d.active = true AND d.publication_status = 'published' AND d.content_hash = c.content_hash
               AND regexp_split_to_array(lower(c.question_redacted), '[^[:alnum:]]+') && $2::text[]
             ORDER BY c.published_at DESC, c.id DESC LIMIT 300`, [command.tenant, searchTerms(query)])
           result = { examples: matchReviewedExamples(query, rows.rows) }
@@ -248,9 +279,9 @@ export class LearningReviewService {
       } else {
         let existing: LockedCandidate | undefined
         if (command.id) {
-          const locked = await client.query<LockedCandidate>(`SELECT ${COLUMNS}, c.published_document_id::text FROM agent_knowledge_candidates c WHERE c.id = $1 AND c.target_tenant = $2 FOR UPDATE`, [command.id, command.tenant])
+          const locked = await client.query<LockedCandidate>(`SELECT ${COLUMNS}, c.published_document_id::text, c.source_namespace FROM agent_knowledge_candidates c WHERE c.id = $1 AND c.target_tenant = $2 FOR UPDATE`, [command.id, command.tenant])
           existing = locked.rows[0]
-          if (!existing) throw new LearningRequestError(404, 'candidate_not_found')
+          if (!existing || existing.source_namespace === 'automatic-support-learning-cursor-v1') throw new LearningRequestError(404, 'candidate_not_found')
         }
         let candidateId = command.id
         if (command.action === 'save' && cleaned) {

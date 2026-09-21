@@ -16,6 +16,7 @@ try {
               left(question_redacted, 140) AS question, left(answer_redacted, 200) AS answer
          FROM agent_knowledge_candidates
         WHERE status IN ('quarantined', 'pending_review')
+          AND source_namespace <> 'automatic-support-learning-cursor-v1'
         ORDER BY id DESC
         LIMIT $1`,
       [Number.isInteger(limit) && limit > 0 && limit <= 200 ? limit : 20],

@@ -14,6 +14,8 @@ import { runAutoSendFeedbackSweep } from './learning/auto-send-feedback.js'
 import { authorizeLearningRequest, LearningRequestError } from './learning/review-auth.js'
 import { learningCommandSchema, LearningReviewService } from './learning/review-service.js'
 import { PostgresLearningSourceResolver } from './learning/source.js'
+import { AutomaticLearningService } from './learning/automatic-service.js'
+import { discoverAutomaticLearningSources, resolveAutomaticLearningSource } from './learning/automatic-source.js'
 import { ManualDraftService, proposalSchema } from './manual-draft.js'
 import { manualDraftHandler } from './manual-draft-route.js'
 import { autonomyStatusHandler } from './autonomy-status-route.js'
@@ -202,7 +204,17 @@ app.post('/draft', express.raw({ type: 'application/json', limit: '2kb' }), manu
     return conversationLock.runExclusive(tenant.key, input.conversationId, () => manualDraft.createDraft(input, signal))
   },
 }))
-const learningReview = new LearningReviewService(pool, new PostgresLearningSourceResolver(chatwootPool, config.tenants))
+const automaticLearning = new AutomaticLearningService(pool, {
+  discover: async (tenant, cursor) => {
+    return discoverAutomaticLearningSources(chatwootPool, config.tenants, { tenant, ...(cursor ? { cursor } : {}) })
+  },
+  resolve: async (input) => resolveAutomaticLearningSource(chatwootPool, config.tenants, input),
+})
+const learningReview = new LearningReviewService(
+  pool,
+  new PostgresLearningSourceResolver(chatwootPool, config.tenants),
+  automaticLearning,
+)
 app.post('/learning', express.raw({ type: 'application/json', limit: '16kb' }), async (request, response) => {
   response.setHeader('Cache-Control', 'no-store')
   if (!Buffer.isBuffer(request.body)) return response.status(415).json({ error: 'application_json_required' })

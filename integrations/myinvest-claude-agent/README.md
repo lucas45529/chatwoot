@@ -91,8 +91,40 @@ Nachlauf: Antwort ohne menschliche Korrektur und danach gelöst = hilfreiches
 Signal; eine zeitnahe Menschenantwort = Korrektursignal. Beides bleibt
 auditiert.
 
-Wichtig: `published` ist hier ein Review-Status, **kein zweites Runtime-
-Retrieval**. Die Website-Wissensbasis bleibt die einzige Antwortquelle; ein
-Lernkandidat erreicht sie nur über deren geprüften Korpus-Prozess. Negative
-Signale und Redaction-Refresh schicken Datensätze zurück in Review statt sie
-still zu fördern oder zu löschen.
+Der Website-Antwortpfad ruft passende veröffentlichte Beispiele über den
+signierten `/_agent/learning`-Endpunkt ab. Produkt, Kandidat, aktives Dokument,
+Inhalts-Hash und Freigabenachweis müssen zusammenpassen. Ein Datenbankstatus
+allein ist keine Wissensfreigabe. Negative Signale und Redaction-Refresh
+ziehen betroffene Beispiele zurück.
+
+## Automatic correction learning
+
+The Website's hourly scheduler invokes the existing signed learning endpoint
+with `action: automatic` and `operation: claim | complete | status`. The host
+discovers a public customer question, its bound private bot draft and a sent
+human correction. It excludes automation, private-document replies, unchanged
+copies, personal data and sensitive or individual commitments. A source hash
+binds message identities, tenant, immutable content and sanitized history;
+normal sent/delivered/read progress does not change it. Source resolution is
+repeated before publication.
+
+One expiring lease per tenant prevents parallel adoption. The Website proposes
+a general example and performs real baseline/candidate answer comparisons.
+The host independently validates grounded evidence, four complete comparisons,
+absolute quality floors, no regressions, improvement for original and variant,
+and proposal/source hashes. Successful candidates become active knowledge;
+due rechecks can retire them. Human edits or rejection always take precedence.
+No model output expands tool or sending privileges.
+
+This implementation reuses the existing candidate, document and audit tables;
+it adds no migration. Deploy the agent together with the matching Website build.
+Do not apply production migrations as part of this release. The Website's
+staged build permits manual proof; its hourly production cron starts only
+after the separately approved production promotion.
+
+Local verification: `pnpm check && pnpm test`. Setting
+`LEARNING_TEST_DATABASE_URL` to a disposable PostgreSQL database also runs
+source binding and publication/recheck/revocation integration tests. Never
+point that test variable at production. The Website's fictional chat preview
+uses an in-memory sink, has no customer identity, and cannot publish real
+knowledge or send a customer message.

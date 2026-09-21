@@ -158,6 +158,17 @@ describe('knowledge learning repository', () => {
     expect(database.query).toHaveBeenCalledWith('ROLLBACK')
   })
 
+  it('never allows the internal cursor anchor into a manual review transition', async () => {
+    const database = fakePool((sql) => sql.includes('FROM agent_knowledge_candidates') ? { rows: [{
+      id: '7', candidate_key: candidate.candidateKey, source_namespace: 'automatic-support-learning-cursor-v1',
+      target_tenant: 'saas', question_redacted: 'internal', answer_redacted: 'internal',
+      content_hash: candidate.contentHash, status: 'quarantined', published_document_id: null,
+    }] } : { rows: [] })
+    await expect(approveCandidate(database.pool, '7', 'saas', 'reviewer-1'))
+      .rejects.toThrow('Internal candidate cannot be reviewed')
+    expect(database.query.mock.calls.some(([sql]) => String(sql).includes("status = 'approved'"))).toBe(false)
+  })
+
   it('publishes only an approved tenant-bound candidate', async () => {
     const database = fakePool((sql) => {
       if (sql.includes('FROM agent_knowledge_candidates')) {

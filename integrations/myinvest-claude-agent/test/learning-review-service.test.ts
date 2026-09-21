@@ -22,6 +22,8 @@ describe('existing learning candidate review', () => {
     await expect(service.execute({ action: 'list', tenant: 'saas' })).resolves.toMatchObject({ candidates: [
       { id: '9', status: 'pending_review' }, { id: '11', status: 'published' },
     ] })
+    const listSql = query.mock.calls.find(([sql]) => sql.includes('ORDER BY c.updated_at DESC'))?.[0]
+    expect(listSql).toContain("c.source_namespace <> 'automatic-support-learning-cursor-v1'")
   })
 
   it('cannot edit or publish a candidate through another tenant', async () => {
@@ -29,6 +31,13 @@ describe('existing learning candidate review', () => {
     await expect(service.execute({ action: 'publish', tenant: 'new_academy', id: '9' }))
       .rejects.toMatchObject({ status: 404 })
     expect(query.mock.calls.some(([sql]) => /^(UPDATE|INSERT)/.test(sql))).toBe(false)
+  })
+
+  it('does not expose the cursor anchor through direct manual-review actions', async () => {
+    const row = { ...fixture('quarantined'), source_namespace: 'automatic-support-learning-cursor-v1' }
+    const { service, query } = database(row)
+    await expect(service.execute({ action: 'publish', tenant: 'saas', id: '9' })).rejects.toMatchObject({ status: 404 })
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO agent_knowledge_documents'))).toBe(false)
   })
 
   it('retires a published version and creates a pending replacement on correction', async () => {
