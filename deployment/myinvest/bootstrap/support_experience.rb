@@ -17,9 +17,12 @@ module Myinvest; end
 #    damit Filter und Uebersicht sie kennen.
 class Myinvest::SupportExperience
   INTERN_EMBED_ORIGIN = ENV.fetch('INTERN_EMBED_ORIGIN', 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app')
-  unless INTERN_EMBED_ORIGIN == 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app' ||
-         INTERN_EMBED_ORIGIN.match?(%r{\Ahttps://webseite-software-my-invest-[a-z0-9]{9}-lucas-projects-ac052665\.vercel\.app\z})
-    raise ArgumentError, 'INTERN_EMBED_ORIGIN must be one exact approved Website deployment origin'
+  INTERN_BETA_EMBED_ORIGIN = ENV.fetch('INTERN_BETA_EMBED_ORIGIN', '')
+  ([INTERN_EMBED_ORIGIN] + [INTERN_BETA_EMBED_ORIGIN].reject(&:empty?)).each do |origin|
+    next if origin == 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app' ||
+            origin.match?(%r{\Ahttps://webseite-software-my-invest-[a-z0-9]{9}-lucas-projects-ac052665\.vercel\.app\z})
+
+    raise ArgumentError, 'Intern embed origin must be one exact approved Website deployment origin'
   end
   DASHBOARD_SCRIPT_MARKER = 'myinvest-support-dashboard-v2'
   LEGACY_DASHBOARD_SCRIPT_MARKER = 'myinvest-default-color-scheme'
@@ -61,7 +64,7 @@ class Myinvest::SupportExperience
           'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app',
           'https://app-my-invest-pro-git-main-lucas-projects-ac052665.vercel.app',
           'https://app-my-invest-pro-lucas-projects-ac052665.vercel.app',
-          #{JSON.generate(INTERN_EMBED_ORIGIN)},
+          ...#{JSON.generate([INTERN_EMBED_ORIGIN, INTERN_BETA_EMBED_ORIGIN].reject(&:empty?))},
         ]);
         let learningHost = null;
         let pendingDraft = null;

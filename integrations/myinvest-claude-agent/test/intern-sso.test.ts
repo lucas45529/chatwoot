@@ -177,8 +177,25 @@ describe('Intern-SSO', () => {
 
 const BETA_ORIGIN = 'https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app'
 const PINNED_ORIGIN = 'https://webseite-software-my-invest-59y5oogio-lucas-projects-ac052665.vercel.app'
+const CURRENT_ORIGIN = 'https://webseite-software-my-invest-gs5kzpcxy-lucas-projects-ac052665.vercel.app'
+const BETA_PINNED_ORIGIN = 'https://webseite-software-my-invest-d89qr7jcu-lucas-projects-ac052665.vercel.app'
 
 describe('pinned nested Intern support origins', () => {
+  it('partitions the cookie for both configured Website deployments only', async () => {
+    const service = new InternSsoService({ ...config, embedOrigin: CURRENT_ORIGIN, betaEmbedOrigin: BETA_PINNED_ORIGIN }, { set: vi.fn().mockResolvedValue('OK') }, vi.fn().mockResolvedValue(authResponse()), () => NOW)
+    for (const origin of [CURRENT_ORIGIN, BETA_PINNED_ORIGIN]) {
+      expect((await service.createSession(ticket(), origin)).cookie).toContain('; Secure; SameSite=None; Partitioned')
+    }
+    for (const origin of [`${BETA_PINNED_ORIGIN}/`, BETA_PINNED_ORIGIN.replace('d89qr7jcu', 'aaaaaaaaa')]) {
+      expect((await service.createSession(ticket(), origin)).cookie).toContain('; Secure; SameSite=Lax')
+    }
+  })
+  it('rejects an invalid second configured origin before consuming a ticket', async () => {
+    const set = vi.fn()
+    const service = new InternSsoService({ ...config, betaEmbedOrigin: `${BETA_PINNED_ORIGIN}/` }, { set }, vi.fn(), () => NOW)
+    await expect(service.createSession(ticket(), BETA_PINNED_ORIGIN)).rejects.toMatchObject({ status: 503 })
+    expect(set).not.toHaveBeenCalled()
+  })
   it('preserves valid legacy tickets without Origin while still requiring signature and nonce', async () => {
     const set = vi.fn().mockResolvedValue('OK')
     const request = vi.fn().mockResolvedValue(authResponse())

@@ -91,6 +91,7 @@ const internSso = new InternSsoService(
     returnPath: config.INTERN_SSO_RETURN_PATH,
     chatwootBaseUrl: config.CHATWOOT_BASE_URL,
     embedOrigin: config.INTERN_EMBED_ORIGIN,
+    betaEmbedOrigin: config.INTERN_BETA_EMBED_ORIGIN,
   },
   redis,
 )

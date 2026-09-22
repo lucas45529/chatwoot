@@ -34,6 +34,18 @@ describe('tenant configuration', () => {
       expect(() => loadConfig({ ...baseEnvironment, INTERN_EMBED_ORIGIN: invalid })).toThrow()
     }
   })
+  it('allows a second exact pinned Website origin without widening host validation', () => {
+    const primary = 'https://webseite-software-my-invest-gs5kzpcxy-lucas-projects-ac052665.vercel.app'
+    const beta = 'https://webseite-software-my-invest-d89qr7jcu-lucas-projects-ac052665.vercel.app'
+    const parsed = loadConfig({ ...baseEnvironment, INTERN_EMBED_ORIGIN: primary, INTERN_BETA_EMBED_ORIGIN: beta })
+    expect(parsed.INTERN_EMBED_ORIGIN).toBe(primary)
+    expect(parsed.INTERN_BETA_EMBED_ORIGIN).toBe(beta)
+    expect(loadConfig(baseEnvironment).INTERN_BETA_EMBED_ORIGIN).toBeUndefined()
+    expect(loadConfig({ ...baseEnvironment, INTERN_BETA_EMBED_ORIGIN: '' }).INTERN_BETA_EMBED_ORIGIN).toBeUndefined()
+    for (const invalid of [`${beta}/`, `${beta}/app`, `${beta}.evil.example`, 'https://*.vercel.app', 'https://evil.example']) {
+      expect(() => loadConfig({ ...baseEnvironment, INTERN_BETA_EMBED_ORIGIN: invalid })).toThrow()
+    }
+  })
   it('requires three independent tenants, accounts, and credentials', () => {
     const registry = buildTenantRegistry(tenants)
     expect(registry.requireByAccountId(202).key).toBe('new_academy')

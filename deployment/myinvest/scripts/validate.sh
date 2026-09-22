@@ -28,6 +28,11 @@ if [[ "$INTERN_EMBED_ORIGIN" != https://webseite-software-my-invest-git-3703b0-l
   printf 'INTERN_EMBED_ORIGIN must be one exact approved Website deployment origin.\n' >&2
   exit 1
 fi
+INTERN_BETA_EMBED_ORIGIN="${INTERN_BETA_EMBED_ORIGIN:-}"
+if [[ -n "$INTERN_BETA_EMBED_ORIGIN" && "$INTERN_BETA_EMBED_ORIGIN" != https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app && ! "$INTERN_BETA_EMBED_ORIGIN" =~ ^https://webseite-software-my-invest-[a-z0-9]{9}-lucas-projects-ac052665\.vercel\.app$ ]]; then
+  printf 'INTERN_BETA_EMBED_ORIGIN must be one exact approved Website deployment origin.\n' >&2
+  exit 1
+fi
 
 required=(
   CADDY_SITE_ADDRESS ACME_EMAIL BIND_ADDRESS FRONTEND_URL FORCE_SSL ENABLE_ACCOUNT_SIGNUP

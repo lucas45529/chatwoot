@@ -92,7 +92,7 @@
 		reverse_proxy rails:3000 {
 			header_up X-Forwarded-Proto https
 			header_down -X-Frame-Options
-			header_down Content-Security-Policy "frame-ancestors 'self' https://www.myinvest-pro.de https://app.myinvest-pro.de https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app https://app-my-invest-pro-git-main-lucas-projects-ac052665.vercel.app https://app-my-invest-pro-lucas-projects-ac052665.vercel.app {$INTERN_EMBED_ORIGIN:https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app}"
+			header_down Content-Security-Policy "frame-ancestors 'self' https://www.myinvest-pro.de https://app.myinvest-pro.de https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app https://app-my-invest-pro-git-main-lucas-projects-ac052665.vercel.app https://app-my-invest-pro-lucas-projects-ac052665.vercel.app {$INTERN_EMBED_ORIGIN:https://webseite-software-my-invest-git-3703b0-lucas-projects-ac052665.vercel.app} {$INTERN_BETA_EMBED_ORIGIN}"
 			import {$INGRESS_MODE:direct}
 			health_uri /health
 			health_interval 30s

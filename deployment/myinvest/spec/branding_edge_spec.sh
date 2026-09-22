@@ -9,6 +9,7 @@ network_name="myinvest-branding-$RANDOM-$$"
 backend_name="$network_name-backend"
 edge_name="$network_name-edge"
 pinned_origin='https://webseite-software-my-invest-59y5oogio-lucas-projects-ac052665.vercel.app'
+beta_pinned_origin='https://webseite-software-my-invest-d89qr7jcu-lucas-projects-ac052665.vercel.app'
 
 cleanup() {
   timeout 10s docker rm -f "$edge_name" "$backend_name" >/dev/null 2>&1 || true
@@ -47,6 +48,7 @@ timeout 20s docker run --detach --name "$edge_name" --network "$network_name" \
   -e INGRESS_MODE=direct \
   -e ACME_EMAIL=ops@example.invalid \
   -e INTERN_EMBED_ORIGIN="$pinned_origin" \
+  -e INTERN_BETA_EMBED_ORIGIN="$beta_pinned_origin" \
   -v "$deployment_dir/Caddyfile:/etc/caddy/Caddyfile:ro" \
   -v "$assets_dir:/srv/brand-assets:ro" \
   "$caddy_image" >/dev/null
@@ -73,13 +75,14 @@ grep -Eiq "^[[:space:]]*Content-Security-Policy: frame-ancestors 'self' https://
 }
 
 for origin in "$pinned_origin" \
+  "$beta_pinned_origin" \
   https://app-my-invest-pro-git-main-lucas-projects-ac052665.vercel.app \
   https://app-my-invest-pro-lucas-projects-ac052665.vercel.app; do
   grep -Fq "$origin" "$work_dir/app.headers"
 done
 timeout 5s docker exec "$edge_name" wget -S -T 2 -t 1 -O /dev/null \
   http://localhost/app/login 2>"$work_dir/login.headers"
-if grep -Fq "$pinned_origin" "$work_dir/login.headers" || grep -Fq 'https://app-my-invest-pro-git-main-' "$work_dir/login.headers"; then
+if grep -Fq "$pinned_origin" "$work_dir/login.headers" || grep -Fq "$beta_pinned_origin" "$work_dir/login.headers" || grep -Fq 'https://app-my-invest-pro-git-main-' "$work_dir/login.headers"; then
   printf 'Login must retain its existing framing policy.\n' >&2
   exit 1
 fi

@@ -19,6 +19,10 @@ grep -Fq 'https://app-my-invest-pro-git-main-lucas-projects-ac052665.vercel.app 
   printf 'Missing exact nested App origins and configurable pinned Website origin.\n' >&2
   exit 1
 }
+grep -Fq '{$INTERN_BETA_EMBED_ORIGIN}' "$caddyfile" || {
+  printf 'Missing optional exact Beta Website frame ancestor.\n' >&2
+  exit 1
+}
 grep -Fq "header_down Content-Security-Policy \"$expected_csp\"" "$caddyfile" || {
   printf 'Caddy must allow only production and the fixed Beta frame ancestors.\n' >&2
   exit 1

@@ -33,6 +33,7 @@ export interface InternSsoConfig {
   returnPath: string
   chatwootBaseUrl: string
   embedOrigin?: string
+  betaEmbedOrigin?: string
 }
 
 export interface NonceStore {
@@ -127,6 +128,7 @@ function sessionCookie(
   nowSeconds: number,
   requestOrigin?: string,
   embedOrigin = BETA_EMBED_ORIGIN,
+  betaEmbedOrigin?: string,
 ): string {
   const value = encodeURIComponent(JSON.stringify(headers))
   const maxAge = Math.max(1, expiry - nowSeconds)
@@ -134,7 +136,7 @@ function sessionCookie(
   // cookie host-only and partition the approved cross-site Beta embed; the
   // production same-site session retains its existing cookie policy. Origin
   // selects storage only: ticket verification and nonce claiming happen first.
-  const partitioned = typeof requestOrigin === 'string' && [BETA_EMBED_ORIGIN, ...APP_BETA_ORIGINS, embedOrigin].includes(requestOrigin)
+  const partitioned = typeof requestOrigin === 'string' && [BETA_EMBED_ORIGIN, ...APP_BETA_ORIGINS, embedOrigin, betaEmbedOrigin].includes(requestOrigin)
   const isolation = partitioned ? 'SameSite=None; Partitioned' : 'SameSite=Lax'
   return `cw_d_session_info=${value}; Path=/; Max-Age=${maxAge}; Expires=${new Date(expiry * 1_000).toUTCString()}; Secure; ${isolation}`
 }
@@ -148,7 +150,8 @@ export class InternSsoService {
   ) {}
 
   async createSession(token: string, requestOrigin?: string): Promise<InternSsoSession> {
-    if (!isInternEmbedOrigin(this.config.embedOrigin ?? BETA_EMBED_ORIGIN)) {
+    if (!isInternEmbedOrigin(this.config.embedOrigin ?? BETA_EMBED_ORIGIN) ||
+        (this.config.betaEmbedOrigin !== undefined && !isInternEmbedOrigin(this.config.betaEmbedOrigin))) {
       throw new InternSsoError(503, 'invalid embed origin')
     }
     const now = this.now()
@@ -228,7 +231,7 @@ export class InternSsoService {
 
     return {
       location: this.config.returnPath,
-      cookie: sessionCookie(authHeaders, expiry, now, requestOrigin, this.config.embedOrigin),
+      cookie: sessionCookie(authHeaders, expiry, now, requestOrigin, this.config.embedOrigin, this.config.betaEmbedOrigin),
     }
   }
 }

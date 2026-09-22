@@ -98,6 +98,10 @@ const envSchema = z.object({
     .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i),
   INTERN_SSO_EMAIL: z.string().email().max(320),
   INTERN_EMBED_ORIGIN: z.string().refine(isInternEmbedOrigin).default(BETA_EMBED_ORIGIN),
+  INTERN_BETA_EMBED_ORIGIN: z.preprocess(
+    value => value === '' ? undefined : value,
+    z.string().refine(isInternEmbedOrigin).optional(),
+  ),
   INTERN_SSO_PASSWORD: z.string().min(12).max(1_024),
   INTERN_SSO_RETURN_PATH: z
     .string()
