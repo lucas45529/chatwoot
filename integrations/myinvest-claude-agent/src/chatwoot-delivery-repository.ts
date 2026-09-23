@@ -131,7 +131,8 @@ export class PostgresChatwootDeliveryStore
             AND newer.conversation_id = conversation.id AND newer.inbox_id = conversation.inbox_id
             AND newer.private = false AND (newer.created_at, newer.id) > (source.created_at, source.id)
             AND ((newer.message_type = 0 AND (newer.sender_type IS NULL OR newer.sender_type = 'Contact'))
-              OR (newer.message_type IN (1,3) AND newer.sender_type = 'User'))
+              OR (newer.message_type IN (1,3) AND newer.sender_type = 'User'
+                AND NOT ${myinvestAutomatedOutboundSql('newer')}))
         )`, [input.accountId, input.conversationDisplayId, input.currentMessageId, input.inboxId, input.tenant, input.channel])
     const row = result.rows[0]
     if (!row) return undefined
