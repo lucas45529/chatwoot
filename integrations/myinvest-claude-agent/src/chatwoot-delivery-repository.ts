@@ -4,6 +4,7 @@ import { contactFingerprint } from './auto-send.js'
 import type { DeliveryMessageKind } from './chatwoot-client.js'
 import type { ConversationContext } from './domain.js'
 import { loadConversationHistory } from './conversation-history.js'
+import { messageAttributesSql, myinvestAutomatedOutboundSql } from './message-provenance.js'
 
 interface QueryResult<Row> {
   rows: Row[]
@@ -161,8 +162,14 @@ export class PostgresChatwootDeliveryStore
                  WHERE human_message.account_id = $1
                    AND human_message.conversation_id = conversation.id
                    AND human_message.inbox_id = conversation.inbox_id
-                   AND human_message.sender_type = 'User'
+                   AND human_message.message_type = 1
+                   AND (human_message.sender_type = 'User'
+                     OR (human_message.sender_type IS NULL
+                       AND ${messageAttributesSql('human_message')} ->> 'external_echo' IS NOT NULL))
                    AND human_message.private = false
+                   AND NOT ${myinvestAutomatedOutboundSql('human_message')}
+                   AND ${messageAttributesSql('human_message')} ->> 'automation_rule_id' IS NULL
+                   AND NOT COALESCE(human_message.additional_attributes ? 'campaign_id', false)
               ) AS last_human_message_id,
               (
                 SELECT max(marker.id)::text

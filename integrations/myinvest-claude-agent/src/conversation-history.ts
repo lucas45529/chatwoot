@@ -1,5 +1,6 @@
 import type { ConversationTurn } from './domain.js'
 import { containsResidualPersonalData, redactSupportText } from './learning/extractor.js'
+import { myinvestAutomatedOutboundSql } from './message-provenance.js'
 
 interface HistoryDatabase {
   query<Row extends Record<string, unknown>>(sql: string, values: readonly unknown[]): Promise<{ rows: Row[] }>
@@ -13,6 +14,7 @@ interface HistoryRow extends Record<string, unknown> {
   from_automation: boolean
   from_campaign: boolean
   external_echo: boolean
+  from_myinvest_outbound: boolean
 }
 
 // Live context is not reusable training material. Keep valid calendar dates and
@@ -46,7 +48,8 @@ export async function loadConversationHistory(database: HistoryDatabase, input: 
         left(coalesce(nullif(message.content, ''), message.processed_message_content), 6000) AS content,
         (attrs.value ->> 'external_echo') IS NOT NULL AS external_echo,
         (attrs.value ->> 'automation_rule_id') IS NOT NULL AS from_automation,
-        (message.additional_attributes ? 'campaign_id') AS from_campaign
+        (message.additional_attributes ? 'campaign_id') AS from_campaign,
+        ${myinvestAutomatedOutboundSql('message')} AS from_myinvest_outbound
       FROM messages message
       JOIN messages current_message ON current_message.id = $3
         AND current_message.account_id = $1 AND current_message.conversation_id = $2
@@ -79,7 +82,7 @@ export async function loadConversationHistory(database: HistoryDatabase, input: 
     let prefix = ''
     if (row.message_type === 0 && (!row.sender_type || row.sender_type === 'Contact')) role = 'customer'
     else if (row.message_type === 1 || row.message_type === 3) {
-      if (row.from_automation || row.from_campaign) {
+      if (row.from_automation || row.from_campaign || row.from_myinvest_outbound) {
         role = 'assistant'
         prefix = row.from_campaign ? '[Kampagnennachricht] ' : '[Automatische Nachricht] '
       } else if (row.sender_type === 'User' || (!row.sender_type && row.external_echo)) role = 'human'

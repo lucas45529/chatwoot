@@ -981,6 +981,29 @@ describe('MessageProcessor auto-send', () => {
     expect(off.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
 
+  it('can answer after an automated reminder without registering a human takeover', async () => {
+    const afterReminder = setup({
+      autoSendEnabled: true,
+      answer: SAFE_ANSWER,
+      context: {
+        turns: [{ role: 'assistant', text: 'Morgen um 10 Uhr ist dein Termin.' }],
+        humanEverReplied: false,
+      },
+    })
+    await afterReminder.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Wie erstelle ich meinen ersten Kontakt?' }),
+    })
+
+    expect(afterReminder.autoSend.blockConversation).not.toHaveBeenCalled()
+    expect(afterReminder.sendMessage).toHaveBeenCalledOnce()
+    expect(afterReminder.answer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        history: [{ role: 'agent', text: 'Morgen um 10 Uhr ist dein Termin.' }],
+      }),
+    )
+  })
+
   it('never auto-sends again once a human wrote in the conversation', async () => {
     const afterHuman = setup({
       autoSendEnabled: true,

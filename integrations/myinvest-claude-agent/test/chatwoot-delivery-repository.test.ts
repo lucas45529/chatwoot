@@ -245,6 +245,61 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
       }),
     )
   })
+
+  it('wertet eine automatisch gesendete Terminerinnerung nicht als menschliche Übernahme', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          conversation_id: '501',
+          contact_id: '9',
+          contact_email: null,
+          cached_label_list: '',
+          last_human_message_id: null,
+          last_agent_handoff_id: null,
+          last_agent_draft_note: null,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{
+        id: '1050',
+        message_type: 1,
+        sender_type: 'User',
+        content: 'Morgen um 10 Uhr ist dein Termin.',
+        created_at: new Date('2026-09-22T08:00:00Z'),
+        external_echo: false,
+        from_automation: false,
+        from_campaign: false,
+        from_myinvest_outbound: true,
+      }] })
+    const store = new PostgresChatwootDeliveryStore({ query }, PSEUDONYMIZATION_KEY)
+
+    const context = await store.loadContext({
+      accountId: 1,
+      inboxId: 1,
+      conversationDisplayId: 121,
+      currentMessageId: 1139,
+    })
+
+    expect(context).toEqual(expect.objectContaining({
+      humanEverReplied: false,
+      humanRepliedAfterBot: false,
+      turns: [{ role: 'assistant', text: '[Automatische Nachricht] Morgen um 10 Uhr ist dein Termin.' }],
+    }))
+    const metadataSql = query.mock.calls[0]![0] as string
+    const historySql = query.mock.calls[1]![0] as string
+    expect(metadataSql).toContain('myinvest_outbound_id')
+    expect(metadataSql).toContain('myinvest_outbound_kind')
+    expect(metadataSql).toContain("mip:wa:%:sys:%")
+    expect(metadataSql).toContain("COALESCE(human_message.source_id LIKE 'mip:wa:%:sys:%', false)")
+    expect(metadataSql).toContain("mip:history:%")
+    expect(metadataSql).toContain("mip:web:saas:%")
+    expect(metadataSql).toContain("'myinvest_history_author' = 'bot'")
+    expect(metadataSql).toContain('human_message.sender_type IS NULL')
+    expect(metadataSql).toContain("'external_echo' IS NOT NULL")
+    expect(metadataSql).toContain('human_message.message_type = 1')
+    expect(metadataSql).toContain("NOT COALESCE(human_message.additional_attributes ? 'campaign_id', false)")
+    expect(historySql).toContain('AS from_myinvest_outbound')
+  })
 })
 
 it('scopes regenerated delivery deduplication to its generation while preserving legacy queries', async () => {

@@ -2,6 +2,22 @@ import { describe, expect, it, vi } from 'vitest'
 import { loadConversationHistory, redactConversationText } from '../src/conversation-history.js'
 
 describe('delivered conversation history', () => {
+  it('keeps bot-authored imports as assistant turns and human-authored imports as human turns', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [
+      { message_type: 1, sender_type: 'User', content: 'Morgen um 10 Uhr ist dein Termin.', from_myinvest_outbound: true },
+      { message_type: 1, sender_type: 'User', content: 'Ich übernehme den Fall persönlich.', from_myinvest_outbound: false },
+    ] })
+    const history = await loadConversationHistory({ query }, { accountId: 1, inboxId: 2, conversationId: '3', currentMessageId: 4 })
+    expect(history).toEqual([
+      { role: 'assistant', text: '[Automatische Nachricht] Morgen um 10 Uhr ist dein Termin.' },
+      { role: 'human', text: 'Ich übernehme den Fall persönlich.' },
+    ])
+    const sql = query.mock.calls[0]![0] as string
+    expect(sql).toContain("'myinvest_history_author' = 'bot'")
+    expect(sql).toContain("mip:history:%")
+    expect(sql).toContain("mip:web:saas:%")
+  })
+
   it('preserves booking dates and Zoom context while removing phone and private URL values', () => {
     const result = redactConversationText('Termin am 19.09.2026 um 14:30 Uhr bestätigt. Zoom: https://zoom.us/j/123456789?pwd=secret Telefon +49 171 12345678')
     expect(result).toContain('19.09.2026 um 14:30 Uhr bestätigt')
