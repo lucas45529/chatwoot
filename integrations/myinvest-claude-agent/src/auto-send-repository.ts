@@ -8,6 +8,7 @@ import type {
   ConversationProcessingLock,
 } from './auto-send.js'
 import type { TenantKey } from './domain.js'
+import { messageAttributesSql, myinvestAutomatedOutboundSql } from './message-provenance.js'
 
 interface QueryResult<Row> {
   rows: Row[]
@@ -302,6 +303,110 @@ export class PostgresAutoSendLog implements AutoSendLog {
          ON CONFLICT (tenant_key, conversation_id) DO NOTHING`,
         [input.tenantKey, input.conversationId, input.reason],
       )
+    })
+  }
+
+  /** Repair only the old bot-as-User false positive, with full Chatwoot history
+   * and the block/state mutation evaluated under the same conversation lock. */
+  async reconcileStaleHumanReply(input: {
+    tenantKey: TenantKey
+    conversationId: number
+    accountId: number
+    inboxId: number
+    currentMessageId: number
+  }): Promise<boolean> {
+    return transaction(this.database, async (client) => {
+      await lockConversationTransaction(client, input.tenantKey, input.conversationId)
+      const result = await client.query<{ cleared: boolean }>(
+        `WITH eligible AS MATERIALIZED (
+           SELECT block.tenant_key, block.conversation_id
+             FROM agent_auto_send_blocks AS block
+             JOIN conversations AS conversation
+               ON conversation.account_id = $3
+              AND conversation.display_id = $2
+              AND conversation.inbox_id = $4
+             JOIN messages AS source
+               ON source.id = $5
+              AND source.account_id = conversation.account_id
+              AND source.conversation_id = conversation.id
+              AND source.inbox_id = conversation.inbox_id
+              AND source.message_type = 0 AND source.private = false
+              AND (source.sender_type IS NULL OR source.sender_type = 'Contact')
+            WHERE block.tenant_key = $1 AND block.conversation_id = $2
+              AND block.reason = 'human_reply'
+              AND source.created_at > block.created_at
+              AND conversation.assignee_id IS NULL
+              AND EXISTS (
+                SELECT 1 FROM messages AS automated
+                 WHERE automated.account_id = conversation.account_id
+                   AND automated.conversation_id = conversation.id
+                   AND automated.inbox_id = conversation.inbox_id
+                   AND automated.message_type = 1 AND automated.private = false
+                   AND ${myinvestAutomatedOutboundSql('automated')}
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM messages AS human
+                 WHERE human.account_id = conversation.account_id
+                   AND human.conversation_id = conversation.id
+                   AND human.inbox_id = conversation.inbox_id
+                   AND human.message_type = 1 AND human.private = false
+                   AND (human.sender_type = 'User' OR
+                     (human.sender_type IS NULL AND ${messageAttributesSql('human')} ->> 'external_echo' IS NOT NULL))
+                   AND NOT ${myinvestAutomatedOutboundSql('human')}
+                   AND ${messageAttributesSql('human')} ->> 'automation_rule_id' IS NULL
+                   AND NOT COALESCE(human.additional_attributes ? 'campaign_id', false)
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM messages AS handoff
+                 WHERE handoff.account_id = conversation.account_id
+                   AND handoff.conversation_id = conversation.id
+                   AND handoff.inbox_id = conversation.inbox_id
+                   AND handoff.sender_type = 'AgentBot'
+                   AND ${messageAttributesSql('handoff')} ->> 'myinvest_agent_message_kind'
+                     IN ('handoff_note', 'handoff_ack')
+              )
+              AND (
+                NOT EXISTS (SELECT 1 FROM agent_conversation_states AS state
+                             WHERE state.tenant_key = $1 AND state.conversation_id = $2
+                               AND state.status = 'handed_off')
+                OR EXISTS (
+                  SELECT 1 FROM agent_conversation_states AS state
+                  JOIN agent_delivery_ledger AS delivery
+                    ON delivery.tenant_key = state.tenant_key
+                   AND delivery.conversation_id = state.conversation_id
+                   AND delivery.updated_at = state.updated_at
+                  JOIN messages AS draft
+                    ON draft.account_id = conversation.account_id
+                   AND draft.conversation_id = conversation.id
+                   AND draft.inbox_id = conversation.inbox_id
+                   AND draft.sender_type = 'AgentBot' AND draft.private = true
+                   AND ${messageAttributesSql('draft')} ->> 'myinvest_agent_message_kind'
+                     IN ('draft_note', 'clarify_draft_note', 'document_assistance_note')
+                   AND ${messageAttributesSql('draft')} ->> 'myinvest_agent_delivery_id' = delivery.message_id::text
+                 WHERE state.tenant_key = $1 AND state.conversation_id = $2
+                   AND state.status = 'handed_off'
+                   AND delivery.status = 'handed_off'
+                   AND delivery.updated_at >= block.created_at
+                )
+              )
+         ), cleared AS (
+           DELETE FROM agent_auto_send_blocks AS block USING eligible
+            WHERE block.tenant_key = eligible.tenant_key
+              AND block.conversation_id = eligible.conversation_id
+              AND block.reason = 'human_reply'
+           RETURNING block.tenant_key, block.conversation_id
+         ), activated AS (
+           UPDATE agent_conversation_states AS state SET status = 'active', updated_at = now()
+             FROM cleared
+            WHERE state.tenant_key = cleared.tenant_key
+              AND state.conversation_id = cleared.conversation_id
+              AND state.status = 'handed_off'
+           RETURNING 1
+         )
+         SELECT EXISTS (SELECT 1 FROM cleared) AS cleared`,
+        [input.tenantKey, input.conversationId, input.accountId, input.inboxId, input.currentMessageId],
+      )
+      return result.rows[0]?.cleared === true
     })
   }
 

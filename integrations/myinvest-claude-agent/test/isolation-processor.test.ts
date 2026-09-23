@@ -102,6 +102,10 @@ function setup(
     ...options.usage,
   }
   const blockConversation = vi.fn().mockResolvedValue(undefined)
+  const reconcileStaleHumanReply = vi.fn(async () => {
+    usage.blocked = false
+    return true
+  })
   const reserve = vi.fn(async (entry: AutoSendRecord, limits: AutoSendLimits) => {
     sequence.push('reserve')
     if (usage.blocked) {
@@ -133,7 +137,7 @@ function setup(
     chatwoot: { sendMessage, sendPrivateNote, saveDraft, setPriority, addLabels, assign, handoff },
     context: { loadContext, ...(options.trustedSource ? { loadCurrentSource } : {}) },
     state,
-    autoSend: { reserve, blockConversation, markSent },
+    autoSend: { reserve, blockConversation, markSent, reconcileStaleHumanReply },
     conversationLock: {
       async runExclusive<Result>(
         _tenantKey: TenantKey,
@@ -161,7 +165,7 @@ function setup(
     loadContext,
     loadCurrentSource,
     state,
-    autoSend: { reserve, blockConversation, markSent },
+    autoSend: { reserve, blockConversation, markSent, reconcileStaleHumanReply },
     sequence,
   }
 }
@@ -808,6 +812,30 @@ describe('MessageProcessor mandatory human review', () => {
  * Kunden ankommt und was in der Audit-Spur steht.
  */
 describe('MessageProcessor auto-send', () => {
+  it('reconciles a proven stale human block on a verified new incoming message', async () => {
+    const stale = setup({ autoSendEnabled: true, answer: SAFE_ANSWER, trustedSource: true,
+      usage: { blocked: true }, context: { turns: [{ role: 'assistant', text: 'Automatische Erinnerung' }] } })
+    await stale.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(stale.autoSend.reconcileStaleHumanReply).toHaveBeenCalledWith({
+      tenantKey: 'saas', conversationId: 77, accountId: 101, inboxId: 17, currentMessageId: 55,
+    })
+    expect(stale.sendMessage).toHaveBeenCalledOnce()
+  })
+
+  it('does not reconcile when fresh context shows a human turn or human-only label', async () => {
+    for (const context of [
+      { humanEverReplied: true },
+      { turns: [{ role: 'human' as const, text: 'Ich übernehme.' }] },
+      { labels: ['mensch-gewuenscht'] },
+    ]) {
+      const guarded = setup({ autoSendEnabled: true, answer: SAFE_ANSWER, trustedSource: true,
+        usage: { blocked: true }, context })
+      await guarded.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+      expect(guarded.autoSend.reconcileStaleHumanReply).not.toHaveBeenCalled()
+      expect(guarded.sendMessage).not.toHaveBeenCalled()
+    }
+  })
+
   it('sends automatically only when the brain marks the answer safe and answerable', async () => {
     const sent = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
     await sent.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })

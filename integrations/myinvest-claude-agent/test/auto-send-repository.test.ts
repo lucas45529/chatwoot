@@ -256,6 +256,31 @@ describe('PostgresAutoSendLog reservation', () => {
     expect(query.mock.calls[2]![0]).toContain('INSERT INTO agent_auto_send_blocks')
     expect(release).toHaveBeenCalledOnce()
   })
+
+  it('repairs only a proven bot-as-User block and its matching draft handoff', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ cleared: true }] })
+      .mockResolvedValueOnce({ rows: [] })
+    const log = new PostgresAutoSendLog({
+      query: vi.fn(), connect: vi.fn().mockResolvedValue({ query, release: vi.fn() }),
+    })
+    expect(await log.reconcileStaleHumanReply({
+      tenantKey: 'saas', conversationId: 77, accountId: 101, inboxId: 17, currentMessageId: 55,
+    })).toBe(true)
+    const sql = String(query.mock.calls[2]![0])
+    expect(sql).toContain("block.reason = 'human_reply'")
+    expect(sql).toContain('source.created_at > block.created_at')
+    expect(sql).toContain('myinvest_outbound_id')
+    expect(sql).toContain('myinvest_history_author')
+    expect(sql).toContain('NOT EXISTS (\n                SELECT 1 FROM messages AS human')
+    expect(sql).toContain("IN ('handoff_note', 'handoff_ack')")
+    expect(sql).toContain('delivery.updated_at = state.updated_at')
+    expect(sql).toContain('conversation.assignee_id IS NULL')
+    expect(sql).toContain("SET status = 'active'")
+    expect(query.mock.calls[2]![1]).toEqual(['saas', 77, 101, 17, 55])
+  })
 })
 
 describe('PostgresConversationProcessingLock', () => {

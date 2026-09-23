@@ -65,7 +65,15 @@ export class MessageProcessor {
       chatwoot: ChatwootPort
       context: ChatwootConversationContextStore
       state: AgentState
-      autoSend: AutoSendLog
+      autoSend: AutoSendLog & {
+        reconcileStaleHumanReply?(input: {
+          tenantKey: TenantKey
+          conversationId: number
+          accountId: number
+          inboxId: number
+          currentMessageId: number
+        }): Promise<boolean>
+      }
       conversationLock: ConversationProcessingLock
       pseudonymizationKey: string
       autoSendEnabled: boolean
@@ -112,7 +120,7 @@ export class MessageProcessor {
     const supportRoute = this.supportRoute(tenant, conversationContext)
     if (!supportRoute) throw new Error('Chatwoot support routing is invalid')
     const crossProduct = supportRoute.tenant !== tenant.key
-    const wasHandedOff = await this.dependencies.state.isHandedOff(
+    let wasHandedOff = await this.dependencies.state.isHandedOff(
       tenant.key,
       conversationId,
     )
@@ -157,6 +165,23 @@ export class MessageProcessor {
         return
       }
       executionContext = identity
+    }
+    if (
+      this.dependencies.autoSendEnabled &&
+      executionContext &&
+      !conversationContext.humanEverReplied &&
+      !conversationContext.humanRepliedAfterBot &&
+      !conversationContext.turns.some((turn) => turn.role === 'human') &&
+      !humanOnlyLabel &&
+      await this.dependencies.autoSend.reconcileStaleHumanReply?.({
+        tenantKey: tenant.key,
+        conversationId,
+        accountId: tenant.accountId,
+        inboxId: tenant.inboxId,
+        currentMessageId: payload.id,
+      })
+    ) {
+      wasHandedOff = false
     }
     const outcome = triage(rawQuestion)
     let documentAssistance = Boolean(executionContext && isOwnDocumentReview(rawQuestion, outcome, conversationContext.labels, conversationContext.documentAssistanceActive))
