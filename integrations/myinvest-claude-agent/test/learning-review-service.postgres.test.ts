@@ -10,15 +10,20 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('keeps human correction text 
   try {
     await client.query(`CREATE TEMP TABLE agent_knowledge_candidates (
       id bigint, target_tenant text, question_redacted text, answer_redacted text,
-      status text, reviewed_by text, updated_at timestamptz
+      status text, reviewed_by text, updated_at timestamptz,
+      source_namespace text NOT NULL DEFAULT 'approved-manual'
     )`)
     await client.query(`CREATE TEMP TABLE agent_learning_audit_events (
       id bigint, candidate_id bigint, action text, details jsonb,
       tenant_key text DEFAULT 'saas', actor text DEFAULT 'intern-support-review'
     )`)
     await client.query(`INSERT INTO agent_knowledge_candidates
+      (id, target_tenant, question_redacted, answer_redacted, status, reviewed_by, updated_at)
       SELECT id, 'saas', 'Wie bearbeite ich Kontakte?', 'Öffne Kontakte und wähle Bearbeiten.',
         'rejected', 'intern-support-review', now() FROM generate_series(1, 3) id`)
+    await client.query(`INSERT INTO agent_knowledge_candidates
+      (id, target_tenant, status, updated_at, source_namespace)
+      VALUES (4, 'saas', 'rejected', now(), 'automatic-support-learning-cursor-v1')`)
     await client.query(`INSERT INTO agent_learning_audit_events (id, candidate_id, action, details) VALUES
       (1, 1, 'feedback_recorded', '{"reason":"Der bisherige Knopf existiert nicht mehr."}'),
       (2, 1, 'rejected', '{"reason":"rejected_by_reviewer"}'),
