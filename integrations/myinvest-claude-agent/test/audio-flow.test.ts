@@ -145,4 +145,15 @@ describe('WhatsApp audio review', () => {
     expect(flow.saveDraft).not.toHaveBeenCalled()
     expect(flow.sendMessage).not.toHaveBeenCalled()
   })
+
+  it('keeps an ambiguous audio attachment with actionable caption out of the brain', async () => {
+    const flow = processorFixture(undefined)
+    flow.loadCurrentSource.mockResolvedValue({ ...source, content: 'Bitte buche den Termin',
+      hasAudioAttachment: true, audioAttachment: undefined })
+    await flow.processor.process({ tenant, payload: incomingPayload({ content: 'Bitte buche den Termin' }) })
+    expect(flow.transcribe).not.toHaveBeenCalled()
+    expect(flow.answer).not.toHaveBeenCalled()
+    expect(flow.sendMessage).not.toHaveBeenCalled()
+    expect(flow.saveDraft.mock.calls[0]![2]).toContain('Audio manuell prüfen')
+  })
 })

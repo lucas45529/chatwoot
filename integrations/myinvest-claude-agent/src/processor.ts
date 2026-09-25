@@ -159,6 +159,7 @@ export class MessageProcessor {
 
     const rawQuestion = payload.content.trim()
     let executionContext: SupportExecutionContext | undefined
+    let hasAudioAttachment = false
     let audioAttachment: { id: number; byteSize: number } | undefined
     if (this.dependencies.context.loadCurrentSource) {
       const fresh = await this.dependencies.context.loadCurrentSource({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: conversationId, currentMessageId: payload.id, tenant: supportRoute.tenant, channel: supportRoute.channel })
@@ -168,6 +169,7 @@ export class MessageProcessor {
         return
       }
       executionContext = identity
+      hasAudioAttachment = fresh.hasAudioAttachment === true || Boolean(fresh.audioAttachment)
       audioAttachment = fresh.audioAttachment
     }
     if (
@@ -230,11 +232,11 @@ export class MessageProcessor {
 
     // Voice is an unconfirmed customer source. It can only create a human
     // review draft; it never reaches the brain's action/tool path or auto-send.
-    if (supportRoute.channel === 'whatsapp' && audioAttachment) {
-      const bytes = await this.dependencies.chatwoot.loadVoiceAttachment?.(
+    if (supportRoute.channel === 'whatsapp' && hasAudioAttachment) {
+      const bytes = audioAttachment ? await this.dependencies.chatwoot.loadVoiceAttachment?.(
         tenant, conversationId, payload.id, audioAttachment,
-      )
-      const transcript = bytes && this.dependencies.audio && executionContext
+      ) : undefined
+      const transcript = bytes && audioAttachment && this.dependencies.audio && executionContext
         ? await this.dependencies.audio.transcribe({
             bytes,
             requestId: `audio:${supportBrainRequestId(this.dependencies.pseudonymizationKey, tenant.accountId, payload.id)}:${audioAttachment.id}`,
@@ -248,14 +250,15 @@ export class MessageProcessor {
       })
       if (!current || JSON.stringify(current.executionContext) !== JSON.stringify(executionContext) ||
         current.content.trim() !== rawQuestion ||
-        current.audioAttachment?.id !== audioAttachment.id ||
-        current.audioAttachment?.byteSize !== audioAttachment.byteSize) {
+        (current.hasAudioAttachment === true || Boolean(current.audioAttachment)) !== hasAudioAttachment ||
+        current.audioAttachment?.id !== audioAttachment?.id ||
+        current.audioAttachment?.byteSize !== audioAttachment?.byteSize) {
         await this.completeSuperseded(tenant.key, payload.id)
         return
       }
       const caption = rawQuestion ? `\n\nBegleittext (ungeprüft): „${redactConversationText(rawQuestion)}“` : ''
       const draft = transcript
-        ? `Sprachnachricht vom Kunden (Chatwoot-Nachricht ${payload.id}, Anhang ${audioAttachment.id}) wurde automatisch transkribiert. Das Transkript ist unbestätigt und kann Fehler enthalten:\n\n„${transcript}“${caption}\n\nBitte Inhalt mit dem Kunden bestätigen, bevor eine sensible Aktion erfolgt.`
+        ? `Sprachnachricht vom Kunden (Chatwoot-Nachricht ${payload.id}, Anhang ${audioAttachment?.id}) wurde automatisch transkribiert. Das Transkript ist unbestätigt und kann Fehler enthalten:\n\n„${transcript}“${caption}\n\nBitte Inhalt mit dem Kunden bestätigen, bevor eine sensible Aktion erfolgt.`
         : `Sprachnachricht vom Kunden (Chatwoot-Nachricht ${payload.id}) konnte nicht sicher transkribiert werden.${caption}\n\nBitte Audio manuell prüfen und den Inhalt vor sensiblen Aktionen bestätigen.`
       await handoff(transcript ? 'audio_confirmation_required' : 'audio_unavailable', undefined, draft, undefined, false)
       return
