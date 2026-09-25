@@ -19,6 +19,11 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
   end
 
   def destroy
+    if message.inbox.email? && message.content_attributes['myinvest_email_reply'].present?
+      return render_could_not_create_error(
+        'Diese E-Mail kann nicht gelöscht werden, solange ihr Zustellstatus geprüft werden muss.'
+      )
+    end
     ActiveRecord::Base.transaction do
       message.update!(content: I18n.t('conversations.messages.deleted'), content_type: :text, content_attributes: { deleted: true })
       message.attachments.destroy_all
@@ -27,6 +32,11 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
 
   def retry
     return if message.blank?
+    if message.inbox.email? && message.content_attributes['myinvest_email_reply'].present?
+      return render_could_not_create_error(
+        'Diese E-Mail kann nicht automatisch erneut gesendet werden. Bitte den Zustellstatus zuerst prüfen.'
+      )
+    end
     if managed_central_api_bridge?
       return render_could_not_create_error(
         'Bitte sende diese Antwort als neue Nachricht. Die bisherige Nachricht bleibt als fehlgeschlagen markiert.'

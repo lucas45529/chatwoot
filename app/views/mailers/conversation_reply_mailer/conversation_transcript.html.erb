@@ -5,7 +5,7 @@
       <% if message.conversation.inbox&.inbox_type == 'Email' %>
         <div style="font-size: 90%; color: #899096; line-height: 16px">
           <% if message.content_attributes.dig(:email, :from).present? %>
-            <div>From: <%= message.content_attributes.dig(:email, :from).join(", ") %></div>
+            <div>From: <%= Array.wrap(message.content_attributes.dig(:email, :from)).join(", ") %></div>
           <% else %>
             <div>From: <%= message.sender&.try(:email) %></div>
           <% end %>
@@ -19,9 +19,6 @@
           <% end %>
           <% if message.content_attributes[:cc_emails].present? %>
             <div>CC: <%= message.content_attributes[:cc_emails].join(", ") %></div>
-          <% end %>
-          <% if message.content_attributes[:bcc_emails].present? %>
-            <div>BCC: <%= message.content_attributes[:bcc_emails].join(", ") %></div>
           <% end %>
         </div>
       <% end %>

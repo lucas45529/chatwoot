@@ -268,11 +268,11 @@ RSpec.describe ConversationReplyMailer do
         conversation.update!(additional_attributes: { 'mail_subject' => 'Question' })
         create(:message, conversation: conversation, account: account, message_type: :incoming,
                          content_attributes: { email: { from: 'customer@example.com', message_id: 'first@example.com',
-                                                        references: ['<prior@example.com>'] } })
+                                                        cc: ['copy@example.com'], references: ['<prior@example.com>'] } })
         params = ActionController::Parameters.new(
           content: 'Pinned reply', message_type: 'outgoing', to_emails: 'customer@example.com',
           cc_emails: '', bcc_emails: '', content_attributes: {
-            myinvest_email_reply: { subject: 'Re: Question', in_reply_to: '<first@example.com>' }
+            myinvest_email_reply: { subject: 'Re: Question', in_reply_to: '<first@example.com>', cc: [], bcc: [] }
           }
         )
         native_message = Messages::MessageBuilder.new(agent, conversation, params).perform
@@ -286,12 +286,36 @@ RSpec.describe ConversationReplyMailer do
         pinned_mail = described_class.email_reply(native_message).deliver_now
 
         expect(pinned_mail.to).to eq(['customer@example.com'])
-        expect(pinned_mail.cc).to be_nil
-        expect(pinned_mail.bcc).to be_nil
+        expect(pinned_mail.cc).to be_empty
+        expect(pinned_mail.bcc).to be_empty
         expect(pinned_mail.subject).to eq('Re: Question')
         expect(pinned_mail.in_reply_to).to include('first@example.com')
         expect(pinned_mail.references).to include('prior@example.com', 'first@example.com')
         expect(pinned_mail.in_reply_to).not_to include('later@example.com')
+      end
+
+      it 'sends only explicitly selected CC and BCC addresses' do
+        conversation.contact.update!(email: 'customer@example.com')
+        conversation.update!(additional_attributes: { 'mail_subject' => 'Question' })
+        create(:message, conversation: conversation, account: account, message_type: :incoming,
+                         content_attributes: { email: { from: 'customer@example.com', message_id: 'first@example.com',
+                                                        cc: ['copy@example.com', 'unselected@example.com'] } })
+        params = ActionController::Parameters.new(
+          content: 'Pinned reply', message_type: 'outgoing', to_emails: 'customer@example.com',
+          cc_emails: 'copy@example.com', bcc_emails: 'audit@example.com', content_attributes: {
+            myinvest_email_reply: { subject: 'Re: Question', in_reply_to: '<first@example.com>',
+                                    cc: ['copy@example.com'], bcc: ['audit@example.com'] }
+          }
+        )
+        native_message = Messages::MessageBuilder.new(agent, conversation, params).perform
+        pinned_mail = described_class.email_reply(native_message).deliver_now
+
+        expect(pinned_mail.to).to eq(['customer@example.com'])
+        expect(pinned_mail.cc).to eq(['copy@example.com'])
+        expect(pinned_mail.bcc).to be_nil
+        expect(pinned_mail.smtp_envelope_to).to include('audit@example.com')
+        expect(pinned_mail.encoded).not_to match(/^Bcc:/i)
+        expect(pinned_mail.cc).not_to include('unselected@example.com')
       end
 
       it 'renders the subject' do
@@ -877,6 +901,18 @@ RSpec.describe ConversationReplyMailer do
 
         expect(transcript.decoded).to include('Transcript Brand')
         expect(transcript.decoded).to include(message.content)
+      end
+
+      it 'never reveals native blind-copy recipients in a transcript email' do
+        message.update!(content_attributes: {
+          to_emails: ['customer@example.com'], cc_emails: ['copy@example.com'], bcc_emails: ['blind@example.com']
+        })
+
+        transcript = described_class.conversation_transcript(conversation, 'customer@example.com').deliver_now
+
+        expect(transcript.decoded).to include('copy@example.com')
+        expect(transcript.decoded).not_to include('blind@example.com')
+        expect(transcript.decoded).not_to include('BCC:')
       end
     end
   end

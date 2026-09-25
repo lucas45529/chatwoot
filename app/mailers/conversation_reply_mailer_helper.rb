@@ -26,7 +26,14 @@ module ConversationReplyMailerHelper
     # So this check implicitly determines we're handling an email_reply
     # and not one of the other email types (summary, transcript, etc.)
     process_attachments_as_files_for_email_reply if @message&.attachments.present?
-    mail(@options)
+    outgoing_mail = mail(@options)
+    if @message && native_email_reply_context && native_email_reply_context['bcc'].present?
+      # Preserve BCC as an SMTP envelope recipient without exposing it in MIME headers.
+      outgoing_mail.smtp_envelope_to = Array.wrap(outgoing_mail.to) + Array.wrap(outgoing_mail.cc) +
+                                       native_email_reply_context['bcc']
+      outgoing_mail.bcc = nil
+    end
+    outgoing_mail
   end
 
   private

@@ -193,13 +193,13 @@ describe Messages::MessageBuilder do
           conversation.update!(additional_attributes: { 'mail_subject' => 'Question' })
           create(:message, conversation: conversation, account: account, message_type: :incoming,
                            content_attributes: { email: { from: [contact_email], message_id: 'first@example.com',
-                                                          references: ['<prior@example.com>'] } })
+                                                          cc: ['copy@example.com'], references: ['<prior@example.com>'] } })
         end
         let(:params) do
           ActionController::Parameters.new(content: 'The answer', message_type: 'outgoing',
                                            to_emails: contact_email, cc_emails: '', bcc_emails: '',
                                            content_attributes: { myinvest_email_reply: {
-                                             subject: 'Re: Question', in_reply_to: '<first@example.com>'
+                                             subject: 'Re: Question', in_reply_to: '<first@example.com>', cc: [], bcc: []
                                            } })
         end
 
@@ -208,7 +208,7 @@ describe Messages::MessageBuilder do
           message = message_builder
           expect(message.content_attributes['myinvest_email_reply']).to include(
             'incoming_message_id' => incoming.id, 'to' => contact_email,
-            'subject' => 'Re: Question', 'in_reply_to' => '<first@example.com>',
+            'subject' => 'Re: Question', 'in_reply_to' => '<first@example.com>', 'cc' => [], 'bcc' => [],
             'references' => ['<prior@example.com>', '<first@example.com>']
           )
           expect(message.content_attributes['cc_emails']).to eq([])
@@ -236,6 +236,25 @@ describe Messages::MessageBuilder do
           expect(conversation.messages.outgoing.count).to eq(0)
         end
 
+        it 'accepts an explicitly selected original CC and staff-entered BCC' do
+          incoming
+          params[:cc_emails] = 'copy@example.com'
+          params[:bcc_emails] = 'audit@example.com'
+          params[:content_attributes][:myinvest_email_reply][:cc] = ['copy@example.com']
+          params[:content_attributes][:myinvest_email_reply][:bcc] = ['audit@example.com']
+          message = message_builder
+          expect(message.content_attributes['myinvest_email_reply']).to include(
+            'cc' => ['copy@example.com'], 'bcc' => ['audit@example.com']
+          )
+        end
+
+        it 'rejects a CC not present on the selected incoming message' do
+          incoming
+          params[:cc_emails] = 'stranger@example.com'
+          params[:content_attributes][:myinvest_email_reply][:cc] = ['stranger@example.com']
+          expect { message_builder }.to raise_error(/reply context/i)
+        end
+
         it 'rejects BCC and a subject changed since preflight' do
           incoming
           params[:bcc_emails] = 'hidden@example.com'
@@ -250,6 +269,12 @@ describe Messages::MessageBuilder do
           incoming
           create(:message, conversation: conversation, account: account, message_type: :incoming,
                            content_attributes: { email: { from: contact_email, message_id: 'later@example.com' } })
+          expect { message_builder }.to raise_error(/reply context/i)
+          expect(conversation.messages.outgoing.count).to eq(0)
+        end
+
+        it 'does not answer an automatic absence reply' do
+          incoming.update!(content_attributes: incoming.content_attributes.deep_merge('email' => { 'auto_reply' => true }))
           expect { message_builder }.to raise_error(/reply context/i)
           expect(conversation.messages.outgoing.count).to eq(0)
         end

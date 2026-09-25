@@ -180,7 +180,7 @@ class ConversationReplyMailer < ApplicationMailer
   end
 
   def cc_bcc_emails
-    return [[], []] if native_email_reply_context
+    return [native_email_reply_context['cc'], native_email_reply_context['bcc']] if native_email_reply_context
 
     content_attributes = @conversation.messages.outgoing.last&.content_attributes
 

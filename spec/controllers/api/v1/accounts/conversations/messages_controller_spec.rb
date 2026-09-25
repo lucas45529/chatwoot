@@ -240,6 +240,25 @@ RSpec.describe 'Conversation Messages API', type: :request do
         expect(message.reload.content_attributes['bcc_emails']).to be_nil
       end
 
+      context 'when it is a native email reply awaiting delivery' do
+        let(:email_channel) { create(:channel_email, account: account) }
+        let(:conversation) { create(:conversation, account: account, inbox: email_channel.inbox) }
+        let(:message) do
+          create(:message, account: account, inbox: email_channel.inbox, conversation: conversation,
+                           message_type: :outgoing, content: 'Pinned reply',
+                           content_attributes: { myinvest_email_reply: { 'in_reply_to' => '<first@example.com>' } })
+        end
+
+        it 'keeps the pinned context and content for the queued job' do
+          delete "/api/v1/accounts/#{account.id}/conversations/#{conversation.display_id}/messages/#{message.id}",
+                 headers: agent.create_new_auth_token, as: :json
+
+          expect(response).to have_http_status(:unprocessable_entity)
+          expect(message.reload.content).to eq('Pinned reply')
+          expect(message.content_attributes.dig('myinvest_email_reply', 'in_reply_to')).to eq('<first@example.com>')
+        end
+      end
+
       it 'deletes interactive messages' do
         interactive_message = create(
           :message, message_type: :outgoing, content: 'test', content_type: 'input_select',
@@ -298,6 +317,29 @@ RSpec.describe 'Conversation Messages API', type: :request do
         expect(response).to have_http_status(:success)
         expect(message.reload.status).to eq('sent')
         expect(message.reload.content_attributes['external_error']).to be_nil
+      end
+
+      context 'when the message is a native email reply' do
+        let(:email_channel) { create(:channel_email, account: account) }
+        let(:conversation) { create(:conversation, account: account, inbox: email_channel.inbox) }
+        let(:message) do
+          create(:message, account: account, inbox: email_channel.inbox, conversation: conversation,
+                           status: :failed, content_attributes: { myinvest_email_reply: { 'in_reply_to' => '<first@example.com>' } })
+        end
+
+        before do
+          allow(SendReplyJob).to receive(:perform_later)
+        end
+
+        it 'rejects retry without deleting the pinned context or queuing another delivery' do
+          post "/api/v1/accounts/#{account.id}/conversations/#{conversation.display_id}/messages/#{message.id}/retry",
+               headers: agent.create_new_auth_token, as: :json
+
+          expect(response).to have_http_status(:unprocessable_entity)
+          expect(message.reload.content_attributes.dig('myinvest_email_reply', 'in_reply_to')).to eq('<first@example.com>')
+          expect(message.status).to eq('failed')
+          expect(SendReplyJob).not_to have_received(:perform_later)
+        end
       end
 
       context 'when the message belongs to the managed central API bridge' do
