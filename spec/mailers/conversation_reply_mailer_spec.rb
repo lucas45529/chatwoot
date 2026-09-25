@@ -939,8 +939,8 @@ RSpec.describe ConversationReplyMailer do
 
       it 'never reveals native blind-copy recipients in a transcript email' do
         message.update!(content_attributes: {
-          to_emails: ['customer@example.com'], cc_emails: ['copy@example.com'], bcc_emails: ['blind@example.com']
-        })
+                          to_emails: ['customer@example.com'], cc_emails: ['copy@example.com'], bcc_emails: ['blind@example.com']
+                        })
 
         transcript = described_class.conversation_transcript(conversation, 'customer@example.com').deliver_now
 
