@@ -3,6 +3,7 @@ import { Queue, Worker } from 'bullmq'
 import { Redis } from 'ioredis'
 import pg from 'pg'
 import { attachmentScanHandler, MAX_SCAN_BYTES, scanWithClamd } from './attachment-scan.js'
+import { AudioTranscriptionClient } from './audio-transcription.js'
 import {
   PostgresAutoSendLog,
   PostgresConversationProcessingLock,
@@ -61,9 +62,16 @@ const brain: SupportBrainPort = config.LOCAL_FAKE_BRAIN_ANSWER
       timeoutMs: config.SUPPORT_ANSWER_TIMEOUT_MS,
     })
 const chatwoot = new ChatwootClient(config.CHATWOOT_BASE_URL, deliveryStore)
+const audio = new AudioTranscriptionClient({
+  answerUrl: config.SUPPORT_ANSWER_URL,
+  secret: config.SUPPORT_ANSWER_SECRET,
+  clamavHost: process.env.CLAMAV_HOST?.trim() || 'clamav',
+  enabled: config.SUPPORT_AUDIO_TRANSCRIPTION_ENABLED,
+})
 const processor = new MessageProcessor({
   brain,
   chatwoot,
+  audio,
   context: deliveryStore,
   state,
   autoSend: autoSendLog,

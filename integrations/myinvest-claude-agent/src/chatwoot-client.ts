@@ -1,6 +1,7 @@
 import type { TenantConfig } from './config.js'
 import type { ChatwootDeliveryStore } from './chatwoot-delivery-repository.js'
 import type { ConversationPriority } from './triage.js'
+import { activeStorageProxyUrl, MAX_VOICE_BYTES, readBoundedJson, readBoundedVoice } from './audio-media.js'
 
 /** Nachrichten, die der Kunde im Chat sieht. */
 export type PublicMessageKind = 'answer' | 'handoff_ack'
@@ -34,6 +35,12 @@ export interface DraftWriteResult {
 }
 
 export interface ChatwootPort {
+  loadVoiceAttachment?(
+    tenant: TenantConfig,
+    conversationId: number,
+    messageId: number,
+    attachment: { id: number; byteSize: number },
+  ): Promise<Buffer | undefined>
   sendMessage(
     tenant: TenantConfig,
     conversationId: number,
@@ -87,6 +94,40 @@ export class ChatwootClient implements ChatwootPort {
     private readonly request: typeof fetch = fetch,
   ) {
     this.baseUrl = baseUrl.replace(/\/$/, '')
+  }
+
+  async loadVoiceAttachment(
+    tenant: TenantConfig,
+    conversationId: number,
+    messageId: number,
+    attachment: { id: number; byteSize: number },
+  ): Promise<Buffer | undefined> {
+    if (!Number.isSafeInteger(messageId) || messageId < 1 || messageId >= Number.MAX_SAFE_INTEGER ||
+      attachment.byteSize < 1 || attachment.byteSize > MAX_VOICE_BYTES) return undefined
+    const path = `/api/v1/accounts/${tenant.accountId}/conversations/${conversationId}/messages?after=${messageId}&before=${messageId + 1}`
+    const result = asObject(await readBoundedJson(await this.fetchResponse(tenant, path, {
+      method: 'GET', redirect: 'error',
+    })))
+    const messages = result?.payload
+    if (!Array.isArray(messages) || messages.length !== 1) return undefined
+    const message = asObject(messages[0])
+    if (message?.id !== messageId || message.message_type !== 0 || message.private !== false ||
+      !Array.isArray(message.attachments) || message.attachments.length !== 1) return undefined
+    const media = asObject(message.attachments[0])
+    if (media?.id !== attachment.id || media.file_type !== 'audio' ||
+      media.file_size !== attachment.byteSize ||
+      (media.content_type !== 'audio/ogg' && media.content_type !== 'audio/opus') ||
+      typeof media.data_url !== 'string' || media.data_url.length > 4_096) return undefined
+    const proxyUrl = activeStorageProxyUrl(media.data_url, this.baseUrl)
+    if (!proxyUrl) return undefined
+    let response: Response
+    try {
+      response = await this.request(proxyUrl, {
+        method: 'GET', redirect: 'error', cache: 'no-store',
+        signal: AbortSignal.timeout(10_000),
+      })
+    } catch { return undefined }
+    return readBoundedVoice(response, attachment.byteSize)
   }
 
   async sendMessage(

@@ -75,6 +75,7 @@ const envSchema = z.object({
   LOCAL_SMOKE: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   /** Nur fuer den lokalen E2E-Lauf: feste Gehirn-Antwort statt echter API. */
   LOCAL_FAKE_BRAIN_ANSWER: z.string().max(4_000).optional(),
+  SUPPORT_AUDIO_TRANSCRIPTION_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   PORT: z.coerce.number().int().min(1).max(65_535).default(8080),
   RUN_MODE: z.enum(['all', 'web', 'worker']).default('all'),
   DATABASE_URL: z.string().min(1),

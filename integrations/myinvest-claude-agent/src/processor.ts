@@ -10,6 +10,7 @@ import {
   type ConversationProcessingLock,
 } from './auto-send.js'
 import type { ChatwootPort } from './chatwoot-client.js'
+import type { AudioTranscriptionPort } from './audio-transcription.js'
 import type { ChatwootConversationContextStore } from './chatwoot-delivery-repository.js'
 import type { TenantConfig } from './config.js'
 import type { ChatwootWebhookPayload, ConversationContext, TenantKey } from './domain.js'
@@ -63,6 +64,7 @@ export class MessageProcessor {
     private readonly dependencies: {
       brain: SupportBrainPort
       chatwoot: ChatwootPort
+      audio?: AudioTranscriptionPort
       context: ChatwootConversationContextStore
       state: AgentState
       autoSend: AutoSendLog & {
@@ -157,6 +159,7 @@ export class MessageProcessor {
 
     const rawQuestion = payload.content.trim()
     let executionContext: SupportExecutionContext | undefined
+    let audioAttachment: { id: number; byteSize: number } | undefined
     if (this.dependencies.context.loadCurrentSource) {
       const fresh = await this.dependencies.context.loadCurrentSource({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: conversationId, currentMessageId: payload.id, tenant: supportRoute.tenant, channel: supportRoute.channel })
       const identity = fresh?.executionContext
@@ -165,6 +168,7 @@ export class MessageProcessor {
         return
       }
       executionContext = identity
+      audioAttachment = fresh.audioAttachment
     }
     if (
       this.dependencies.autoSendEnabled &&
@@ -186,7 +190,7 @@ export class MessageProcessor {
     const outcome = triage(rawQuestion)
     let documentAssistance = Boolean(executionContext && isOwnDocumentReview(rawQuestion, outcome, conversationContext.labels, conversationContext.documentAssistanceActive))
     const question = redactConversationText(rawQuestion)
-    const handoff = async (reason: string, detail?: string, draft?: string, learningSources?: SupportBrainAnswer['learningSources']) => {
+    const handoff = async (reason: string, detail?: string, draft?: string, learningSources?: SupportBrainAnswer['learningSources'], notify = true) => {
       await this.dependencies.autoSend.blockConversation({
         tenantKey: tenant.key,
         conversationId,
@@ -214,7 +218,7 @@ export class MessageProcessor {
         isFinalAttempt,
         draft,
         learningSources,
-        notifyCustomer: !wasHandedOff && !crossProduct && !documentAssistance,
+        notifyCustomer: notify && !wasHandedOff && !crossProduct && !documentAssistance,
         canNotifyCustomer: async () => {
           if (!this.dependencies.context.loadCurrentSource) return true
           const current = await this.dependencies.context.loadCurrentSource({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: conversationId, currentMessageId: payload.id, tenant: supportRoute.tenant, channel: supportRoute.channel })
@@ -222,6 +226,39 @@ export class MessageProcessor {
         },
       })
       await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
+    }
+
+    // Voice is an unconfirmed customer source. It can only create a human
+    // review draft; it never reaches the brain's action/tool path or auto-send.
+    if (supportRoute.channel === 'whatsapp' && audioAttachment) {
+      const bytes = await this.dependencies.chatwoot.loadVoiceAttachment?.(
+        tenant, conversationId, payload.id, audioAttachment,
+      )
+      const transcript = bytes && this.dependencies.audio && executionContext
+        ? await this.dependencies.audio.transcribe({
+            bytes,
+            requestId: `audio:${supportBrainRequestId(this.dependencies.pseudonymizationKey, tenant.accountId, payload.id)}:${audioAttachment.id}`,
+            accountId: tenant.accountId, inboxId: tenant.inboxId,
+            conversationId, sourceMessageId: payload.id, attachmentId: audioAttachment.id,
+          }) : undefined
+      const current = await this.dependencies.context.loadCurrentSource?.({
+        accountId: tenant.accountId, inboxId: tenant.inboxId,
+        conversationDisplayId: conversationId, currentMessageId: payload.id,
+        tenant: supportRoute.tenant, channel: supportRoute.channel,
+      })
+      if (!current || JSON.stringify(current.executionContext) !== JSON.stringify(executionContext) ||
+        current.content.trim() !== rawQuestion ||
+        current.audioAttachment?.id !== audioAttachment.id ||
+        current.audioAttachment?.byteSize !== audioAttachment.byteSize) {
+        await this.completeSuperseded(tenant.key, payload.id)
+        return
+      }
+      const caption = rawQuestion ? `\n\nBegleittext (ungeprüft): „${redactConversationText(rawQuestion)}“` : ''
+      const draft = transcript
+        ? `Sprachnachricht vom Kunden (Chatwoot-Nachricht ${payload.id}, Anhang ${audioAttachment.id}) wurde automatisch transkribiert. Das Transkript ist unbestätigt und kann Fehler enthalten:\n\n„${transcript}“${caption}\n\nBitte Inhalt mit dem Kunden bestätigen, bevor eine sensible Aktion erfolgt.`
+        : `Sprachnachricht vom Kunden (Chatwoot-Nachricht ${payload.id}) konnte nicht sicher transkribiert werden.${caption}\n\nBitte Audio manuell prüfen und den Inhalt vor sensiblen Aktionen bestätigen.`
+      await handoff(transcript ? 'audio_confirmation_required' : 'audio_unavailable', undefined, draft, undefined, false)
+      return
     }
 
     if (!question) {
@@ -686,8 +723,11 @@ export class MessageProcessor {
       reason: input.reason,
       detail: input.detail,
     })
+    const draftSourceNote = input.reason.startsWith('audio_')
+      ? 'Grundlage: unbestätigtes, quellengebundenes Audio-Transkript; vor sensibler Aktion bestätigen.'
+      : 'Grundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.'
     const draftNote = writtenDraft
-      ? `${handoffContent}\n\nAntwortvorschlag:\n${writtenDraft}\nGrundlage: PII-redigierter Gesprächsverlauf; keine Sachbehauptung.`
+      ? `${handoffContent}\n\nAntwortvorschlag:\n${writtenDraft}\n${draftSourceNote}`
       : draft
         ? `${handoffContent}\n\n${humanDraftPreserved ? 'Im Composer liegt ein menschlich bearbeiteter Entwurf.\n\n' : ''}Vorschlag zur Referenz:\n${draft}`
         : handoffContent
