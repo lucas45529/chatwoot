@@ -8,11 +8,20 @@ class Messages::NativeEmailReplyContext
   MESSAGE_ID = /\A(?:<([^<>\s@]+@[^<>\s@]+)>|([^<>\s@]+@[^<>\s@]+))\z/
   ADDRESS = /\A([^\s<>@]+@[^\s<>@]+\.[^\s<>@]+)\z/
   NAMED_ADDRESS = /\A[^<>]*<([^\s<>@]+@[^\s<>@]+\.[^\s<>@]+)>\z/
-  MAX_ATTACHMENT_BYTES = 5.megabytes
+  MAX_ATTACHMENT_BYTES = 2.megabytes
   MIME_BY_EXTENSION = { 'pdf' => 'application/pdf', 'png' => 'image/png', 'jpg' => 'image/jpeg',
                         'jpeg' => 'image/jpeg', 'webp' => 'image/webp' }.freeze
   PINNED_KEYS = %w[account_support_email attachments bcc cc channel_email in_reply_to
                    inbound_email_domain incoming_message_id references subject to].freeze
+
+  def self.pin_from_builder!(conversation, message, content_attributes, uploads)
+    request = content_attributes.with_indifferent_access[:myinvest_email_reply]
+    return if request.nil?
+
+    message.content_attributes[:myinvest_email_reply] = build!(
+      conversation: conversation, message: message, request: request, uploads: Array.wrap(uploads)
+    )
+  end
 
   def self.build!(conversation:, message:, request:, uploads: [])
     validate_outgoing!(conversation, message)

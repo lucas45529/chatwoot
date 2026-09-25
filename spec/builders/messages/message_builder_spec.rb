@@ -276,6 +276,16 @@ describe Messages::MessageBuilder do
           expect(conversation.messages.outgoing.count).to eq(0)
         end
 
+        it 'rejects a native Email attachment above the two MiB transport limit' do
+          incoming
+          metadata = { name: 'large.png', mime: 'image/png', size: 2.megabytes + 1,
+                       sha256: 'a' * 64 }
+          params[:content_attributes][:myinvest_email_reply][:attachments] = [metadata]
+
+          expect { message_builder }.to raise_error(/reply context/i)
+          expect(conversation.messages.outgoing.count).to eq(0)
+        end
+
         it 'refuses a blob whose MIME changed after the native reply was created' do
           incoming
           upload = Rack::Test::UploadedFile.new('spec/assets/avatar.png', 'image/png')
