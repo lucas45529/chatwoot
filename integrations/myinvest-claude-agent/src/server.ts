@@ -2,6 +2,7 @@ import express from 'express'
 import { Queue, Worker } from 'bullmq'
 import { Redis } from 'ioredis'
 import pg from 'pg'
+import { attachmentScanHandler, MAX_SCAN_BYTES, scanWithClamd } from './attachment-scan.js'
 import {
   PostgresAutoSendLog,
   PostgresConversationProcessingLock,
@@ -204,6 +205,11 @@ app.post('/draft', express.raw({ type: 'application/json', limit: '2kb' }), manu
     const tenant = config.tenants.requireByAccountId(input.accountId)
     return conversationLock.runExclusive(tenant.key, input.conversationId, () => manualDraft.createDraft(input, signal))
   },
+}))
+app.post('/attachments/scan', express.raw({ type: 'application/octet-stream', limit: MAX_SCAN_BYTES }), attachmentScanHandler({
+  secret: config.SUPPORT_CHATWOOT_SSO_SECRET,
+  claim: async (key, ttl) => await redis.set(key, '1', 'EX', ttl, 'NX') === 'OK',
+  scan: async (bytes) => scanWithClamd(bytes, 'clamav'),
 }))
 const automaticLearning = new AutomaticLearningService(pool, {
   discover: async (tenant, cursor) => {
