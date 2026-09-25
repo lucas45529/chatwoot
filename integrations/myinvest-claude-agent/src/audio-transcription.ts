@@ -4,8 +4,9 @@ import { scanWithClamd } from './attachment-scan.js'
 import { inspectVoiceOgg, MAX_VOICE_BYTES } from './audio-media.js'
 
 const SIGNING_CONTEXT = 'myinvest-support-audio-transcription/v1\0'
+const MAX_TRANSCRIPT_CHARS = 16_000
 const responseSchema = z.object({
-  transcript: z.string().trim().min(1).max(2_000),
+  transcript: z.string().trim().min(1).max(MAX_TRANSCRIPT_CHARS),
   requiresConfirmation: z.literal(true),
   source: z.object({
     accountId: z.number().int().positive(), inboxId: z.number().int().positive(),
@@ -71,7 +72,7 @@ export class AudioTranscriptionClient implements AudioTranscriptionPort {
           const part = await reader.read()
           if (part.done) break
           size += part.value.byteLength
-          if (size > 8_192) { await reader.cancel(); return undefined }
+          if (size > 96 * 1024) { await reader.cancel(); return undefined }
           chunks.push(part.value)
         }
       } finally { reader.releaseLock() }

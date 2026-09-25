@@ -78,6 +78,23 @@ describe('WhatsApp voice media boundary', () => {
       inboxId: 17, conversationId: 77, sourceMessageId: 55, attachmentId: 29 })).toBeUndefined()
     expect(request).not.toHaveBeenCalled()
   })
+
+  it('accepts a source-bound long transcript from the signed Website response', async () => {
+    const transcript = 'ä'.repeat(16_000)
+    const request = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const encoded = new Headers(init?.headers).get('x-support-audio-source') ?? ''
+      const source = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
+      return Response.json({ transcript, source, requiresConfirmation: true })
+    })
+    const client = new AudioTranscriptionClient({
+      answerUrl: 'https://beta.example.test/api/support/answer',
+      secret: 'test-secret-with-more-than-thirty-two-bytes', clamavHost: 'clamav', enabled: true,
+      scan: vi.fn(async () => 'clean' as const), request: request as typeof fetch,
+    })
+    expect(await client.transcribe({ bytes: voice, requestId: 'audio:test:29', accountId: 101,
+      inboxId: 17, conversationId: 77, sourceMessageId: 55, attachmentId: 29 })).toBe(transcript)
+    expect(request).toHaveBeenCalledTimes(1)
+  })
 })
 
 function processorFixture(transcript: string | undefined) {

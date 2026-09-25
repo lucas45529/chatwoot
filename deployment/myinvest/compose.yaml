@@ -260,6 +260,7 @@ services:
       INTERN_SSO_PASSWORD: ${INTERN_SSO_PASSWORD:?INTERN_SSO_PASSWORD is required}
       INTERN_SSO_RETURN_PATH: ${INTERN_SSO_RETURN_PATH:-/app/accounts/1/dashboard?support_history=1}
       SUPPORT_ANSWER_TIMEOUT_MS: ${SUPPORT_ANSWER_TIMEOUT_MS:-65000}
+      SUPPORT_AUDIO_TRANSCRIPTION_ENABLED: ${SUPPORT_AUDIO_TRANSCRIPTION_ENABLED:-false}
       # Kill-Switch. Standard AUS: Auto-Send wird bewusst eingeschaltet,
       # nie versehentlich durch ein fehlendes Env geerbt.
       AUTO_SEND_ENABLED: ${AUTO_SEND_ENABLED:-false}
