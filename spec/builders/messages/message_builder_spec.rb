@@ -186,6 +186,75 @@ describe Messages::MessageBuilder do
         ActionController::Parameters.new({ cc_emails: 'test_cc_mail@test.com', bcc_emails: 'test_bcc_mail@test.com' })
       end
 
+      context 'with a native reply context' do
+        let(:contact_email) { 'contact@example.com' }
+        let!(:incoming) do
+          conversation.contact.update!(email: contact_email)
+          conversation.update!(additional_attributes: { 'mail_subject' => 'Question' })
+          create(:message, conversation: conversation, account: account, message_type: :incoming,
+                           content_attributes: { email: { from: [contact_email], message_id: 'first@example.com',
+                                                          references: ['<prior@example.com>'] } })
+        end
+        let(:params) do
+          ActionController::Parameters.new(content: 'The answer', message_type: 'outgoing',
+                                           to_emails: contact_email, cc_emails: '', bcc_emails: '',
+                                           content_attributes: { myinvest_email_reply: {
+                                             subject: 'Re: Question', in_reply_to: '<first@example.com>'
+                                           } })
+        end
+
+        it 'pins the verified recipient and thread before an asynchronous send' do
+          incoming
+          message = message_builder
+          expect(message.content_attributes['myinvest_email_reply']).to include(
+            'incoming_message_id' => incoming.id, 'to' => contact_email,
+            'subject' => 'Re: Question', 'in_reply_to' => '<first@example.com>',
+            'references' => ['<prior@example.com>', '<first@example.com>']
+          )
+          expect(message.content_attributes['cc_emails']).to eq([])
+          expect(message.content_attributes['bcc_emails']).to eq([])
+        end
+
+        it 'rejects stale or foreign thread headers before creating the outgoing message' do
+          incoming
+          params[:content_attributes][:myinvest_email_reply][:in_reply_to] = '<other@example.com>'
+          expect { message_builder }.to raise_error(/reply context/i)
+          expect(conversation.messages.outgoing.count).to eq(0)
+        end
+
+        it 'rejects a recipient other than the scoped contact' do
+          incoming
+          params[:to_emails] = 'other@example.com'
+          expect { message_builder }.to raise_error(/reply context/i)
+          expect(conversation.messages.outgoing.count).to eq(0)
+        end
+
+        it 'rejects CC even when present in the native request' do
+          incoming
+          params[:cc_emails] = 'other@example.com'
+          expect { message_builder }.to raise_error(/reply context/i)
+          expect(conversation.messages.outgoing.count).to eq(0)
+        end
+
+        it 'rejects BCC and a subject changed since preflight' do
+          incoming
+          params[:bcc_emails] = 'hidden@example.com'
+          expect { message_builder }.to raise_error(/reply context/i)
+          params[:bcc_emails] = ''
+          params[:content_attributes][:myinvest_email_reply][:subject] = 'Re: Different'
+          expect { described_class.new(user, conversation, params).perform }.to raise_error(/reply context/i)
+          expect(conversation.messages.outgoing.count).to eq(0)
+        end
+
+        it 'rejects a new incoming message inserted after preflight' do
+          incoming
+          create(:message, conversation: conversation, account: account, message_type: :incoming,
+                           content_attributes: { email: { from: contact_email, message_id: 'later@example.com' } })
+          expect { message_builder }.to raise_error(/reply context/i)
+          expect(conversation.messages.outgoing.count).to eq(0)
+        end
+      end
+
       it 'creates message with content_attributes for cc and bcc email addresses' do
         message = message_builder
 

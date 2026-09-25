@@ -25,6 +25,7 @@ class Messages::MessageBuilder
     @message = @conversation.messages.build(message_params)
     process_attachments
     process_emails
+    pin_native_email_reply_context
     # When the message has no quoted content, it will just be rendered as a regular message
     # The frontend is equipped to handle this case
     process_email_content
@@ -97,6 +98,15 @@ class Messages::MessageBuilder
     @message.content_attributes ||= {}
     email_attributes = build_email_attributes
     @message.content_attributes[:email] = email_attributes
+  end
+
+  def pin_native_email_reply_context
+    request = content_attributes.with_indifferent_access[:myinvest_email_reply]
+    return if request.nil?
+
+    @message.content_attributes[:myinvest_email_reply] = Messages::NativeEmailReplyContext.build!(
+      conversation: @conversation, message: @message, request: request
+    )
   end
 
   def process_email_string(email_string)

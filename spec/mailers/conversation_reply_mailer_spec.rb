@@ -263,6 +263,37 @@ RSpec.describe ConversationReplyMailer do
       let(:message) { create(:message, conversation: conversation, account: account, message_type: 'outgoing', content: 'Outgoing Message 2') }
       let(:mail) { described_class.email_reply(message).deliver_now }
 
+      it 'keeps a native reply pinned when another inbound and outbound arrive before the mail job' do
+        conversation.contact.update!(email: 'customer@example.com')
+        conversation.update!(additional_attributes: { 'mail_subject' => 'Question' })
+        create(:message, conversation: conversation, account: account, message_type: :incoming,
+                         content_attributes: { email: { from: 'customer@example.com', message_id: 'first@example.com',
+                                                        references: ['<prior@example.com>'] } })
+        params = ActionController::Parameters.new(
+          content: 'Pinned reply', message_type: 'outgoing', to_emails: 'customer@example.com',
+          cc_emails: '', bcc_emails: '', content_attributes: {
+            myinvest_email_reply: { subject: 'Re: Question', in_reply_to: '<first@example.com>' }
+          }
+        )
+        native_message = Messages::MessageBuilder.new(agent, conversation, params).perform
+        create(:message, conversation: conversation, account: account, message_type: :incoming,
+                         content_attributes: { email: { from: 'customer@example.com', message_id: 'later@example.com' } })
+        create(:message, conversation: conversation, account: account, message_type: :outgoing,
+                         content_attributes: { to_emails: ['other@example.com'], cc_emails: ['copy@example.com'],
+                                               bcc_emails: ['blind@example.com'] })
+        conversation.update!(additional_attributes: { 'mail_subject' => 'Changed' })
+
+        pinned_mail = described_class.email_reply(native_message).deliver_now
+
+        expect(pinned_mail.to).to eq(['customer@example.com'])
+        expect(pinned_mail.cc).to be_nil
+        expect(pinned_mail.bcc).to be_nil
+        expect(pinned_mail.subject).to eq('Re: Question')
+        expect(pinned_mail.in_reply_to).to include('first@example.com')
+        expect(pinned_mail.references).to include('prior@example.com', 'first@example.com')
+        expect(pinned_mail.in_reply_to).not_to include('later@example.com')
+      end
+
       it 'renders the subject' do
         expect(mail.subject).to eq("[##{message.conversation.display_id}] New messages on this conversation")
       end

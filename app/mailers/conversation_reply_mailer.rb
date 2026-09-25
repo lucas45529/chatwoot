@@ -115,6 +115,8 @@ class ConversationReplyMailer < ApplicationMailer
   end
 
   def mail_subject
+    return native_email_reply_context['subject'] if native_email_reply_context
+
     subject = @conversation.additional_attributes['mail_subject']
     return "[##{@conversation.display_id}] #{I18n.t('conversations.reply.email_subject')}" if subject.nil?
 
@@ -159,6 +161,8 @@ class ConversationReplyMailer < ApplicationMailer
   end
 
   def conversation_reply_email_id
+    return native_email_reply_context['in_reply_to'] if native_email_reply_context
+
     # Find the last incoming message's message_id to reply to
     content_attributes = @conversation.messages.incoming.last&.content_attributes
 
@@ -170,10 +174,14 @@ class ConversationReplyMailer < ApplicationMailer
   end
 
   def references_header
+    return native_email_reply_context['references'].join("\r\n ") if native_email_reply_context
+
     build_references_header(@conversation, in_reply_to_email)
   end
 
   def cc_bcc_emails
+    return [[], []] if native_email_reply_context
+
     content_attributes = @conversation.messages.outgoing.last&.content_attributes
 
     return [] unless content_attributes
@@ -183,6 +191,8 @@ class ConversationReplyMailer < ApplicationMailer
   end
 
   def to_emails_from_content_attributes
+    return [native_email_reply_context['to']] if native_email_reply_context
+
     content_attributes = @conversation.messages.outgoing.last&.content_attributes
 
     return [] unless content_attributes
@@ -194,6 +204,12 @@ class ConversationReplyMailer < ApplicationMailer
   def to_emails
     # if there is no to_emails from content_attributes, send it to @contact&.email
     to_emails_from_content_attributes.presence || [@contact&.email]
+  end
+
+  def native_email_reply_context
+    return nil unless @message
+
+    @native_email_reply_context ||= Messages::NativeEmailReplyContext.for_message!(@message)
   end
 
   def inbound_email_enabled?
