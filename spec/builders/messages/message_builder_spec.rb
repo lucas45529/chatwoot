@@ -248,6 +248,48 @@ describe Messages::MessageBuilder do
           )
         end
 
+        it 'pins the exact bytes, MIME, name and size of a PDF or image attachment' do
+          incoming
+          upload = Rack::Test::UploadedFile.new('spec/assets/avatar.png', 'image/png')
+          bytes = File.binread('spec/assets/avatar.png')
+          metadata = { name: 'avatar.png', mime: 'image/png', size: bytes.bytesize,
+                       sha256: Digest::SHA256.hexdigest(bytes) }
+          params[:attachments] = [upload]
+          params[:content_attributes][:myinvest_email_reply][:attachments] = [metadata]
+
+          message = message_builder
+
+          expect(message.attachments.size).to eq(1)
+          expect(message.content_attributes.dig('myinvest_email_reply', 'attachments')).to eq([metadata.stringify_keys])
+          expect(Messages::NativeEmailReplyContext.for_message!(message)['attachments']).to eq([metadata.stringify_keys])
+        end
+
+        it 'rejects attachment bytes that differ from the claimed hash before creating the reply' do
+          incoming
+          upload = Rack::Test::UploadedFile.new('spec/assets/avatar.png', 'image/png')
+          params[:attachments] = [upload]
+          params[:content_attributes][:myinvest_email_reply][:attachments] = [
+            { name: 'avatar.png', mime: 'image/png', size: upload.size, sha256: '0' * 64 }
+          ]
+
+          expect { message_builder }.to raise_error(/reply context/i)
+          expect(conversation.messages.outgoing.count).to eq(0)
+        end
+
+        it 'refuses a blob whose MIME changed after the native reply was created' do
+          incoming
+          upload = Rack::Test::UploadedFile.new('spec/assets/avatar.png', 'image/png')
+          bytes = File.binread('spec/assets/avatar.png')
+          params[:attachments] = [upload]
+          params[:content_attributes][:myinvest_email_reply][:attachments] = [
+            { name: 'avatar.png', mime: 'image/png', size: bytes.bytesize, sha256: Digest::SHA256.hexdigest(bytes) }
+          ]
+          message = message_builder
+          message.attachments.first.file.blob.update!(content_type: 'application/pdf')
+
+          expect { Messages::NativeEmailReplyContext.for_message!(message.reload) }.to raise_error(/reply context/i)
+        end
+
         it 'rejects a CC not present on the selected incoming message' do
           incoming
           params[:cc_emails] = 'stranger@example.com'

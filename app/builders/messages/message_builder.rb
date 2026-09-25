@@ -105,7 +105,7 @@ class Messages::MessageBuilder
     return if request.nil?
 
     @message.content_attributes[:myinvest_email_reply] = Messages::NativeEmailReplyContext.build!(
-      conversation: @conversation, message: @message, request: request
+      conversation: @conversation, message: @message, request: request, uploads: Array.wrap(@attachments)
     )
   end
 

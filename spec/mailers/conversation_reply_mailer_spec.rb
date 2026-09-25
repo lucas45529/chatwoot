@@ -318,6 +318,40 @@ RSpec.describe ConversationReplyMailer do
         expect(pinned_mail.cc).not_to include('unselected@example.com')
       end
 
+      it 'refuses delivery if the Email channel identity changes after the reply was queued' do
+        conversation.contact.update!(email: 'customer@example.com')
+        conversation.update!(additional_attributes: { 'mail_subject' => 'Question' })
+        create(:message, conversation: conversation, account: account, message_type: :incoming,
+                         content_attributes: { email: { from: 'customer@example.com', message_id: 'first@example.com' } })
+        params = ActionController::Parameters.new(
+          content: 'Pinned reply', message_type: 'outgoing', to_emails: 'customer@example.com',
+          cc_emails: '', bcc_emails: '', content_attributes: {
+            myinvest_email_reply: { subject: 'Re: Question', in_reply_to: '<first@example.com>', cc: [], bcc: [] }
+          }
+        )
+        native_message = Messages::MessageBuilder.new(agent, conversation, params).perform
+        email_channel.update!(email: 'other@example.com')
+
+        expect { described_class.email_reply(native_message).deliver_now }.to raise_error(/reply context/i)
+      end
+
+      it 'refuses delivery if the contact address changes after the reply was queued' do
+        conversation.contact.update!(email: 'customer@example.com')
+        conversation.update!(additional_attributes: { 'mail_subject' => 'Question' })
+        create(:message, conversation: conversation, account: account, message_type: :incoming,
+                         content_attributes: { email: { from: 'customer@example.com', message_id: 'first@example.com' } })
+        params = ActionController::Parameters.new(
+          content: 'Pinned reply', message_type: 'outgoing', to_emails: 'customer@example.com',
+          cc_emails: '', bcc_emails: '', content_attributes: {
+            myinvest_email_reply: { subject: 'Re: Question', in_reply_to: '<first@example.com>', cc: [], bcc: [] }
+          }
+        )
+        native_message = Messages::MessageBuilder.new(agent, conversation, params).perform
+        conversation.contact.update!(email: 'changed@example.com')
+
+        expect { described_class.email_reply(native_message).deliver_now }.to raise_error(/reply context/i)
+      end
+
       it 'renders the subject' do
         expect(mail.subject).to eq("[##{message.conversation.display_id}] New messages on this conversation")
       end
