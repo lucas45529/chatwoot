@@ -103,7 +103,7 @@ export async function runAutoSendFeedbackSweep(input: {
                    AND reply.conversation_id = conversation.id
                    AND reply.sender_type = 'User'
                    AND reply.private = false
-                   AND NOT (reply.additional_attributes ? 'campaign_id')
+                   AND NOT COALESCE(reply.additional_attributes ? 'campaign_id', false)
                    AND NOT ${myinvestAutomatedOutboundSql('reply')}
                    AND ${messageAttributesSql('reply')} ->> 'automation_rule_id' IS NULL
                    AND reply.created_at > $3

@@ -60,7 +60,7 @@ it('records central-account Academy feedback under the resolved product tenant',
   await runAutoSendFeedbackSweep({ agentPool: { query, connect: vi.fn().mockResolvedValue(client) } as unknown as LearningPool & { query: typeof query }, chatwootPool: { query: chatQuery }, tenants: { requireByKey: () => ({ accountId: 1 }) } as unknown as TenantRegistry })
   const sql = String(chatQuery.mock.calls[0]?.[0])
   expect(sql).toContain("custom_attributes ->> 'myinvest_tenant' AS conversation_tenant")
-  expect(sql).toContain("NOT (reply.additional_attributes ? 'campaign_id')")
+  expect(sql).toContain("NOT COALESCE(reply.additional_attributes ? 'campaign_id', false)")
   const writes = [...query.mock.calls, ...client.query.mock.calls].map((call) => JSON.stringify(call[1] ?? []))
   expect(writes.some((values) => values.includes('"new_academy"'))).toBe(true)
   expect(writes.some((values) => values.includes('"saas"') && values.includes('human_correction'))).toBe(false)
