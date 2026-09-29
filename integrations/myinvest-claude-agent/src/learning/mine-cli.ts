@@ -1,7 +1,7 @@
 import pg from 'pg'
 import { parseTenantConfig } from '../config.js'
 import { tenantKeySchema, type TenantKey } from '../domain.js'
-import { extractLiveCandidates, type LiveConversation, type LiveMessage } from './mine-conversations.js'
+import { extractLiveCandidates, routeLiveConversations, type LiveConversation, type LiveMessage } from './mine-conversations.js'
 import { HANDED_OFF_DELIVERIES_SQL, LIVE_MESSAGES_SQL } from './live-queries.js'
 import { storeExtractedCandidates } from './repository.js'
 
@@ -45,13 +45,19 @@ interface MessageRow {
   external_echo: boolean
   from_automation: boolean
   from_campaign: boolean
+  from_myinvest_outbound: boolean
+  source_tenant: string | null
+  conversation_tenant: string | null
+  conversation_channel: string | null
   agent_kind: string | null
 }
 
 try {
   const handedOff = await agentPool.query<HandedOffRow & Record<string, unknown>>(
     HANDED_OFF_DELIVERIES_SQL,
-    [String(days), tenantFilter],
+    // Kein Tenant-Filter im Ledger: ein Zentralkonto traegt mehrere Produkte,
+    // gefiltert wird erst nach der Produktroute.
+    [String(days), null],
   )
 
   const exportId = `live-${new Date().toISOString().slice(0, 10)}`
@@ -66,14 +72,15 @@ try {
     byTenant.set(row.tenant_key, list)
   }
 
-  for (const [tenant, conversationDisplayIds] of byTenant) {
-    const accountId = accountByTenant.get(tenant)
-    if (!accountId) throw new Error(`Missing Chatwoot account for tenant ${tenant}`)
+  for (const [accountTenant, conversationDisplayIds] of byTenant) {
+    const accountId = accountByTenant.get(accountTenant)
+    if (!accountId) throw new Error(`Missing Chatwoot account for tenant ${accountTenant}`)
     const messages = await chatwootPool.query<MessageRow & Record<string, unknown>>(
       LIVE_MESSAGES_SQL,
       [accountId, conversationDisplayIds],
     )
     const grouped = new Map<string, LiveMessage[]>()
+    const routing = new Map<string, LiveConversation['routing']>()
     for (const row of messages.rows) {
       const list = grouped.get(row.conversation_display_id) ?? []
       list.push({
@@ -86,23 +93,37 @@ try {
         externalEcho: row.external_echo,
         fromAutomation: row.from_automation,
         fromCampaign: row.from_campaign,
+        fromMyinvestOutbound: row.from_myinvest_outbound,
+        sourceTenant: row.source_tenant ?? undefined,
         agentKind: row.agent_kind ?? undefined,
       })
       grouped.set(row.conversation_display_id, list)
+      if (row.conversation_tenant != null || row.conversation_channel != null) {
+        routing.set(row.conversation_display_id, {
+          conversationTenant: row.conversation_tenant ?? undefined,
+          conversationChannel: row.conversation_channel ?? undefined,
+        })
+      }
     }
     const conversations: LiveConversation[] = conversationDisplayIds.map((displayId) => ({
       conversationId: Number(displayId),
       handedOff: true,
       messages: grouped.get(displayId) ?? [],
+      routing: routing.get(displayId),
     }))
-    const extraction = extractLiveCandidates({ tenant, exportId, conversations })
-    examinedConversations += extraction.examinedConversations
-    rejectedConversations += extraction.rejectedConversations
-    if (extraction.candidates.length === 0) continue
+    const { routed, rejected } = routeLiveConversations(accountTenant, conversations)
+    rejectedConversations += rejected
+    for (const [tenant, tenantConversations] of routed) {
+      if (tenantFilter && tenant !== tenantFilter) continue
+      const extraction = extractLiveCandidates({ tenant, exportId, conversations: tenantConversations })
+      examinedConversations += extraction.examinedConversations
+      rejectedConversations += extraction.rejectedConversations
+      if (extraction.candidates.length === 0) continue
 
-    const stored = await storeExtractedCandidates(agentPool, extraction.candidates)
-    inserted += stored.inserted
-    refreshed += stored.refreshed
+      const stored = await storeExtractedCandidates(agentPool, extraction.candidates)
+      inserted += stored.inserted
+      refreshed += stored.refreshed
+    }
   }
 
   console.log(

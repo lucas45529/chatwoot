@@ -6,6 +6,7 @@
 // im vorhandenen Lern-Feedback und damit im Review-Pfad.
 import type { TenantRegistry } from '../config.js'
 import { tenantKeySchema, type TenantKey } from '../domain.js'
+import { messageAttributesSql, myinvestAutomatedOutboundSql } from '../message-provenance.js'
 import { redactSupportText } from './extractor.js'
 import { recordLearningFeedback, type LearningPool } from './repository.js'
 
@@ -98,6 +99,8 @@ export async function runAutoSendFeedbackSweep(input: {
                    AND reply.conversation_id = conversation.id
                    AND reply.sender_type = 'User'
                    AND reply.private = false
+                   AND NOT ${myinvestAutomatedOutboundSql('reply')}
+                   AND ${messageAttributesSql('reply')} ->> 'automation_rule_id' IS NULL
                    AND reply.created_at > $3
                    AND reply.created_at <= $3 + ($4 || ' minutes')::interval
                  ORDER BY reply.created_at ASC

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { TenantKey } from '../domain.js'
+import { resolveSupportRoute } from '../support-routing.js'
 import {
   containsResidualPersonalData,
   directPersonalization,
@@ -29,6 +30,10 @@ export interface LiveMessage {
   externalEcho?: boolean
   fromAutomation?: boolean
   fromCampaign?: boolean
+  /** Server-originated MyInvest outbound (e.g. appointment reminders) sent with a User sender. */
+  fromMyinvestOutbound?: boolean
+  /** Product identity carried by the immutable source message, if any. */
+  sourceTenant?: string
   agentKind?: string
 }
 
@@ -36,6 +41,8 @@ export interface LiveConversation {
   conversationId: number
   handedOff: boolean
   messages: LiveMessage[]
+  /** Product metadata of central bridge conversations (myinvest_tenant/myinvest_channel). */
+  routing?: { conversationTenant?: string; conversationChannel?: string }
 }
 
 export interface LiveExtraction {
@@ -102,9 +109,42 @@ function isHumanAnswer(message: LiveMessage): boolean {
     (message.senderType === 'User' || (!message.senderType && message.externalEcho === true)) &&
     message.fromAutomation !== true &&
     message.fromCampaign !== true &&
+    message.fromMyinvestOutbound !== true &&
     !message.private &&
     message.content.trim().length > 0
   )
+}
+
+/**
+ * Central accounts carry several products. Learn each conversation for its
+ * resolved product, exactly like the answer path does; conversations with
+ * conflicting product metadata are never mined.
+ */
+export function routeLiveConversations(
+  accountTenant: TenantKey,
+  conversations: LiveConversation[],
+): { routed: Map<TenantKey, LiveConversation[]>; rejected: number } {
+  const routed = new Map<TenantKey, LiveConversation[]>()
+  let rejected = 0
+  for (const conversation of conversations) {
+    const sourceTenant = conversation.messages.find(isCustomerMessage)?.sourceTenant
+    const route = resolveSupportRoute(
+      conversation.routing?.conversationTenant == null &&
+        conversation.routing?.conversationChannel == null &&
+        sourceTenant == null
+        ? undefined
+        : { ...conversation.routing, sourceTenant },
+      { tenant: accountTenant, channel: 'web' },
+    )
+    if (!route) {
+      rejected += 1
+      continue
+    }
+    const list = routed.get(route.tenant) ?? []
+    list.push(conversation)
+    routed.set(route.tenant, list)
+  }
+  return { routed, rejected }
 }
 
 export function extractLiveCandidates(input: {

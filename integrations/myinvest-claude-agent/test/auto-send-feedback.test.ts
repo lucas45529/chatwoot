@@ -43,3 +43,12 @@ it('never learns a human correction from a document-marked conversation', async 
   expect(connect).not.toHaveBeenCalled()
   expect(chatQuery.mock.calls[0]?.[0]).toContain('document_assistance_note')
 })
+
+it('never counts a MyInvest system reminder or automation as a human correction', async () => {
+  const query = vi.fn().mockResolvedValueOnce({ rows: [{ id: '1', tenant_key: 'saas', conversation_id: '77', message_id: '55', sent_at: new Date(Date.now() - 3600000) }] }).mockResolvedValue({ rows: [] })
+  const chatQuery = vi.fn().mockResolvedValue({ rows: [] })
+  await runAutoSendFeedbackSweep({ agentPool: { query, connect: vi.fn() } as unknown as LearningPool & { query: typeof query }, chatwootPool: { query: chatQuery }, tenants: { requireByKey: () => ({ accountId: 101 }) } as unknown as TenantRegistry })
+  const sql = String(chatQuery.mock.calls[0]?.[0])
+  expect(sql).toContain("mip:wa:%:sys:%")
+  expect(sql).toContain("->> 'automation_rule_id' IS NULL")
+})

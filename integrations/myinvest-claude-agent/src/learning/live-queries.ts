@@ -1,3 +1,5 @@
+import { messageAttributesSql, myinvestAutomatedOutboundSql } from '../message-provenance.js'
+
 export const HANDED_OFF_DELIVERIES_SQL = `SELECT DISTINCT tenant_key, conversation_id::text
        FROM agent_delivery_ledger
       WHERE status = 'handed_off'
@@ -20,7 +22,11 @@ export const LIVE_MESSAGES_SQL = `SELECT conversation.display_id::text AS conver
               (CASE WHEN json_typeof(message.content_attributes) = 'string'
                     THEN (message.content_attributes #>> '{}')::json ->> 'automation_rule_id'
                     ELSE message.content_attributes ->> 'automation_rule_id' END) IS NOT NULL AS from_automation,
-              (message.additional_attributes ? 'campaign_id') AS from_campaign
+              (message.additional_attributes ? 'campaign_id') AS from_campaign,
+              ${myinvestAutomatedOutboundSql('message')} AS from_myinvest_outbound,
+              ${messageAttributesSql('message')} ->> 'myinvest_tenant' AS source_tenant,
+              conversation.custom_attributes ->> 'myinvest_tenant' AS conversation_tenant,
+              conversation.custom_attributes ->> 'myinvest_channel' AS conversation_channel
          FROM conversations AS conversation
          JOIN messages AS message
            ON message.conversation_id = conversation.id

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   extractLiveCandidates,
+  routeLiveConversations,
   type LiveConversation,
   type LiveMessage,
 } from '../src/learning/mine-conversations.js'
@@ -328,4 +329,48 @@ it('never mines a conversation marked as private document assistance, including 
   const flow = conversation({})
   flow.messages.splice(1, 0, message({ messageId: 3, messageType: 1, private: true, senderType: 'AgentBot', agentKind: 'document_assistance_note', content: 'Bitte prüfe den zugeschickten Code.' }))
   expect(extract([flow]).candidates).toEqual([])
+})
+
+describe('central-account mining routes by product and ignores system outbound', () => {
+  it('assigns a central-account Academy conversation to new_academy, not saas', () => {
+    const academy = conversation({
+      conversationId: 168,
+      routing: { conversationTenant: 'new_academy', conversationChannel: 'whatsapp' },
+      messages: conversation({}).messages.map((m) => (m.messageType === 0 ? { ...m, sourceTenant: 'new_academy' } : m)),
+    })
+    const plain = conversation({ conversationId: 7 })
+
+    const routed = routeLiveConversations('saas', [academy, plain])
+
+    expect(routed.routed.get('new_academy')?.map((c) => c.conversationId)).toEqual([168])
+    expect(routed.routed.get('saas')?.map((c) => c.conversationId)).toEqual([7])
+    expect(routed.rejected).toBe(0)
+  })
+
+  it('drops conversations whose product metadata conflicts', () => {
+    const conflicting = conversation({
+      routing: { conversationTenant: 'new_academy', conversationChannel: 'whatsapp' },
+      messages: conversation({}).messages.map((m) => (m.messageType === 0 ? { ...m, sourceTenant: 'saas' } : m)),
+    })
+
+    const routed = routeLiveConversations('saas', [conflicting])
+
+    expect(routed.routed.size).toBe(0)
+    expect(routed.rejected).toBe(1)
+  })
+
+  it('never treats a MyInvest system reminder as a human answer', () => {
+    const [question, answer] = conversation({}).messages
+    const result = extract([conversation({
+      messages: [question!, { ...answer!, fromMyinvestOutbound: true }],
+    })])
+
+    expect(result.candidates).toHaveLength(0)
+  })
+
+  it('selects the provenance and product columns the miner needs', () => {
+    expect(LIVE_MESSAGES_SQL).toContain('AS from_myinvest_outbound')
+    expect(LIVE_MESSAGES_SQL).toContain("custom_attributes ->> 'myinvest_tenant'")
+    expect(LIVE_MESSAGES_SQL).toContain('AS source_tenant')
+  })
 })
