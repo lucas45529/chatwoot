@@ -374,3 +374,19 @@ describe('central-account mining routes by product and ignores system outbound',
     expect(LIVE_MESSAGES_SQL).toContain('AS source_tenant')
   })
 })
+
+it('rejects a central conversation whose customer messages carry different products', () => {
+  const [question, answer] = conversation({}).messages
+  const mixed = conversation({
+    routing: { conversationTenant: 'saas', conversationChannel: 'web' },
+    messages: [
+      { ...question!, sourceTenant: 'saas' },
+      answer!,
+      { ...question!, messageId: 3, sourceTenant: 'new_academy', createdAt: new Date(t0.getTime() + 2 * 3600000) },
+      { ...answer!, messageId: 4, createdAt: new Date(t0.getTime() + 3 * 3600000) },
+    ],
+  })
+  const routed = routeLiveConversations('saas', [mixed])
+  expect(routed.routed.size).toBe(0)
+  expect(routed.rejected).toBe(1)
+})

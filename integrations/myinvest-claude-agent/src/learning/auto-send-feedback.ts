@@ -6,6 +6,7 @@
 // im vorhandenen Lern-Feedback und damit im Review-Pfad.
 import type { TenantRegistry } from '../config.js'
 import { tenantKeySchema, type TenantKey } from '../domain.js'
+import { resolveSupportRoute } from '../support-routing.js'
 import { messageAttributesSql, myinvestAutomatedOutboundSql } from '../message-provenance.js'
 import { redactSupportText } from './extractor.js'
 import { recordLearningFeedback, type LearningPool } from './repository.js'
@@ -33,6 +34,9 @@ interface OutcomeRow extends Record<string, unknown> {
   status: number
   document_assistance?: boolean
   human_reply_content: string | null
+  conversation_tenant?: string | null
+  conversation_channel?: string | null
+  source_tenant?: string | null
 }
 
 export interface AutoSendFeedbackSweepResult {
@@ -99,25 +103,46 @@ export async function runAutoSendFeedbackSweep(input: {
                    AND reply.conversation_id = conversation.id
                    AND reply.sender_type = 'User'
                    AND reply.private = false
+                   AND NOT (reply.additional_attributes ? 'campaign_id')
                    AND NOT ${myinvestAutomatedOutboundSql('reply')}
                    AND ${messageAttributesSql('reply')} ->> 'automation_rule_id' IS NULL
                    AND reply.created_at > $3
                    AND reply.created_at <= $3 + ($4 || ' minutes')::interval
                  ORDER BY reply.created_at ASC
                  LIMIT 1
-              ) AS human_reply_content
+              ) AS human_reply_content,
+              conversation.custom_attributes ->> 'myinvest_tenant' AS conversation_tenant,
+              conversation.custom_attributes ->> 'myinvest_channel' AS conversation_channel,
+              (SELECT ${messageAttributesSql('source')} ->> 'myinvest_tenant'
+                 FROM messages AS source
+                WHERE source.account_id = $1 AND source.conversation_id = conversation.id
+                  AND source.id = $5) AS source_tenant
          FROM conversations AS conversation
         WHERE conversation.account_id = $1
           AND conversation.display_id = $2`,
-      [tenant.accountId, conversationId, sentAt, CORRECTION_WINDOW_MINUTES],
+      [tenant.accountId, conversationId, sentAt, CORRECTION_WINDOW_MINUTES, Number(row.message_id)],
     )
     const conversation = outcome.rows[0]
+    // Central accounts carry several products: feedback belongs to the
+    // conversation's resolved product, never to the account's tenant.
+    const route = conversation
+      ? resolveSupportRoute(
+          conversation.conversation_tenant == null && conversation.conversation_channel == null && conversation.source_tenant == null
+            ? undefined
+            : {
+                conversationTenant: conversation.conversation_tenant ?? undefined,
+                conversationChannel: conversation.conversation_channel ?? undefined,
+                sourceTenant: conversation.source_tenant ?? undefined,
+              },
+          { tenant: tenantKey.data, channel: 'web' },
+        )
+      : undefined
     // Redaction vor der Bewertung: der Korrekturtext wird gespeichert, also
     // entscheidet die redigierte Fassung ueber seine Verwertbarkeit.
     const correction = !conversation?.document_assistance && conversation?.human_reply_content
       ? redactSupportText(conversation.human_reply_content).text.trim()
       : ''
-    const rating: FeedbackRating | undefined = !conversation || conversation.document_assistance
+    const rating: FeedbackRating | undefined = !conversation || !route || conversation.document_assistance
       ? 'none'
       : feedbackRating({
           correction,
@@ -126,9 +151,9 @@ export async function runAutoSendFeedbackSweep(input: {
           windowClosed: nowMs - sentAt.getTime() > CORRECTION_WINDOW_MINUTES * 60_000,
         })
     if (!rating) continue
-    if (rating !== 'none') {
+    if (rating !== 'none' && route) {
       await recordFeedbackSafely(input.agentPool, {
-        tenantKey: tenantKey.data,
+        tenantKey: route.tenant,
         conversationId,
         sourceMessageId: Number(row.message_id),
         rating,

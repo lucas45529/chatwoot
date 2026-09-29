@@ -127,7 +127,15 @@ export function routeLiveConversations(
   const routed = new Map<TenantKey, LiveConversation[]>()
   let rejected = 0
   for (const conversation of conversations) {
-    const sourceTenant = conversation.messages.find(isCustomerMessage)?.sourceTenant
+    // Like the answer path, every customer source must agree on one product.
+    const sourceTenants = new Set(
+      conversation.messages.filter(isCustomerMessage).map((message) => message.sourceTenant).filter((tenant) => tenant != null),
+    )
+    if (sourceTenants.size > 1) {
+      rejected += 1
+      continue
+    }
+    const [sourceTenant] = sourceTenants
     const route = resolveSupportRoute(
       conversation.routing?.conversationTenant == null &&
         conversation.routing?.conversationChannel == null &&
