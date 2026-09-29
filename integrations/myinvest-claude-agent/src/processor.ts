@@ -121,7 +121,6 @@ export class MessageProcessor {
     }
     const supportRoute = this.supportRoute(tenant, conversationContext)
     if (!supportRoute) throw new Error('Chatwoot support routing is invalid')
-    const crossProduct = supportRoute.tenant !== tenant.key
     let wasHandedOff = await this.dependencies.state.isHandedOff(
       tenant.key,
       conversationId,
@@ -220,7 +219,7 @@ export class MessageProcessor {
         isFinalAttempt,
         draft,
         learningSources,
-        notifyCustomer: notify && !wasHandedOff && !crossProduct && !documentAssistance,
+        notifyCustomer: notify && !wasHandedOff && !documentAssistance,
         canNotifyCustomer: async () => {
           if (!this.dependencies.context.loadCurrentSource) return true
           const current = await this.dependencies.context.loadCurrentSource({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: conversationId, currentMessageId: payload.id, tenant: supportRoute.tenant, channel: supportRoute.channel })
@@ -293,7 +292,10 @@ export class MessageProcessor {
       )
       return
     }
-    const reviewOnly = crossProduct || humanOwned || (outcome.category === 'beratung' && !documentAssistance)
+    // Zentrale Konversationen (z. B. Academy-WhatsApp im SaaS-Account) laufen
+    // ueber die aufgeloeste Produktroute; ihr Gehirn-Urteil und die Bremsen
+    // gelten wie im eigenen Account, statt dauerhaft nur Entwurf zu sein.
+    const reviewOnly = humanOwned || (outcome.category === 'beratung' && !documentAssistance)
     const directReply = reviewOnly ? undefined : directSupportReply(question)
     let answer: SupportBrainAnswer
     if (directReply) {
@@ -399,7 +401,7 @@ export class MessageProcessor {
       return
     }
 
-    const retainAutomation = Boolean(executionContext && this.dependencies.autoSendEnabled && !crossProduct && !humanOwned && (!outcome.humanOnly || documentAssistance) && !reviewOnly && answer.action !== 'handoff')
+    const retainAutomation = Boolean(executionContext && this.dependencies.autoSendEnabled && !humanOwned && (!outcome.humanOnly || documentAssistance) && !reviewOnly && answer.action !== 'handoff')
     let written = false
     try {
       written = await this.prepareDraft({

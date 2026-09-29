@@ -171,7 +171,7 @@ function setup(
 }
 
 describe('MessageProcessor', () => {
-  it('uses Academy knowledge for a central-account Academy conversation', async () => {
+  it('answers a central-account Academy conversation autonomously with Academy knowledge', async () => {
     const centralAccess = { ...tenants[0]!, accountId: 1, inboxId: 1 }
     const answer: SupportBrainAnswer = {
       ...BRAIN_ANSWER,
@@ -195,19 +195,30 @@ describe('MessageProcessor', () => {
 
     await central.processor.process({ tenant: centralAccess, payload: incomingPayload() })
 
-    expect(central.answer).toHaveBeenCalledWith(expect.objectContaining({
-      tenant: 'new_academy',
-      channel: 'whatsapp',
-      reviewOnly: true,
-    }))
-    expect(central.saveDraft).toHaveBeenCalledWith(centralAccess, 77, answer.text)
-    expect(central.sendPrivateNote).toHaveBeenCalledWith(
-      centralAccess,
-      77,
-      expect.stringMatching(/manual_review[\s\S]*produkt=new_academy/),
-      55,
-      'draft_note',
-    )
+    const brainRequest = central.answer.mock.calls[0]?.[0]
+    expect(brainRequest).toMatchObject({ tenant: 'new_academy', channel: 'whatsapp' })
+    expect(brainRequest).not.toHaveProperty('reviewOnly')
+    expect(central.autoSend.reserve).toHaveBeenCalledOnce()
+    expect(central.sendMessage).toHaveBeenCalledWith(centralAccess, 77, answer.text, 55, 'answer')
+  })
+
+  it('keeps a central-account Academy conversation as a draft while the kill switch is off', async () => {
+    const centralAccess = { ...tenants[0]!, accountId: 1, inboxId: 1 }
+    const central = setup({
+      answer: { ...BRAIN_ANSWER, safeToAutoSend: true },
+      context: {
+        supportRouting: {
+          conversationTenant: 'new_academy',
+          conversationChannel: 'whatsapp',
+          sourceTenant: 'new_academy',
+        },
+      },
+    })
+
+    await central.processor.process({ tenant: centralAccess, payload: incomingPayload() })
+
+    expect(central.answer).toHaveBeenCalledWith(expect.objectContaining({ tenant: 'new_academy' }))
+    expect(central.saveDraft).toHaveBeenCalledWith(centralAccess, 77, BRAIN_ANSWER.text)
     expect(central.autoSend.reserve).not.toHaveBeenCalled()
     expect(central.sendMessage).not.toHaveBeenCalled()
   })
