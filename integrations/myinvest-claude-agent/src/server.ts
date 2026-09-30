@@ -42,7 +42,7 @@ const deliveryQueue = new DeliveryQueue(queue, {
   retentionSeconds: config.DELIVERY_RETENTION_SECONDS,
 })
 const state = new PostgresAgentState(pool)
-const autoSendLog = new PostgresAutoSendLog(pool, config.PSEUDONYMIZATION_KEY)
+const autoSendLog = new PostgresAutoSendLog(pool, config.PSEUDONYMIZATION_KEY, chatwootPool)
 const conversationLock = new PostgresConversationProcessingLock(pool)
 const brain: SupportBrainPort = config.LOCAL_FAKE_BRAIN_ANSWER
   ? {
@@ -297,7 +297,7 @@ app.post(
     } catch (error) {
       const rejection = webhookHttpError(error)
       if (rejection.log) {
-        console.error('Webhook rejected', error instanceof Error ? error.message : 'unknown error')
+        console.error('Webhook rejected', rejection.detail ?? (error instanceof Error ? error.message : 'unknown error'))
       }
       return response.status(rejection.status).json(rejection.body)
     }

@@ -126,8 +126,30 @@ export class PostgresConversationProcessingLock implements ConversationProcessin
   }
 }
 
+interface StaleLockFactsRow extends Record<string, unknown> {
+  assignee_id: string | number | null
+  source_epoch: string | number
+  automated_outbound: boolean
+  human_reply: boolean
+  handoff_note: boolean
+  draft_delivery_ids: string[] | null
+}
+
+interface StaleLockStateRow extends Record<string, unknown> {
+  block_reason: string | null
+  block_epoch: string | number | null
+  state_status: string | null
+  draft_proven: boolean
+}
+
 export class PostgresAutoSendLog implements AutoSendLog {
-  constructor(private readonly database: DatabasePool, private readonly encryptionSecret?: string) {}
+  /** `database` is the agent's own DB (claude_agent); Chatwoot facts come from
+   * the separate read-only `chatwootDatabase`. The two never share a query. */
+  constructor(
+    private readonly database: DatabasePool,
+    private readonly encryptionSecret?: string,
+    private readonly chatwootDatabase?: Queryable,
+  ) {}
 
   private documentKey(): Buffer {
     if (!this.encryptionSecret || this.encryptionSecret.length < 32) throw new Error('Private delivery encryption unavailable')
@@ -306,57 +328,37 @@ export class PostgresAutoSendLog implements AutoSendLog {
     })
   }
 
-  /** Repairs two stale locks, with full Chatwoot history and the block/state
-   * mutation evaluated under the same conversation lock:
+  /** Repairs two stale locks:
    * - the old bot-as-User false positive (`human_reply` without any human text);
-   * - a draft-only handoff (`agent_handoff` block and/or `handed_off` state that
-   *   only ever produced a composer draft) that no human answered, e.g. from the
-   *   former forced-approval regime. Real handoffs with a note stay locked. */
+   * - a draft-only handoff (`handed_off` state proven by an agent composer draft,
+   *   with or without an `agent_handoff` block) that no human answered, e.g. from
+   *   the former forced-approval regime. Real handoffs with a note stay locked.
+   * Chatwoot facts are read from the Chatwoot DB first; the block/state check and
+   * mutation then run in one agent-DB transaction under the conversation lock.
+   * Chatwoot (`conversations`, `messages`) and the agent tables live in separate
+   * databases, so they must never be joined in one statement. */
   async reconcileStaleHumanReply(input: {
     tenantKey: TenantKey
     conversationId: number
     accountId: number
     inboxId: number
     currentMessageId: number
-    /** Assignees the agent itself sets on review (never a person who took over). */
+    /** Assignees the agent itself sets on review. */
     releasableAssigneeIds?: readonly number[]
   }): Promise<boolean> {
-    return transaction(this.database, async (client) => {
-      await lockConversationTransaction(client, input.tenantKey, input.conversationId)
-      const result = await client.query<{ cleared: boolean }>(
-        `WITH eligible AS MATERIALIZED (
-           SELECT $1::text AS tenant_key, $2::bigint AS conversation_id
-             FROM conversations AS conversation
-             JOIN messages AS source
-               ON source.id = $5
-              AND source.account_id = conversation.account_id
-              AND source.conversation_id = conversation.id
-              AND source.inbox_id = conversation.inbox_id
-              AND source.message_type = 0 AND source.private = false
-              AND (source.sender_type IS NULL OR source.sender_type = 'Contact')
-             LEFT JOIN agent_auto_send_blocks AS block
-               ON block.tenant_key = $1 AND block.conversation_id = $2
-            WHERE conversation.account_id = $3
-              AND conversation.display_id = $2
-              AND conversation.inbox_id = $4
-              AND (conversation.assignee_id IS NULL OR conversation.assignee_id = ANY($6::bigint[]))
-              AND (block.created_at IS NULL OR source.created_at > block.created_at)
-              AND (
-                (block.reason = 'human_reply' AND EXISTS (
-                  SELECT 1 FROM messages AS automated
-                   WHERE automated.account_id = conversation.account_id
-                     AND automated.conversation_id = conversation.id
-                     AND automated.inbox_id = conversation.inbox_id
-                     AND automated.message_type = 1 AND automated.private = false
-                     AND ${myinvestAutomatedOutboundSql('automated')}
-                ))
-                OR block.reason = 'agent_handoff'
-                OR (block.reason IS NULL AND EXISTS (
-                  SELECT 1 FROM agent_conversation_states AS state
-                   WHERE state.tenant_key = $1 AND state.conversation_id = $2
-                     AND state.status = 'handed_off'))
-              )
-              AND NOT EXISTS (
+    if (!this.chatwootDatabase) return false
+    const facts = (await this.chatwootDatabase.query<StaleLockFactsRow>(
+      `SELECT conversation.assignee_id,
+              extract(epoch FROM source.created_at)::float8 AS source_epoch,
+              EXISTS (
+                SELECT 1 FROM messages AS automated
+                 WHERE automated.account_id = conversation.account_id
+                   AND automated.conversation_id = conversation.id
+                   AND automated.inbox_id = conversation.inbox_id
+                   AND automated.message_type = 1 AND automated.private = false
+                   AND ${myinvestAutomatedOutboundSql('automated')}
+              ) AS automated_outbound,
+              EXISTS (
                 SELECT 1 FROM messages AS human
                  WHERE human.account_id = conversation.account_id
                    AND human.conversation_id = conversation.id
@@ -367,8 +369,8 @@ export class PostgresAutoSendLog implements AutoSendLog {
                    AND NOT ${myinvestAutomatedOutboundSql('human')}
                    AND ${messageAttributesSql('human')} ->> 'automation_rule_id' IS NULL
                    AND NOT COALESCE(human.additional_attributes ? 'campaign_id', false)
-              )
-              AND NOT EXISTS (
+              ) AS human_reply,
+              EXISTS (
                 SELECT 1 FROM messages AS handoff
                  WHERE handoff.account_id = conversation.account_id
                    AND handoff.conversation_id = conversation.id
@@ -376,56 +378,80 @@ export class PostgresAutoSendLog implements AutoSendLog {
                    AND handoff.sender_type = 'AgentBot'
                    AND ${messageAttributesSql('handoff')} ->> 'myinvest_agent_message_kind'
                      IN ('handoff_note', 'handoff_ack')
-              )
-              AND (
-                NOT EXISTS (SELECT 1 FROM agent_conversation_states AS state
-                             WHERE state.tenant_key = $1 AND state.conversation_id = $2
-                               AND state.status = 'handed_off')
-                OR EXISTS (
-                  SELECT 1 FROM agent_conversation_states AS state
-                  JOIN agent_delivery_ledger AS delivery
-                    ON delivery.tenant_key = state.tenant_key
-                   AND delivery.conversation_id = state.conversation_id
-                   AND delivery.updated_at = state.updated_at
-                  JOIN messages AS draft
-                    ON draft.account_id = conversation.account_id
+              ) AS handoff_note,
+              ARRAY(
+                SELECT ${messageAttributesSql('draft')} ->> 'myinvest_agent_delivery_id'
+                  FROM messages AS draft
+                 WHERE draft.account_id = conversation.account_id
                    AND draft.conversation_id = conversation.id
                    AND draft.inbox_id = conversation.inbox_id
                    AND draft.sender_type = 'AgentBot' AND draft.private = true
                    AND ${messageAttributesSql('draft')} ->> 'myinvest_agent_message_kind'
                      IN ('draft_note', 'clarify_draft_note', 'document_assistance_note')
-                   AND ${messageAttributesSql('draft')} ->> 'myinvest_agent_delivery_id' = delivery.message_id::text
-                 WHERE state.tenant_key = $1 AND state.conversation_id = $2
-                   AND state.status = 'handed_off'
-                   AND delivery.status = 'handed_off'
-                   AND (block.created_at IS NULL OR delivery.updated_at >= block.created_at)
-                )
-              )
-         ), cleared AS (
-           DELETE FROM agent_auto_send_blocks AS block USING eligible
-            WHERE block.tenant_key = eligible.tenant_key
-              AND block.conversation_id = eligible.conversation_id
-              AND block.reason IN ('human_reply', 'agent_handoff')
-           RETURNING 1
-         ), activated AS (
-           UPDATE agent_conversation_states AS state SET status = 'active', updated_at = now()
-             FROM eligible
-            WHERE state.tenant_key = eligible.tenant_key
-              AND state.conversation_id = eligible.conversation_id
-              AND state.status = 'handed_off'
-           RETURNING 1
-         )
-         SELECT (EXISTS (SELECT 1 FROM cleared) OR EXISTS (SELECT 1 FROM activated)) AS cleared`,
-        [
-          input.tenantKey,
-          input.conversationId,
-          input.accountId,
-          input.inboxId,
-          input.currentMessageId,
-          [...(input.releasableAssigneeIds ?? [])],
-        ],
+                   AND ${messageAttributesSql('draft')} ->> 'myinvest_agent_delivery_id' IS NOT NULL
+              ) AS draft_delivery_ids
+         FROM conversations AS conversation
+         JOIN messages AS source
+           ON source.id = $4
+          AND source.account_id = conversation.account_id
+          AND source.conversation_id = conversation.id
+          AND source.inbox_id = conversation.inbox_id
+          AND source.message_type = 0 AND source.private = false
+          AND (source.sender_type IS NULL OR source.sender_type = 'Contact')
+        WHERE conversation.account_id = $1
+          AND conversation.display_id = $2
+          AND conversation.inbox_id = $3`,
+      [input.accountId, input.conversationId, input.inboxId, input.currentMessageId],
+    )).rows[0]
+    if (!facts || facts.human_reply || facts.handoff_note) return false
+    const assignee = facts.assignee_id === null ? null : Number(facts.assignee_id)
+    if (assignee !== null && !(input.releasableAssigneeIds ?? []).includes(assignee)) return false
+    const sourceEpoch = Number(facts.source_epoch)
+    const draftIds = (facts.draft_delivery_ids ?? []).filter((id): id is string => typeof id === 'string')
+
+    return transaction(this.database, async (client) => {
+      await lockConversationTransaction(client, input.tenantKey, input.conversationId)
+      const current = (await client.query<StaleLockStateRow>(
+        `SELECT block.reason AS block_reason,
+                extract(epoch FROM block.created_at)::float8 AS block_epoch,
+                state.status AS state_status,
+                EXISTS (
+                  SELECT 1 FROM agent_delivery_ledger AS delivery
+                   WHERE delivery.tenant_key = $1 AND delivery.conversation_id = $2
+                     AND delivery.updated_at = state.updated_at
+                     AND delivery.status = 'handed_off'
+                     AND delivery.message_id::text = ANY($3::text[])
+                     AND (block.created_at IS NULL OR delivery.updated_at >= block.created_at)
+                ) AS draft_proven
+           FROM (SELECT 1) AS anchor
+           LEFT JOIN agent_auto_send_blocks AS block
+             ON block.tenant_key = $1 AND block.conversation_id = $2
+           LEFT JOIN agent_conversation_states AS state
+             ON state.tenant_key = $1 AND state.conversation_id = $2`,
+        [input.tenantKey, input.conversationId, draftIds],
+      )).rows[0]
+      if (!current) return false
+      const handedOff = current.state_status === 'handed_off'
+      if (current.block_reason !== null && !(sourceEpoch > Number(current.block_epoch))) return false
+      const eligible =
+        current.block_reason === 'human_reply'
+          ? facts.automated_outbound && (!handedOff || current.draft_proven)
+          : current.block_reason === 'agent_handoff' || current.block_reason === null
+            ? handedOff && current.draft_proven
+            : false
+      if (!eligible) return false
+      await client.query(
+        `DELETE FROM agent_auto_send_blocks
+          WHERE tenant_key = $1 AND conversation_id = $2
+            AND reason IN ('human_reply', 'agent_handoff')`,
+        [input.tenantKey, input.conversationId],
       )
-      return result.rows[0]?.cleared === true
+      await client.query(
+        `UPDATE agent_conversation_states SET status = 'active', updated_at = now()
+          WHERE tenant_key = $1 AND conversation_id = $2 AND status = 'handed_off'`,
+        [input.tenantKey, input.conversationId],
+      )
+      return true
     })
   }
 

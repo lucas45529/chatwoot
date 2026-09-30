@@ -257,31 +257,58 @@ describe('PostgresAutoSendLog reservation', () => {
     expect(release).toHaveBeenCalledOnce()
   })
 
-  it('repairs only a proven bot-as-User block and its matching draft handoff', async () => {
-    const query = vi.fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ cleared: true }] })
-      .mockResolvedValueOnce({ rows: [] })
-    const log = new PostgresAutoSendLog({
-      query: vi.fn(), connect: vi.fn().mockResolvedValue({ query, release: vi.fn() }),
-    })
+  it('reads Chatwoot facts on the Chatwoot pool and mutates only agent tables', async () => {
+    const chatwootQuery = vi.fn().mockResolvedValue({ rows: [{
+      assignee_id: '7', source_epoch: 200, automated_outbound: true,
+      human_reply: false, handoff_note: false, draft_delivery_ids: ['50'],
+    }] })
+    const agentQuery = vi.fn()
+      .mockResolvedValueOnce({ rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rows: [] }) // lock
+      .mockResolvedValueOnce({ rows: [{ block_reason: 'agent_handoff', block_epoch: 100, state_status: 'handed_off', draft_proven: true }] })
+      .mockResolvedValue({ rows: [] })
+    const log = new PostgresAutoSendLog(
+      { query: vi.fn(), connect: vi.fn().mockResolvedValue({ query: agentQuery, release: vi.fn() }) },
+      undefined,
+      { query: chatwootQuery },
+    )
     expect(await log.reconcileStaleHumanReply({
       tenantKey: 'saas', conversationId: 77, accountId: 101, inboxId: 17, currentMessageId: 55,
       releasableAssigneeIds: [7],
     })).toBe(true)
-    const sql = String(query.mock.calls[2]![0])
-    expect(sql).toContain("block.reason = 'human_reply'")
-    expect(sql).toContain('source.created_at > block.created_at')
-    expect(sql).toContain("OR block.reason = 'agent_handoff'")
-    expect(sql).toContain('myinvest_outbound_id')
-    expect(sql).toContain('myinvest_history_author')
-    expect(sql).toContain('NOT EXISTS (\n                SELECT 1 FROM messages AS human')
-    expect(sql).toContain("IN ('handoff_note', 'handoff_ack')")
-    expect(sql).toContain('delivery.updated_at = state.updated_at')
-    expect(sql).toContain('conversation.assignee_id IS NULL OR conversation.assignee_id = ANY($6::bigint[])')
-    expect(sql).toContain("SET status = 'active'")
-    expect(query.mock.calls[2]![1]).toEqual(['saas', 77, 101, 17, 55, [7]])
+    const chatwootSql = String(chatwootQuery.mock.calls[0]![0])
+    expect(chatwootSql).toContain('FROM conversations AS conversation')
+    expect(chatwootSql).not.toMatch(/agent_(?:auto_send|conversation_states|delivery_ledger)/)
+    expect(chatwootQuery.mock.calls[0]![1]).toEqual([101, 77, 17, 55])
+    const agentSql = agentQuery.mock.calls.map((call) => String(call[0])).join('\n')
+    expect(agentSql).not.toMatch(/\b(?:conversations|messages)\b/)
+    expect(agentSql).toContain("reason IN ('human_reply', 'agent_handoff')")
+    expect(agentSql).toContain("SET status = 'active'")
+  })
+
+  it('stays locked without Chatwoot access, for a human reply, a foreign assignee or a block-only handoff', async () => {
+    const facts = { assignee_id: null, source_epoch: 200, automated_outbound: false, human_reply: false, handoff_note: false, draft_delivery_ids: [] }
+    const run = async (row: Record<string, unknown>, state: Record<string, unknown>, chatwoot = true) => {
+      const agentQuery = vi.fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [state] })
+        .mockResolvedValue({ rows: [] })
+      const log = new PostgresAutoSendLog(
+        { query: vi.fn(), connect: vi.fn().mockResolvedValue({ query: agentQuery, release: vi.fn() }) },
+        undefined,
+        chatwoot ? { query: vi.fn().mockResolvedValue({ rows: [row] }) } : undefined,
+      )
+      return log.reconcileStaleHumanReply({ tenantKey: 'saas', conversationId: 77, accountId: 101, inboxId: 17, currentMessageId: 55, releasableAssigneeIds: [7] })
+    }
+    const handedOff = { block_reason: 'agent_handoff', block_epoch: 100, state_status: 'handed_off', draft_proven: true }
+    expect(await run(facts, handedOff)).toBe(true)
+    expect(await run(facts, handedOff, false)).toBe(false)
+    expect(await run({ ...facts, human_reply: true }, handedOff)).toBe(false)
+    expect(await run({ ...facts, assignee_id: 9 }, handedOff)).toBe(false)
+    expect(await run(facts, { ...handedOff, state_status: null, draft_proven: false })).toBe(false)
+    expect(await run(facts, { ...handedOff, block_epoch: 300 })).toBe(false)
+    expect(await run(facts, { ...handedOff, block_reason: 'human_only_label' })).toBe(false)
   })
 })
 
