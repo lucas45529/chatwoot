@@ -74,3 +74,13 @@ it('never records feedback for a conversation with conflicting product metadata'
   expect(connect).not.toHaveBeenCalled()
   expect(result).toMatchObject({ corrected: 0, undecided: 1 })
 })
+
+it('counts a WhatsApp phone echo as a human reply, like the answer path', async () => {
+  const query = vi.fn().mockResolvedValueOnce({ rows: [{ id: '1', tenant_key: 'saas', conversation_id: '77', message_id: '55', sent_at: new Date(Date.now() - 3600000) }] }).mockResolvedValue({ rows: [] })
+  const chatQuery = vi.fn().mockResolvedValue({ rows: [] })
+  await runAutoSendFeedbackSweep({ agentPool: { query, connect: vi.fn() } as unknown as LearningPool & { query: typeof query }, chatwootPool: { query: chatQuery }, tenants: { requireByKey: () => ({ accountId: 101 }) } as unknown as TenantRegistry })
+  const sql = String(chatQuery.mock.calls[0]?.[0])
+  expect(sql).toContain("reply.sender_type IS NULL")
+  expect(sql).toContain("->> 'external_echo' IS NOT NULL")
+  expect(sql).toContain('reply.message_type = 1')
+})

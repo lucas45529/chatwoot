@@ -101,7 +101,10 @@ export async function runAutoSendFeedbackSweep(input: {
                   FROM messages AS reply
                  WHERE reply.account_id = $1
                    AND reply.conversation_id = conversation.id
-                   AND reply.sender_type = 'User'
+                   AND reply.message_type = 1
+                   AND (reply.sender_type = 'User'
+                     OR (reply.sender_type IS NULL
+                       AND ${messageAttributesSql('reply')} ->> 'external_echo' IS NOT NULL))
                    AND reply.private = false
                    AND NOT COALESCE(reply.additional_attributes ? 'campaign_id', false)
                    AND NOT ${myinvestAutomatedOutboundSql('reply')}
