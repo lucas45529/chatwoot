@@ -74,6 +74,7 @@ export class MessageProcessor {
           accountId: number
           inboxId: number
           currentMessageId: number
+          releasableAssigneeIds?: readonly number[]
         }): Promise<boolean>
       }
       conversationLock: ConversationProcessingLock
@@ -230,6 +231,7 @@ export class MessageProcessor {
         accountId: tenant.accountId,
         inboxId: tenant.inboxId,
         currentMessageId: payload.id,
+        releasableAssigneeIds: [tenant.handoffAssigneeId],
       })
     ) {
       wasHandedOff = false

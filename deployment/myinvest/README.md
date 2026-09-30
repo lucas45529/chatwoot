@@ -160,7 +160,11 @@ ein Entwurf oder eine sichtbare Übergabe. Deterministische Begrüßungen laufen
 durch denselben Kill-Switch-, Limit-, Human-Lock- und Audit-Pfad.
 Nach einer Übergabe und bei Human-only-Labels erzeugt jede neue
 Kundennachricht weiterhin einen kategorisierten Composer-Entwurf; nur der
-öffentliche Versand bleibt dauerhaft gesperrt.
+öffentliche Versand bleibt gesperrt. Ausnahme: Eine reine Entwurfs-Übergabe
+ohne Übergabenotiz, ohne menschliche Antwort und ohne fremde Zuweisung (nur
+der Review-Assignee des Tenants) wird bei der nächsten Kundennachricht wieder
+freigegeben; so hängen Gespräche aus dem früheren Freigabezwang nicht ewig
+im Entwurfsmodus.
 Auch der erste Gehirn-Handoff schreibt den geprüften Antworttext in den
 Composer, bevor der sichtbare Übergabehinweis an den Kunden geht.
 Für diese Human-in-the-loop-Fälle signiert der Agent `reviewOnly: true`; das

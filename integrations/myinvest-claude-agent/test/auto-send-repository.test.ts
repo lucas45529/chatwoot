@@ -268,18 +268,20 @@ describe('PostgresAutoSendLog reservation', () => {
     })
     expect(await log.reconcileStaleHumanReply({
       tenantKey: 'saas', conversationId: 77, accountId: 101, inboxId: 17, currentMessageId: 55,
+      releasableAssigneeIds: [7],
     })).toBe(true)
     const sql = String(query.mock.calls[2]![0])
     expect(sql).toContain("block.reason = 'human_reply'")
     expect(sql).toContain('source.created_at > block.created_at')
+    expect(sql).toContain("OR block.reason = 'agent_handoff'")
     expect(sql).toContain('myinvest_outbound_id')
     expect(sql).toContain('myinvest_history_author')
     expect(sql).toContain('NOT EXISTS (\n                SELECT 1 FROM messages AS human')
     expect(sql).toContain("IN ('handoff_note', 'handoff_ack')")
     expect(sql).toContain('delivery.updated_at = state.updated_at')
-    expect(sql).toContain('conversation.assignee_id IS NULL')
+    expect(sql).toContain('conversation.assignee_id IS NULL OR conversation.assignee_id = ANY($6::bigint[])')
     expect(sql).toContain("SET status = 'active'")
-    expect(query.mock.calls[2]![1]).toEqual(['saas', 77, 101, 17, 55])
+    expect(query.mock.calls[2]![1]).toEqual(['saas', 77, 101, 17, 55, [7]])
   })
 })
 

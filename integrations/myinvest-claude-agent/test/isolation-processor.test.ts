@@ -829,6 +829,7 @@ describe('MessageProcessor auto-send', () => {
     await stale.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
     expect(stale.autoSend.reconcileStaleHumanReply).toHaveBeenCalledWith({
       tenantKey: 'saas', conversationId: 77, accountId: 101, inboxId: 17, currentMessageId: 55,
+      releasableAssigneeIds: [tenants[0]!.handoffAssigneeId],
     })
     expect(stale.sendMessage).toHaveBeenCalledOnce()
   })

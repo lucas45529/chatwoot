@@ -306,25 +306,27 @@ export class PostgresAutoSendLog implements AutoSendLog {
     })
   }
 
-  /** Repair only the old bot-as-User false positive, with full Chatwoot history
-   * and the block/state mutation evaluated under the same conversation lock. */
+  /** Repairs two stale locks, with full Chatwoot history and the block/state
+   * mutation evaluated under the same conversation lock:
+   * - the old bot-as-User false positive (`human_reply` without any human text);
+   * - a draft-only handoff (`agent_handoff` block and/or `handed_off` state that
+   *   only ever produced a composer draft) that no human answered, e.g. from the
+   *   former forced-approval regime. Real handoffs with a note stay locked. */
   async reconcileStaleHumanReply(input: {
     tenantKey: TenantKey
     conversationId: number
     accountId: number
     inboxId: number
     currentMessageId: number
+    /** Assignees the agent itself sets on review (never a person who took over). */
+    releasableAssigneeIds?: readonly number[]
   }): Promise<boolean> {
     return transaction(this.database, async (client) => {
       await lockConversationTransaction(client, input.tenantKey, input.conversationId)
       const result = await client.query<{ cleared: boolean }>(
         `WITH eligible AS MATERIALIZED (
-           SELECT block.tenant_key, block.conversation_id
-             FROM agent_auto_send_blocks AS block
-             JOIN conversations AS conversation
-               ON conversation.account_id = $3
-              AND conversation.display_id = $2
-              AND conversation.inbox_id = $4
+           SELECT $1::text AS tenant_key, $2::bigint AS conversation_id
+             FROM conversations AS conversation
              JOIN messages AS source
                ON source.id = $5
               AND source.account_id = conversation.account_id
@@ -332,17 +334,27 @@ export class PostgresAutoSendLog implements AutoSendLog {
               AND source.inbox_id = conversation.inbox_id
               AND source.message_type = 0 AND source.private = false
               AND (source.sender_type IS NULL OR source.sender_type = 'Contact')
-            WHERE block.tenant_key = $1 AND block.conversation_id = $2
-              AND block.reason = 'human_reply'
-              AND source.created_at > block.created_at
-              AND conversation.assignee_id IS NULL
-              AND EXISTS (
-                SELECT 1 FROM messages AS automated
-                 WHERE automated.account_id = conversation.account_id
-                   AND automated.conversation_id = conversation.id
-                   AND automated.inbox_id = conversation.inbox_id
-                   AND automated.message_type = 1 AND automated.private = false
-                   AND ${myinvestAutomatedOutboundSql('automated')}
+             LEFT JOIN agent_auto_send_blocks AS block
+               ON block.tenant_key = $1 AND block.conversation_id = $2
+            WHERE conversation.account_id = $3
+              AND conversation.display_id = $2
+              AND conversation.inbox_id = $4
+              AND (conversation.assignee_id IS NULL OR conversation.assignee_id = ANY($6::bigint[]))
+              AND (block.created_at IS NULL OR source.created_at > block.created_at)
+              AND (
+                (block.reason = 'human_reply' AND EXISTS (
+                  SELECT 1 FROM messages AS automated
+                   WHERE automated.account_id = conversation.account_id
+                     AND automated.conversation_id = conversation.id
+                     AND automated.inbox_id = conversation.inbox_id
+                     AND automated.message_type = 1 AND automated.private = false
+                     AND ${myinvestAutomatedOutboundSql('automated')}
+                ))
+                OR block.reason = 'agent_handoff'
+                OR (block.reason IS NULL AND EXISTS (
+                  SELECT 1 FROM agent_conversation_states AS state
+                   WHERE state.tenant_key = $1 AND state.conversation_id = $2
+                     AND state.status = 'handed_off'))
               )
               AND NOT EXISTS (
                 SELECT 1 FROM messages AS human
@@ -386,25 +398,32 @@ export class PostgresAutoSendLog implements AutoSendLog {
                  WHERE state.tenant_key = $1 AND state.conversation_id = $2
                    AND state.status = 'handed_off'
                    AND delivery.status = 'handed_off'
-                   AND delivery.updated_at >= block.created_at
+                   AND (block.created_at IS NULL OR delivery.updated_at >= block.created_at)
                 )
               )
          ), cleared AS (
            DELETE FROM agent_auto_send_blocks AS block USING eligible
             WHERE block.tenant_key = eligible.tenant_key
               AND block.conversation_id = eligible.conversation_id
-              AND block.reason = 'human_reply'
-           RETURNING block.tenant_key, block.conversation_id
+              AND block.reason IN ('human_reply', 'agent_handoff')
+           RETURNING 1
          ), activated AS (
            UPDATE agent_conversation_states AS state SET status = 'active', updated_at = now()
-             FROM cleared
-            WHERE state.tenant_key = cleared.tenant_key
-              AND state.conversation_id = cleared.conversation_id
+             FROM eligible
+            WHERE state.tenant_key = eligible.tenant_key
+              AND state.conversation_id = eligible.conversation_id
               AND state.status = 'handed_off'
            RETURNING 1
          )
-         SELECT EXISTS (SELECT 1 FROM cleared) AS cleared`,
-        [input.tenantKey, input.conversationId, input.accountId, input.inboxId, input.currentMessageId],
+         SELECT (EXISTS (SELECT 1 FROM cleared) OR EXISTS (SELECT 1 FROM activated)) AS cleared`,
+        [
+          input.tenantKey,
+          input.conversationId,
+          input.accountId,
+          input.inboxId,
+          input.currentMessageId,
+          [...(input.releasableAssigneeIds ?? [])],
+        ],
       )
       return result.rows[0]?.cleared === true
     })
