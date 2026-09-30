@@ -246,6 +246,14 @@ describe('MessageProcessor', () => {
     errorSpy.mockRestore()
     expect(down.sendMessage).toHaveBeenCalledWith(tenants[0], 77, greeting, 55, 'answer')
 
+    // An unproven clarify the send path would reject must not silence the nudge.
+    const unprovenClarify = setup({ answer: { ...BRAIN_ANSWER, action: 'clarify', safeToAutoSend: true }, autoSendEnabled: true, trustedSource: true, context: academy })
+    verified(unprovenClarify, 'Moin')
+    const floorLog = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await unprovenClarify.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Moin' }) })
+    floorLog.mockRestore()
+    expect(unprovenClarify.sendMessage).toHaveBeenCalledWith(tenants[0], 77, greeting, 55, 'answer')
+
     // Without a verified source the agent answers on its own, as before.
     const unverified = setup({ autoSendEnabled: true, context: academy })
     await unverified.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Moin' }) })

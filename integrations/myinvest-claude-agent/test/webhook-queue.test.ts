@@ -32,6 +32,16 @@ describe('WebhookController', () => {
     logSpy.mockRestore()
   })
 
+  it('answers status events 200 and rejects unsigned junk without logging', async () => {
+    const enqueue = vi.fn().mockResolvedValue(undefined)
+    const controller = new WebhookController({ tenants: buildTenantRegistry(tenants), queue: { enqueue }, replayWindowSeconds: 300, now: () => nowMs })
+    const statusEvent = { event: 'conversation_updated', account: { id: incomingPayload().account.id }, id: 77, created_at: 1790000000 }
+    const raw = JSON.stringify(statusEvent)
+    expect(await controller.handle(raw, signedHeaders(raw, tenants[0]!.webhookSecret, nowMs))).toEqual({ status: 200, body: { accepted: false } })
+    await expect(controller.handle('{}', {})).rejects.toBeInstanceOf(SyntaxError)
+    expect(enqueue).not.toHaveBeenCalled()
+  })
+
   it('queues only signed incoming message_created events', async () => {
     const enqueue = vi.fn().mockResolvedValue(undefined)
     const controller = new WebhookController({ tenants: buildTenantRegistry(tenants), queue: { enqueue }, replayWindowSeconds: 300, now: () => nowMs })

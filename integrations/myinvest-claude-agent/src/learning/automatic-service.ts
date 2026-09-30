@@ -105,11 +105,20 @@ export function cleanSourceText(text: string): string {
   return dates.restore(cleanInput(dates.text).text)
 }
 
-function cleanSource(source: AutomaticLearningSource): z.infer<typeof provenanceSchema> {
-  const question = cleanSourceText(source.question)
-  const previousDraft = cleanSourceText(source.previousDraft)
-  const correctedAnswer = cleanSourceText(source.correctedAnswer)
-  const history = source.history.map((turn) => ({ role: turn.role, text: cleanSourceText(turn.text) }))
+/** Cleaner before 2026-09-30: full dates became [TELEFON/NUMMER]. Only used to
+ * recognise provenance stored by that version on recheck. */
+function legacyCleanSourceText(text: string): string {
+  return cleanInput(text).text
+}
+
+function cleanSource(
+  source: AutomaticLearningSource,
+  clean: (text: string) => string = cleanSourceText,
+): z.infer<typeof provenanceSchema> {
+  const question = clean(source.question)
+  const previousDraft = clean(source.previousDraft)
+  const correctedAnswer = clean(source.correctedAnswer)
+  const history = source.history.map((turn) => ({ role: turn.role, text: clean(turn.text) }))
   return provenanceSchema.parse({
     kind: 'automatic_source', source: source.source, contentHash: source.contentHash,
     question, previousDraft, correctedAnswer, ...(history.length ? { history } : {}), channel: source.channel,
@@ -396,8 +405,13 @@ export class AutomaticLearningService {
         }
         throw error
       }
-      const currentSource = cleanSource(current)
-      if (current.tenant !== command.tenant || JSON.stringify(currentSource) !== JSON.stringify(provenance.data)) {
+      // An unchanged source must match whichever cleaner stored its provenance;
+      // otherwise every dated example stored before 2026-09-30 would be retired.
+      const stored = JSON.stringify(provenance.data)
+      const unchanged =
+        JSON.stringify(cleanSource(current)) === stored ||
+        JSON.stringify(cleanSource(current, legacyCleanSourceText)) === stored
+      if (current.tenant !== command.tenant || !unchanged) {
         await this.reject(client, candidate, command.tenant, command.leaseId, 'automatic_learning_source_changed')
         return { status: 'rejected' as const, id: candidate.id }
       }

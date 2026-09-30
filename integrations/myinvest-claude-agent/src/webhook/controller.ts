@@ -35,7 +35,10 @@ export class WebhookController {
 
   async handle(rawBody: string, headers: WebhookHeaders) {
     const parsedUnknown: unknown = JSON.parse(rawBody)
-    const accountShape = chatwootWebhookAccountSchema.parse(parsedUnknown)
+    const account = chatwootWebhookAccountSchema.safeParse(parsedUnknown)
+    // Unsigned junk is not a customer message: reject quietly, like bad JSON.
+    if (!account.success) throw new SyntaxError('Invalid Chatwoot account envelope')
+    const accountShape = account.data
     const tenant = this.dependencies.tenants.requireByAccountId(accountShape.account.id)
     const timestamp = requiredHeader(headers, 'x-chatwoot-timestamp')
     const signature = requiredHeader(headers, 'x-chatwoot-signature')
@@ -51,6 +54,12 @@ export class WebhookController {
       nowMs: this.dependencies.now?.() ?? Date.now(),
       replayWindowSeconds: this.dependencies.replayWindowSeconds,
     })
+    // Status events (conversation_updated, conversation_resolved, ...) reach the
+    // same URL with a different shape; only message_created is a customer message.
+    const event = (parsedUnknown as { event?: unknown }).event
+    if (event !== 'message_created') {
+      return { status: 200, body: { accepted: false } } as const
+    }
     const payload = chatwootWebhookSchema.parse(parsedUnknown)
     if (
       payload.event !== 'message_created' ||

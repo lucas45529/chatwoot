@@ -470,9 +470,19 @@ export class MessageProcessor {
       }
     }
 
-    // A safe brain reply (answer or bound calendar clarification) wins; anything
-    // else falls back to the greeting the agent sent before, visibly logged.
-    if (presenceAnswer && answer !== presenceAnswer && (answer.action === 'handoff' || !answer.safeToAutoSend)) {
+    const binding = executionContext ? { requestId: supportBrainRequestId(this.dependencies.pseudonymizationKey, tenant.accountId, payload.id), sourceMessageId: executionContext.sourceMessageId, reviewOnly: reviewOnly || !this.dependencies.autoSendEnabled } : undefined
+    // The brain's reply only replaces the greeting when it would really go out
+    // (same verdict as the send path); otherwise the greeting is sent, logged.
+    if (
+      presenceAnswer &&
+      answer !== presenceAnswer &&
+      autoSendDecision({
+        enabled: this.dependencies.autoSendEnabled,
+        humanInConversation: humanOwned,
+        answer,
+        binding,
+      }) !== 'auto_send'
+    ) {
       console.log(
         JSON.stringify({
           event: 'agent_presence_floor',
@@ -490,7 +500,6 @@ export class MessageProcessor {
       return
     }
 
-    const binding = executionContext ? { requestId: supportBrainRequestId(this.dependencies.pseudonymizationKey, tenant.accountId, payload.id), sourceMessageId: executionContext.sourceMessageId, reviewOnly: reviewOnly || !this.dependencies.autoSendEnabled } : undefined
     const documentApproved = documentAssistance && hasBoundAutomation(answer, binding) && (answer.automation?.kind === 'document_verification' || answer.automation?.kind === 'document_access')
     const verdict: AutoSendVerdict | 'manual_review' = reviewOnly || (documentAssistance && !documentApproved)
       ? 'manual_review'
