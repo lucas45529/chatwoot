@@ -61,3 +61,13 @@ describe('automatic learning contract', () => {
     expect(connect).not.toHaveBeenCalled()
   })
 })
+
+describe('automatic source text cleaning', () => {
+  it('keeps full calendar dates but still redacts phone numbers', async () => {
+    const { cleanSourceText } = await import('../src/learning/automatic-service.js')
+    expect(cleanSourceText('Dein Termin am 12.10.2026 um 14:30 Uhr, ruf 0171 2345678 an.')).toBe(
+      'Dein Termin am 12.10.2026 um 14:30 Uhr, ruf [TELEFON/NUMMER]an.',
+    )
+    expect(cleanSourceText('Termin 2026-10-12 bestätigt.')).toBe('Termin 2026-10-12 bestätigt.')
+  })
+})

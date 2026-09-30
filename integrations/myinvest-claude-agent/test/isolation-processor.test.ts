@@ -220,7 +220,15 @@ describe('MessageProcessor', () => {
     verified(brainAnswer, 'Moin')
     await brainAnswer.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Moin' }) })
     expect(brainAnswer.answer).toHaveBeenCalledOnce()
+    expect(brainAnswer.answer.mock.calls[0]?.[1]).toBeInstanceOf(AbortSignal)
     expect(brainAnswer.sendMessage).toHaveBeenCalledWith(tenants[0], 77, withAppointment, 55, 'answer')
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const handedOver = setup({ answer: { ...BRAIN_ANSWER, action: 'handoff', safeToAutoSend: false }, autoSendEnabled: true, trustedSource: true, context: academy })
+    verified(handedOver, 'Moin')
+    await handedOver.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Moin' }) })
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('agent_presence_floor'))
+    logSpy.mockRestore()
 
     // Brain unavailable or not cleared for auto-send: today's greeting still goes out.
     const greeting = 'Hey, ja — wir sind da. Wie können wir dir helfen?'
@@ -1510,6 +1518,32 @@ describe('source-bound routine automation', () => {
       error: new Error('boom'),
     })).resolves.toBeUndefined()
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('agent_final_failure_handoff_failed'))
+    errorSpy.mockRestore()
+  })
+
+  it('opens and assigns even when the final-failure note cannot be written', async () => {
+    const f = setup()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    f.handoff.mockRejectedValueOnce(new Error('open failed'))
+    await f.processor.recordFinalFailure({ tenant: tenants[0]!, payload: incomingPayload(), error: new Error('x') })
+    expect(f.assign).toHaveBeenCalledOnce()
+    expect(f.sendPrivateNote).toHaveBeenCalledOnce()
+    f.sendPrivateNote.mockRejectedValueOnce(new Error('note failed'))
+    await f.processor.recordFinalFailure({ tenant: tenants[0]!, payload: incomingPayload(), error: new Error('x') })
+    expect(f.handoff).toHaveBeenCalledTimes(2)
+    expect(f.assign).toHaveBeenCalledTimes(2)
+    errorSpy.mockRestore()
+  })
+
+  it('keeps the lock and still answers as a draft when the stale-lock repair fails', async () => {
+    const f = setup({ autoSendEnabled: true, answer: SAFE_ANSWER, trustedSource: true })
+    f.autoSend.reconcileStaleHumanReply.mockRejectedValueOnce(new Error('relation "conversations" does not exist'))
+    f.state.isHandedOff.mockResolvedValue(true)
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await expect(f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })).resolves.toBeUndefined()
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('agent_reconcile_failed'))
+    expect(f.sendMessage).not.toHaveBeenCalled()
+    expect(f.saveDraft).toHaveBeenCalled()
     errorSpy.mockRestore()
   })
 })

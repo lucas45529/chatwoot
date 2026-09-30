@@ -14,7 +14,7 @@ import {
 } from './automatic-schema.js'
 import type { AutomaticLearningCursor, AutomaticLearningDiscovery, AutomaticLearningSource } from './automatic-source.js'
 import { cleanInput } from './review-service.js'
-import { likelyNamedGreeting, nonReusableSupportText } from './extractor.js'
+import { likelyNamedGreeting, nonReusableSupportText, protectCalendarDates } from './extractor.js'
 
 export const AUTOMATIC_LEARNING_ACTOR = 'automatic-support-learning'
 export const AUTOMATIC_LEARNING_NAMESPACE = 'automatic-support-learning-v1'
@@ -97,11 +97,19 @@ export function automaticProposalHash(proposal: AutomaticLearningProposal): stri
   ].join('\0')).digest('hex')
 }
 
+/** Same perimeter as manual review, but calendar dates survive: the website
+ * turns them into [DATUM]; the phone rule would otherwise make every full date
+ * an unresolved [TELEFON/NUMMER] and the case would be rejected. */
+export function cleanSourceText(text: string): string {
+  const dates = protectCalendarDates(text)
+  return dates.restore(cleanInput(dates.text).text)
+}
+
 function cleanSource(source: AutomaticLearningSource): z.infer<typeof provenanceSchema> {
-  const question = cleanInput(source.question).text
-  const previousDraft = cleanInput(source.previousDraft).text
-  const correctedAnswer = cleanInput(source.correctedAnswer).text
-  const history = source.history.map((turn) => ({ role: turn.role, text: cleanInput(turn.text).text }))
+  const question = cleanSourceText(source.question)
+  const previousDraft = cleanSourceText(source.previousDraft)
+  const correctedAnswer = cleanSourceText(source.correctedAnswer)
+  const history = source.history.map((turn) => ({ role: turn.role, text: cleanSourceText(turn.text) }))
   return provenanceSchema.parse({
     kind: 'automatic_source', source: source.source, contentHash: source.contentHash,
     question, previousDraft, correctedAnswer, ...(history.length ? { history } : {}), channel: source.channel,

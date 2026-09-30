@@ -30,6 +30,9 @@ import { directSupportReply, handoffNote, normalizeForTriage, triage, type Triag
  * gehoert einem Menschen. `termin` und `zugang` stehen bewusst nicht hier — die
  * Gehirn-Policy entscheidet dort inhaltlich.
  */
+/** A greeting must not wait for the full brain budget (65 s plus one retry). */
+const PRESENCE_BRAIN_TIMEOUT_MS = 10_000
+
 const HUMAN_ONLY_LABELS: Record<string, true> = {
   sicherheitsverdacht: true,
   datenschutz: true,
@@ -120,26 +123,61 @@ export class MessageProcessor {
       }),
     )
     const { chatwoot } = this.dependencies
-    try {
-      await chatwoot.sendPrivateNote(
+    // Each step on its own, most important first: an opened conversation is
+    // visible even when the note or the assignment fails.
+    const steps: Array<[string, () => Promise<unknown>]> = [
+      ['open', () => chatwoot.handoff(tenant, conversationId)],
+      ['assign', () => chatwoot.assign(tenant, conversationId, tenant.handoffAssigneeId)],
+      ['note', () => chatwoot.sendPrivateNote(
         tenant,
         conversationId,
         'Der KI-Agent konnte diese Nachricht nicht verarbeiten (technischer Fehler nach allen Wiederholungen). Bitte persönlich antworten.',
         payload.id,
         'handoff_note',
-      )
-      await chatwoot.assign(tenant, conversationId, tenant.handoffAssigneeId)
-      await chatwoot.handoff(tenant, conversationId)
+      )],
+    ]
+    for (const [step, run] of steps) {
+      try {
+        await run()
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            event: 'agent_final_failure_handoff_failed',
+            step,
+            tenant: tenant.key,
+            conversationId,
+            messageId: payload.id,
+            error: (error instanceof Error ? error.message : String(error)).slice(0, 200),
+          }),
+        )
+      }
+    }
+  }
+
+  /** The stale-lock repair is optional: any error keeps the lock ("stay a draft")
+   * instead of failing the whole customer message. */
+  private async reconcileStaleLockSafely(
+    input: {
+      tenantKey: TenantKey
+      conversationId: number
+      accountId: number
+      inboxId: number
+      currentMessageId: number
+      releasableAssigneeIds: readonly number[]
+    },
+  ): Promise<boolean> {
+    try {
+      return (await this.dependencies.autoSend.reconcileStaleHumanReply?.(input)) === true
     } catch (error) {
       console.error(
         JSON.stringify({
-          event: 'agent_final_failure_handoff_failed',
-          tenant: tenant.key,
-          conversationId,
-          messageId: payload.id,
+          event: 'agent_reconcile_failed',
+          tenant: input.tenantKey,
+          conversationId: input.conversationId,
           error: (error instanceof Error ? error.message : String(error)).slice(0, 200),
         }),
       )
+      return false
     }
   }
 
@@ -225,7 +263,7 @@ export class MessageProcessor {
       !conversationContext.humanRepliedAfterBot &&
       !conversationContext.turns.some((turn) => turn.role === 'human') &&
       !humanOnlyLabel &&
-      await this.dependencies.autoSend.reconcileStaleHumanReply?.({
+      await this.reconcileStaleLockSafely({
         tenantKey: tenant.key,
         conversationId,
         accountId: tenant.accountId,
@@ -370,7 +408,7 @@ export class MessageProcessor {
       answer = presenceAnswer
     } else {
       try {
-        answer = await this.dependencies.brain.answer({
+        const brainRequest: Parameters<SupportBrainPort['answer']>[0] = {
           requestId: supportBrainRequestId(
             this.dependencies.pseudonymizationKey,
             tenant.accountId,
@@ -393,7 +431,10 @@ export class MessageProcessor {
           // A source-bound read can run in a draft; the kill switch must still
           // forbid calendar writes even though the verified source is present.
           ...(reviewOnly || (executionContext && !this.dependencies.autoSendEnabled) ? { reviewOnly: true } : {}),
-        })
+        }
+        answer = presenceViaBrain
+          ? await this.dependencies.brain.answer(brainRequest, AbortSignal.timeout(PRESENCE_BRAIN_TIMEOUT_MS))
+          : await this.dependencies.brain.answer(brainRequest)
       } catch (error) {
         console.error(
           JSON.stringify({
@@ -429,7 +470,18 @@ export class MessageProcessor {
       }
     }
 
-    if (presenceAnswer && (answer.action !== 'answer' || !answer.safeToAutoSend)) {
+    // A safe brain reply (answer or bound calendar clarification) wins; anything
+    // else falls back to the greeting the agent sent before, visibly logged.
+    if (presenceAnswer && answer !== presenceAnswer && (answer.action === 'handoff' || !answer.safeToAutoSend)) {
+      console.log(
+        JSON.stringify({
+          event: 'agent_presence_floor',
+          tenant: tenant.key,
+          conversationId,
+          brainAction: answer.action,
+          brainReason: answer.reason ?? null,
+        }),
+      )
       answer = presenceAnswer
     }
     documentAssistance ||= answer.reason?.startsWith('document_assistance:') === true

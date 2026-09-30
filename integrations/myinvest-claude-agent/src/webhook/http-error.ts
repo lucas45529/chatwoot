@@ -6,6 +6,8 @@ export interface WebhookHttpError {
   status: number
   body: { error: string }
   log: boolean
+  /** Safe log text: never message content, only structure. */
+  detail?: string
 }
 
 export function webhookHttpError(error: unknown): WebhookHttpError {
@@ -16,7 +18,17 @@ export function webhookHttpError(error: unknown): WebhookHttpError {
     // Chatwoot v4.16 retries AgentBot webhooks only for 429 and 500.
     return { status: 500, body: { error: 'queue unavailable' }, log: true }
   }
-  if (error instanceof ZodError || error instanceof SyntaxError) {
+  if (error instanceof ZodError) {
+    // A signed payload that fails the schema is a customer message nobody will
+    // ever see; log where it failed (paths only) so the drop is countable.
+    return {
+      status: 400,
+      body: { error: 'invalid payload' },
+      log: true,
+      detail: `schema:${[...new Set(error.issues.map((issue) => issue.path.join('.') || '(root)'))].slice(0, 5).join(',')}`,
+    }
+  }
+  if (error instanceof SyntaxError) {
     return { status: 400, body: { error: 'invalid payload' }, log: false }
   }
   if (error instanceof Error && error.message.startsWith('Unknown Chatwoot account ID')) {
