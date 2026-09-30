@@ -241,3 +241,15 @@ describe('bounded phone-after-Zoom concept retrieval', () => {
     expect(matchReviewedExamples('Kontakte exportieren', [{ ...fixture(), question: 'Kontakte exportieren nach Excel und mit benutzerdefinierten Feldern für eine CSV-Datei abgleichen' }])).toEqual([])
   })
 })
+
+describe('placeholder-normalised examples', () => {
+  it('matches a concrete appointment question against an example learned with [DATUM]/[UHRZEIT]', () => {
+    const example = {
+      id: '7', tenant: 'saas', status: 'published', reason: '', updatedAt: '',
+      question: 'Kann ich den Termin am [DATUM] um [UHRZEIT] verschieben?',
+      answer: 'Ja, nutze dafür den Link in deiner Terminbestätigung.',
+    }
+    expect(matchReviewedExamples('Kann ich den Termin am 12.10.2026 um 14:30 verschieben?', [example]))
+      .toEqual([{ id: '7', question: example.question, answer: example.answer }])
+  })
+})

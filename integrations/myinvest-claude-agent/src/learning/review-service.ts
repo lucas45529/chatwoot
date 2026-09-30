@@ -53,7 +53,7 @@ function present(row: ReviewCandidate): ReviewCandidate {
   return { id: row.id, tenant: row.tenant, question: row.question, answer: row.answer, status, reason: row.reason, updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt, ...(source.success ? { source: source.data } : {}) }
 }
 
-const STOP_WORDS = new Set('interessent interessenten teilt mitteilt zusendung lautet passende passenden rückmeldung eines erhalt inklusive erhalten bereitgestellt wurde wurden verbindlich dazu bereitgestellt sendet schickt daraufhin lediglich sollte sollten darauf reagiert reagieren werden nachträglich kunde kunden nennt nannte seine seiner sein ihre ihrer bereits obwohl per wäre würde dein deine hey hi gespräch gesprächskontext aktuell danke aber alle alles auch auf aus bei bin bitte das dass dem den der des die diese dieser doch du ein eine einem einen einer es etwas für habe haben hier ich im in ist kann kannst können machen man mein meine mich mir mit muss nach nicht noch nun oder schon sein sind so um und uns vom von vor wann warum was welche welcher welches wenn wer wie wird wir wo zu zum zur'.split(' '))
+const STOP_WORDS = new Set('datum uhrzeit wochentag interessent interessenten teilt mitteilt zusendung lautet passende passenden rückmeldung eines erhalt inklusive erhalten bereitgestellt wurde wurden verbindlich dazu bereitgestellt sendet schickt daraufhin lediglich sollte sollten darauf reagiert reagieren werden nachträglich kunde kunden nennt nannte seine seiner sein ihre ihrer bereits obwohl per wäre würde dein deine hey hi gespräch gesprächskontext aktuell danke aber alle alles auch auf aus bei bin bitte das dass dem den der des die diese dieser doch du ein eine einem einen einer es etwas für habe haben hier ich im in ist kann kannst können machen man mein meine mich mir mit muss nach nicht noch nun oder schon sein sind so um und uns vom von vor wann warum was welche welcher welches wenn wer wie wird wir wo zu zum zur'.split(' '))
 const TERM_ALIASES: Record<string, string> = {
   links: 'link', zugangslink: 'link', meetinglink: 'link',
   bestätigung: 'bestätigt', terminbestätigung: 'bestätigt',
@@ -272,7 +272,11 @@ export class LearningReviewService {
               )
               AND d.active = true AND d.publication_status = 'published' AND d.content_hash = c.content_hash
               AND regexp_split_to_array(lower(c.question_redacted), '[^[:alnum:]]+') && $2::text[]
-            ORDER BY c.published_at DESC, c.id DESC LIMIT 300`, [command.tenant, searchTerms(query)])
+            -- Relevance first: a pure recency cut hid older exact matches behind
+            -- 300 newer examples that only share a single word.
+            ORDER BY (SELECT count(DISTINCT t) FROM unnest(regexp_split_to_array(lower(c.question_redacted), '[^[:alnum:]]+')) AS t
+                WHERE t = ANY($2::text[])) DESC,
+              c.published_at DESC, c.id DESC LIMIT 300`, [command.tenant, searchTerms(query)])
           result = { examples: matchReviewedExamples(query, rows.rows) }
         }
         if (command.action === 'preview') result = { ...(result as { examples: unknown[] }), eligible: previewMatches, candidateMatches: previewMatches, ...(previewMatches ? { candidate: previewCandidate } : {}) }
