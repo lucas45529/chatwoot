@@ -73,6 +73,8 @@ export function directSupportReply(input: string): string | undefined {
     .replace(/[!?.,:;]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+  // A bare "???" is a nudge after silence, not an empty message.
+  if (!normalized && /^\s*\?+\s*$/.test(input)) return SUPPORT_PRESENCE_REPLY
   return PRESENCE_OR_GREETING.test(normalized) ? SUPPORT_PRESENCE_REPLY : undefined
 }
 

@@ -55,6 +55,15 @@ describe('triage', () => {
     ).toBeUndefined()
   })
 
+  it('answers a bare question-mark nudge like a presence check', () => {
+    for (const message of ['???', '?', ' ?? ', 'Hallo???']) {
+      expect(directSupportReply(message)).toBe(
+        'Hey, ja — wir sind da. Wie können wir dir helfen?',
+      )
+    }
+    for (const message of ['...', '!', '']) expect(directSupportReply(message)).toBeUndefined()
+  })
+
   it.each([
     ['Bitte löschen Sie meine Daten nach DSGVO.', 'datenschutz', 'urgent'],
     ['Ich möchte eine Beschwerde einreichen und schalte sonst meinen Anwalt ein.', 'beschwerde', 'urgent'],
