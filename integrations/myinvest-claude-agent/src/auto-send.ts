@@ -8,8 +8,9 @@ import { createHmac } from 'node:crypto'
 import type { TenantKey } from './domain.js'
 import type { SupportBrainAnswer } from './support-brain.js'
 
-/** Ueber dieser Laenge geht nichts automatisch raus, egal was das Gehirn sagt. */
-const MAX_AUTO_SEND_CHARS = 1_200
+/** Ueber dieser Laenge geht nichts automatisch raus, egal was das Gehirn sagt.
+ *  Muss der Gehirn-Grenze AUTO_SEND_MAX_CHARS (answer-policy.ts) entsprechen. */
+const MAX_AUTO_SEND_CHARS = 1_600
 
 export type AutoSendVerdict =
   | 'auto_send'

@@ -1147,7 +1147,7 @@ describe('MessageProcessor auto-send', () => {
     const cases = [
       { verdict: 'conversation_limit', options: { usage: { conversationCount: 3 } } },
       { verdict: 'contact_rate_limit', options: { usage: { contactCountLastHour: 10 } } },
-      { verdict: 'text_too_long', options: { answer: { ...SAFE_ANSWER, text: 'A'.repeat(1_201) } } },
+      { verdict: 'text_too_long', options: { answer: { ...SAFE_ANSWER, text: 'A'.repeat(1_601) } } },
     ]
     for (const { verdict, options } of cases) {
       const limited = setup({ autoSendEnabled: true, answer: SAFE_ANSWER, ...options })
@@ -1181,6 +1181,16 @@ describe('MessageProcessor auto-send', () => {
       55,
       'answer',
     )
+  })
+
+  it('auto-sends answers up to the brain limit of 1600 characters', async () => {
+    // Das Gehirn erlaubt 1600 Zeichen (answer-policy AUTO_SEND_MAX_CHARS); eine
+    // niedrigere Grenze hier machte jede freigegebene 1201-1600-Zeichen-Antwort
+    // stumm zum Entwurf.
+    const longAnswer = { ...SAFE_ANSWER, text: 'A'.repeat(1_600) }
+    const atLimit = setup({ autoSendEnabled: true, answer: longAnswer })
+    await atLimit.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+    expect(atLimit.sendMessage).toHaveBeenCalledWith(tenants[0], 77, longAnswer.text, 55, 'answer')
   })
 
   it('records every automatically sent answer before it leaves the house', async () => {
