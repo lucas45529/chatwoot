@@ -14,10 +14,12 @@ transportiert die signierte Anfrage und setzt das serverseitige Urteil um.
 - Gehirn-Auth: HMAC-SHA256 über `${timestamp}.${requestId}.${rawBody}` mit
   `SUPPORT_ANSWER_SECRET`; Header für Signatur, Zeitstempel und UUID. Der
   Server beansprucht jede UUID dauerhaft. 4xx wird nie wiederholt;
-  Netz/5xx genau einmal mit neuer UUID.
+  Netz/5xx genau einmal mit derselben UUID; der Server liefert dann die
+  gespeicherte Antwort statt einer zweiten Ausführung.
   Antworten werden vor dem Einlesen begrenzt und strikt mit Zod validiert.
-- Die Website entscheidet `safeToAutoSend`; der Agent kann es nie selbst
-  hochstufen. Zusätzlich gelten Kill-Switch, finale Live-Prüfung von Chatwoot
+- Die Website entscheidet `safeToAutoSend`; der Agent stuft es nur für seine
+  eigenen deterministischen Präsenz- und Begrüßungsantworten (etwa auf „Moin“
+  oder „???“) selbst hoch, nie für Gehirn-Antworten. Zusätzlich gelten Kill-Switch, finale Live-Prüfung von Chatwoot
   und AgentState, dauerhafte Sperre nach jeder Menschenantwort sowie atomare
   Obergrenzen je Konversation und Kontakt/Stunde. Eine Transaktionsreservierung
   steht vor jedem öffentlichen Send.
@@ -33,7 +35,7 @@ transportiert die signierte Anfrage und setzt das serverseitige Urteil um.
 ```dotenv
 SUPPORT_ANSWER_URL=https://www.myinvest-pro.de
 SUPPORT_ANSWER_SECRET=<mindestens 32 Zeichen, identisch zur Website>
-SUPPORT_ANSWER_TIMEOUT_MS=25000
+SUPPORT_ANSWER_TIMEOUT_MS=65000
 PSEUDONYMIZATION_KEY=<unabhaengiger Schluessel mit mindestens 32 Zeichen>
 AUTO_SEND_ENABLED=false
 AUTO_SEND_MAX_PER_CONVERSATION=3
@@ -94,8 +96,10 @@ auditiert.
 Der Website-Antwortpfad ruft passende veröffentlichte Beispiele über den
 signierten `/_agent/learning`-Endpunkt ab. Produkt, Kandidat, aktives Dokument,
 Inhalts-Hash und Freigabenachweis müssen zusammenpassen. Ein Datenbankstatus
-allein ist keine Wissensfreigabe. Negative Signale und Redaction-Refresh
-ziehen betroffene Beispiele zurück.
+allein ist keine Wissensfreigabe. Ein Redaction-Refresh zieht betroffene
+Beispiele zurück. Das Korrektursignal des Nachlaufs wird auditiert, zieht aber
+noch kein Beispiel automatisch zurück, weil die genutzten Beispiele je Antwort
+nicht gespeichert werden.
 
 ## Automatic correction learning
 
