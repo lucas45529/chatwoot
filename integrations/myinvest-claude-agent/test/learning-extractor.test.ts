@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractCandidates, redactSupportText } from '../src/learning/extractor.js'
+import { extractCandidates, redactLearningText, redactSupportText, sensitiveTopic } from '../src/learning/extractor.js'
 
 const manifest = {
   schema_version: 2,
@@ -106,5 +106,29 @@ describe('HubSpot knowledge candidate extraction', () => {
       expect(result.text).not.toMatch(/(?:\d[\s()./_+-]*){8,}/)
       expect(result.text).not.toMatch(/Max Mustermann|Maximilian/)
     }
+  })
+})
+
+describe('learning guards for money and appointment data', () => {
+  it.each([
+    'Das kostet neunundvierzig EUR im Monat.',
+    'Du bekommst zwanzig Prozent Nachlass.',
+    'Die Gebühr wird brutto abgerechnet.',
+    'Der Betrag liegt netto bei fünfzig Cent.',
+    'Mit dem Rabatt ist es günstiger.',
+    'Es sind zehn Euro.',
+  ])('treats money wording as sensitive: %s', (text) => {
+    expect(sensitiveTopic.test(text)).toBe(true)
+  })
+
+  it('keeps ordinary appointment wording learnable', () => {
+    expect(sensitiveTopic.test('Dein Termin am Montag um 14:30 Uhr ist bestätigt.')).toBe(false)
+  })
+
+  it('preserves calendar dates but redacts phone numbers and names', () => {
+    expect(redactLearningText('Hallo Max, dein Termin ist am 12.10.2026, ruf 0171 2345678 an.')).toBe(
+      'Hallo [NAME], dein Termin ist am 12.10.2026, ruf [TELEFON/NUMMER]an.',
+    )
+    expect(redactSupportText('Termin am 12.10.2026 um 14:30 Uhr').text).toContain('[TELEFON/NUMMER]')
   })
 })

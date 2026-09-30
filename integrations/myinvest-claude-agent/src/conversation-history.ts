@@ -1,5 +1,5 @@
 import type { ConversationTurn } from './domain.js'
-import { containsResidualPersonalData, redactSupportText } from './learning/extractor.js'
+import { containsResidualPersonalData, protectCalendarDates, redactSupportText } from './learning/extractor.js'
 import { myinvestAutomatedOutboundSql } from './message-provenance.js'
 
 interface HistoryDatabase {
@@ -20,17 +20,13 @@ interface HistoryRow extends Record<string, unknown> {
 // Live context is not reusable training material. Keep valid calendar dates and
 // meeting-link presence, but never the URL token or phone number itself.
 export function redactConversationText(input: string): string {
-  const dates: string[] = []
-  const protectedText = input.replace(/\b(?:https?:\/\/|www\.)\S+/giu, (url) =>
+  const withLinks = input.replace(/\b(?:https?:\/\/|www\.)\S+/giu, (url) =>
     /^https?:\/\/(?:[\w-]+\.)?zoom\.us(?:\/|$)/iu.test(url) ? '[ZOOM-LINK]' : '[LINK]',
-  ).replace(/(?<![\d./-])(?:([0-2]?\d|3[01])\.(0?[1-9]|1[0-2])\.((?:19|20)\d{2})|((?:19|20)\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01]))(?![\d/-]|\.\d)/gu, (date) => {
-    const token = `CALENDARDATE${dates.length}PLACEHOLDER`
-    dates.push(date)
-    return token
-  })
-  const redacted = redactSupportText(protectedText).text.trim()
+  )
+  const protectedDates = protectCalendarDates(withLinks)
+  const redacted = redactSupportText(protectedDates.text).text.trim()
   if (!redacted || containsResidualPersonalData(redacted)) return ''
-  return redacted.replace(/CALENDARDATE(\d+)PLACEHOLDER/gu, (token, index: string) => dates[Number(index)] ?? token)
+  return protectedDates.restore(redacted)
 }
 
 /** One history projection for both live answers and source-bound learning.

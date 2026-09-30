@@ -9,12 +9,12 @@ import type {
   SupportChannel,
 } from '../support-brain.js'
 import {
-  containsResidualPersonalData,
+  containsResidualPersonalDataOutsideDates,
   directPersonalization,
   likelyNamedGreeting,
   likelySecret,
   nonReusableSupportText,
-  redactSupportText,
+  redactLearningText,
   sensitiveTopic,
 } from './extractor.js'
 
@@ -423,8 +423,8 @@ function historyRows(value: unknown): HistoryRow[] {
 function safeHistory(value: unknown): SupportBrainHistoryTurn[] {
   const turns: SupportBrainHistoryTurn[] = []
   for (const row of historyRows(value).slice(-12)) {
-    const redacted = redactSupportText(row.content).text
-    if (!redacted || containsResidualPersonalData(redacted)) continue
+    const redacted = redactLearningText(row.content)
+    if (!redacted) continue
     if (row.message_type === 0 && row.sender_type === 'Contact') {
       turns.push({ role: 'user', text: redacted.slice(0, 1500) })
       continue
@@ -465,9 +465,9 @@ function reusableText(input: {
       correctedAnswer: string
     }
   | undefined {
-  const question = redactSupportText(input.question).text
-  const previousDraft = redactSupportText(input.previousDraft).text
-  const correctedAnswer = redactSupportText(input.correctedAnswer).text
+  const question = redactLearningText(input.question)
+  const previousDraft = redactLearningText(input.previousDraft)
+  const correctedAnswer = redactLearningText(input.correctedAnswer)
   const combined = `${question} ${previousDraft} ${correctedAnswer}`
   if (
     question.length < 8 ||
@@ -476,7 +476,7 @@ function reusableText(input: {
     question.length > 1000 ||
     previousDraft.length > 4000 ||
     correctedAnswer.length > 4000 ||
-    containsResidualPersonalData(combined) ||
+    containsResidualPersonalDataOutsideDates(combined) ||
     sensitiveTopic.test(combined) ||
     likelySecret.test(combined) ||
     directPersonalization.test(combined) ||

@@ -74,7 +74,7 @@ export interface CandidateExtraction {
 // Deckungsgleich mit der Guard-Liste des Prozessors: was live sowieso an
 // Menschen geht (Preis, Vertrag, Kuendigung, ...), soll der Loop nicht lernen.
 export const sensitiveTopic =
-  /\b(?:passwort|kennwort|otp|2fa|tan|kreditkarte|iban|konto(?:nummer)?|rechnung|bezahlen|zahlung|abbuchung|lastschrift|refund|erstattung|preis|kosten|anwalt|recht(?:lich|e|er)?|vertrag|klausel|haftung|widerruf|kündigung|steuer(?:n|lich|beratung)?|rendite|anlageberatung|kaufempfehlung|verkaufsempfehlung|investmentberatung|datenschutz\w*|dsgvo|(?:lösch|loesch)(?:ung|en)|bank(?:verbindung|wechsel)|leads?\s+(?:versprochen|zugesagt))\b/iu
+  /\b(?:passwort|kennwort|otp|2fa|tan|kreditkarte|iban|konto(?:nummer)?|rechnung|bezahlen|zahlung|abbuchung|lastschrift|refund|erstattung|preis|kost(?:en|et)|gebühr(?:en)?|gebuehr(?:en)?|betrag|euro|eur|cent|prozent|rabatt|nachlass|brutto|netto|anwalt|recht(?:lich|e|er)?|vertrag|klausel|haftung|widerruf|kündigung|steuer(?:n|lich|beratung)?|rendite|anlageberatung|kaufempfehlung|verkaufsempfehlung|investmentberatung|datenschutz\w*|dsgvo|(?:lösch|loesch)(?:ung|en)|bank(?:verbindung|wechsel)|leads?\s+(?:versprochen|zugesagt))\b/iu
 export const likelySecret = /\b(?:sk|pk|api|access|secret|token)[-_][a-z0-9_-]{12,}\b/iu
 export const directPersonalization = /\b(?:kundennummer|vertragsnummer|geburtsdatum|anschrift)\b/iu
 export const nonReusableSupportText =
@@ -128,6 +128,40 @@ function redactWithRules(
 
 export function redactSupportText(input: string): { text: string; redactionCount: number } {
   return redactWithRules(input, strictRedactions)
+}
+
+const CALENDAR_DATE =
+  /(?<![\d./-])(?:([0-2]?\d|3[01])\.(0?[1-9]|1[0-2])\.((?:19|20)\d{2})|((?:19|20)\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01]))(?![\d/-]|\.\d)/gu
+
+/** Replaces valid calendar dates (12.10.2026, 2026-10-12) with numbered tokens so
+ * the phone rule of the strict redaction cannot swallow them. */
+export function protectCalendarDates(input: string): { text: string; restore: (value: string) => string } {
+  const dates: string[] = []
+  const text = input.replace(CALENDAR_DATE, (date) => {
+    const token = `CALENDARDATE${dates.length}PLACEHOLDER`
+    dates.push(date)
+    return token
+  })
+  return {
+    text,
+    restore: (value) => value.replace(/CALENDARDATE(\d+)PLACEHOLDER/gu, (token, index: string) => dates[Number(index)] ?? token),
+  }
+}
+
+/** Learning sources: strict redaction, but concrete appointment dates survive so
+ * the website policy can turn them into [DATUM] instead of seeing
+ * "[TELEFON/NUMMER]" and rejecting the whole case. Returns '' when personal data
+ * remains after redaction. */
+export function redactLearningText(input: string): string {
+  const protectedDates = protectCalendarDates(input)
+  const redacted = redactSupportText(protectedDates.text).text
+  if (!redacted || containsResidualPersonalData(redacted)) return ''
+  return protectedDates.restore(redacted)
+}
+
+/** Residual-data check that does not mistake a calendar date for a phone number. */
+export function containsResidualPersonalDataOutsideDates(value: string): boolean {
+  return containsResidualPersonalData(protectCalendarDates(value).text)
 }
 
 function legacyRedactSupportText(input: string): { text: string; redactionCount: number } {

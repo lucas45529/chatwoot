@@ -110,6 +110,42 @@ describe('automatic human-correction provenance', () => {
     expect(values).toContain('2026-09-21T10:00:00.000Z')
   })
 
+  it('keeps appointment dates intact for the website placeholder policy but still redacts phone numbers', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rows: [
+        row({
+          question: 'Kann ich den Termin am 12.10.2026 um 14:30 Uhr verschieben?',
+          draft_note: 'KI-Entwurf\n\nAntwortvorschlag:\nJa, das geht über den Link.\nQuellen: Hilfe',
+          corrected_answer: 'Ja, du kannst den Termin am 12.10.2026 über den Link in der Bestätigung verschieben.',
+          history: [
+            {
+              id: '50',
+              created_at: '2026-09-20T09:59:00.000Z',
+              message_type: 0,
+              sender_type: 'Contact',
+              content: 'Ruf mich an unter 0171 2345678, Termin ist 2026-10-12.',
+              from_automation: false,
+              from_campaign: false,
+              external_echo: false,
+            },
+          ],
+        }),
+      ],
+    })
+    const result = await discoverAutomaticLearningSources(
+      { query },
+      registry,
+      { limit: 10, now: new Date('2026-09-21T10:00:00.000Z') },
+    )
+
+    expect(result.sources[0]).toMatchObject({
+      question: 'Kann ich den Termin am 12.10.2026 um 14:30 Uhr verschieben?',
+      correctedAnswer: 'Ja, du kannst den Termin am 12.10.2026 über den Link in der Bestätigung verschieben.',
+      history: [{ role: 'user', text: 'Ruf mich an unter [TELEFON/NUMMER], Termin ist 2026-10-12.' }],
+    })
+    expect(JSON.stringify(result)).not.toContain('2345678')
+  })
+
   it('uses a strict descending keyset cursor and never scans without a bound', async () => {
     const answerTime = '2026-09-20T10:02:00.000Z'
     const rows = Array.from({ length: 6 }, (_, index) =>
