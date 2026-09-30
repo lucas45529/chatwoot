@@ -345,16 +345,29 @@ export class MessageProcessor {
     // gelten wie im eigenen Account, statt dauerhaft nur Entwurf zu sein.
     const reviewOnly = humanOwned || (outcome.category === 'beratung' && !documentAssistance)
     const directReply = reviewOnly ? undefined : directSupportReply(question)
+    const presenceAnswer: SupportBrainAnswer | undefined = directReply
+      ? {
+          action: 'answer',
+          text: directReply,
+          confidence: 1,
+          sources: [],
+          safeToAutoSend: true,
+          reason: 'deterministic_presence',
+        }
+      : undefined
+    // Academy-WhatsApp: the brain can add the verified next appointment to a
+    // bare "Moin"/"???". The deterministic greeting stays the floor whenever the
+    // brain fails or does not clear its answer for auto-send.
+    const presenceViaBrain = Boolean(
+      presenceAnswer &&
+        executionContext &&
+        this.dependencies.autoSendEnabled &&
+        supportRoute.tenant === 'new_academy' &&
+        supportRoute.channel === 'whatsapp',
+    )
     let answer: SupportBrainAnswer
-    if (directReply) {
-      answer = {
-        action: 'answer',
-        text: directReply,
-        confidence: 1,
-        sources: [],
-        safeToAutoSend: true,
-        reason: 'deterministic_presence',
-      }
+    if (presenceAnswer && !presenceViaBrain) {
+      answer = presenceAnswer
     } else {
       try {
         answer = await this.dependencies.brain.answer({
@@ -392,7 +405,9 @@ export class MessageProcessor {
         )
         // Ein interner Review-Pfad darf den Composer bei einem Gehirnausfall
         // nicht wieder leeren. Der neutrale Ack bleibt ausschließlich intern.
-        if (reviewOnly) {
+        if (presenceAnswer) {
+          answer = presenceAnswer
+        } else if (reviewOnly) {
           answer = {
             action: 'answer',
             text: outcome.customerAck,
@@ -414,6 +429,9 @@ export class MessageProcessor {
       }
     }
 
+    if (presenceAnswer && (answer.action !== 'answer' || !answer.safeToAutoSend)) {
+      answer = presenceAnswer
+    }
     documentAssistance ||= answer.reason?.startsWith('document_assistance:') === true
     if (answer.action === 'handoff' && !humanOwned && !documentAssistance) {
       await handoff('brain_handoff', answer.reason, answer.text, answer.learningSources)

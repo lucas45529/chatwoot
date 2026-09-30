@@ -202,6 +202,49 @@ describe('MessageProcessor', () => {
     expect(central.sendMessage).toHaveBeenCalledWith(centralAccess, 77, answer.text, 55, 'answer')
   })
 
+  it('lets the brain add the next appointment to an Academy presence nudge, with the greeting as floor', async () => {
+    const academy = { supportRouting: { conversationTenant: 'new_academy' as const, conversationChannel: 'whatsapp' as const, sourceTenant: 'new_academy' as const } }
+    const verified = (f: ReturnType<typeof setup>, content: string) => {
+      f.loadCurrentSource.mockResolvedValue({
+        executionContext: { accountId: 101, inboxId: 17, conversationId: 77, sourceMessageId: 55, contactId: 4242, sourceChannel: 'whatsapp', sourceReceivedAt: incomingPayload().created_at, mode: 'customer_message' },
+        content,
+      })
+    }
+    const withAppointment = 'Hey, ja — wir sind da. Hast du noch eine Frage zu deinem Gespräch morgen um 14:00 Uhr?'
+    const brainAnswer = setup({
+      answer: { ...BRAIN_ANSWER, text: withAppointment, safeToAutoSend: true, sources: [] },
+      autoSendEnabled: true,
+      trustedSource: true,
+      context: academy,
+    })
+    verified(brainAnswer, 'Moin')
+    await brainAnswer.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Moin' }) })
+    expect(brainAnswer.answer).toHaveBeenCalledOnce()
+    expect(brainAnswer.sendMessage).toHaveBeenCalledWith(tenants[0], 77, withAppointment, 55, 'answer')
+
+    // Brain unavailable or not cleared for auto-send: today's greeting still goes out.
+    const greeting = 'Hey, ja — wir sind da. Wie können wir dir helfen?'
+    const unsafe = setup({ answer: { ...BRAIN_ANSWER, safeToAutoSend: false }, autoSendEnabled: true, trustedSource: true, context: academy })
+    verified(unsafe, '???')
+    await unsafe.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: '???' }) })
+    expect(unsafe.answer).toHaveBeenCalledOnce()
+    expect(unsafe.sendMessage).toHaveBeenCalledWith(tenants[0], 77, greeting, 55, 'answer')
+
+    const down = setup({ autoSendEnabled: true, trustedSource: true, context: academy })
+    verified(down, 'Moin')
+    down.answer.mockRejectedValue(new Error('brain down'))
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await down.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Moin' }) })
+    errorSpy.mockRestore()
+    expect(down.sendMessage).toHaveBeenCalledWith(tenants[0], 77, greeting, 55, 'answer')
+
+    // Without a verified source the agent answers on its own, as before.
+    const unverified = setup({ autoSendEnabled: true, context: academy })
+    await unverified.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: 'Moin' }) })
+    expect(unverified.answer).not.toHaveBeenCalled()
+    expect(unverified.sendMessage).toHaveBeenCalledWith(tenants[0], 77, greeting, 55, 'answer')
+  })
+
   it('keeps a central-account Academy conversation as a draft while the kill switch is off', async () => {
     const centralAccess = { ...tenants[0]!, accountId: 1, inboxId: 1 }
     const central = setup({
