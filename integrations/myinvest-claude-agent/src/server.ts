@@ -113,13 +113,17 @@ const worker =
         async (job) => {
           const tenant = config.tenants.requireByKey(job.data.tenantKey)
           const maxAttempts = job.opts.attempts ?? 1
+          const isFinalAttempt = job.attemptsMade + 1 >= maxAttempts
           try {
             await processor.process({
               tenant,
               payload: job.data.payload,
-              isFinalAttempt: job.attemptsMade + 1 >= maxAttempts,
+              isFinalAttempt,
             })
           } catch (error) {
+            if (isFinalAttempt) {
+              await processor.recordFinalFailure({ tenant, payload: job.data.payload, error })
+            }
             try {
               await state.failDelivery(tenant.key, job.data.payload.id)
             } catch (stateError) {

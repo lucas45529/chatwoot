@@ -15,6 +15,23 @@ function draftPayload(
 
 describe('WebhookController', () => {
   const nowMs = 1_800_000_000_000
+  it('logs a customer message it does not queue, without logging bot or private noise', async () => {
+    const enqueue = vi.fn().mockResolvedValue(undefined)
+    const controller = new WebhookController({ tenants: buildTenantRegistry(tenants), queue: { enqueue }, replayWindowSeconds: 300, now: () => nowMs })
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const unmarked = incomingPayload()
+    const raw = JSON.stringify(unmarked)
+    expect(await controller.handle(raw, signedHeaders(raw, tenants[0]!.webhookSecret, nowMs))).toEqual({ status: 200, body: { accepted: false } })
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('agent_webhook_ignored'))
+    logSpy.mockClear()
+    const privateNote = draftPayload({ private: true })
+    const privateRaw = JSON.stringify(privateNote)
+    await controller.handle(privateRaw, signedHeaders(privateRaw, tenants[0]!.webhookSecret, nowMs))
+    expect(logSpy).not.toHaveBeenCalled()
+    expect(enqueue).not.toHaveBeenCalled()
+    logSpy.mockRestore()
+  })
+
   it('queues only signed incoming message_created events', async () => {
     const enqueue = vi.fn().mockResolvedValue(undefined)
     const controller = new WebhookController({ tenants: buildTenantRegistry(tenants), queue: { enqueue }, replayWindowSeconds: 300, now: () => nowMs })

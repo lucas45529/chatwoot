@@ -1438,4 +1438,34 @@ describe('source-bound routine automation', () => {
     await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
     expect(f.state.completeHandoff).toHaveBeenCalledWith('saas', 55, 77)
   })
+
+  it('leaves a visible handoff when a job fails for good, so no message ends in silence', async () => {
+    const f = setup()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await f.processor.recordFinalFailure({
+      tenant: tenants[0]!,
+      payload: incomingPayload(),
+      error: new Error('Chatwoot conversation context is unavailable'),
+    })
+    expect(f.sendPrivateNote).toHaveBeenCalledWith(
+      tenants[0],
+      77,
+      expect.stringContaining('konnte diese Nachricht nicht verarbeiten'),
+      55,
+      'handoff_note',
+    )
+    expect(f.assign).toHaveBeenCalledWith(tenants[0], 77, tenants[0]!.handoffAssigneeId)
+    expect(f.handoff).toHaveBeenCalledWith(tenants[0], 77)
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('agent_job_failed_final'))
+
+    // Chatwoot selbst down: nie werfen, aber laut loggen.
+    f.sendPrivateNote.mockRejectedValueOnce(new Error('chatwoot down'))
+    await expect(f.processor.recordFinalFailure({
+      tenant: tenants[0]!,
+      payload: incomingPayload(),
+      error: new Error('boom'),
+    })).resolves.toBeUndefined()
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('agent_final_failure_handoff_failed'))
+    errorSpy.mockRestore()
+  })
 })

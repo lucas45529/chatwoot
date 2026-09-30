@@ -96,6 +96,52 @@ export class MessageProcessor {
     )
   }
 
+  /**
+   * Last resort after the final queue attempt: the job is gone, so the only
+   * trace a human would see is this note. Never throws; a failure here is
+   * logged loudly because the customer message would otherwise stay silent.
+   */
+  async recordFinalFailure(input: {
+    tenant: TenantConfig
+    payload: ChatwootWebhookPayload
+    error: unknown
+  }): Promise<void> {
+    const { tenant, payload } = input
+    const conversationId = payload.conversation.id
+    const message = input.error instanceof Error ? input.error.message : String(input.error)
+    console.error(
+      JSON.stringify({
+        event: 'agent_job_failed_final',
+        tenant: tenant.key,
+        conversationId,
+        messageId: payload.id,
+        error: message.slice(0, 200),
+      }),
+    )
+    const { chatwoot } = this.dependencies
+    try {
+      await chatwoot.sendPrivateNote(
+        tenant,
+        conversationId,
+        'Der KI-Agent konnte diese Nachricht nicht verarbeiten (technischer Fehler nach allen Wiederholungen). Bitte persönlich antworten.',
+        payload.id,
+        'handoff_note',
+      )
+      await chatwoot.assign(tenant, conversationId, tenant.handoffAssigneeId)
+      await chatwoot.handoff(tenant, conversationId)
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: 'agent_final_failure_handoff_failed',
+          tenant: tenant.key,
+          conversationId,
+          messageId: payload.id,
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 200),
+        }),
+      )
+    }
+  }
+
   private async processExclusive(input: {
     tenant: TenantConfig
     payload: ChatwootWebhookPayload

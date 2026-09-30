@@ -58,6 +58,19 @@ export class WebhookController {
       payload.private ||
       payload.agentAction !== 'draft'
     ) {
+      // Only customer messages matter for the "no silent message" audit; bot,
+      // agent and private events are expected noise and stay unlogged.
+      if (payload.event === 'message_created' && payload.message_type === 'incoming' && !payload.private) {
+        console.log(
+          JSON.stringify({
+            event: 'agent_webhook_ignored',
+            reason: 'agent_action_not_draft',
+            tenant: tenant.key,
+            conversationId: payload.conversation.id,
+            messageId: payload.id,
+          }),
+        )
+      }
       return { status: 200, body: { accepted: false } } as const
     }
     try {
