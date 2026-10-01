@@ -1,6 +1,6 @@
 import { DelayedError } from 'bullmq'
 import { describe, expect, it, vi } from 'vitest'
-import { createDeliveryJobHandler, OWNED_DELIVERY_RETRY_DELAY_MS } from '../src/delivery-worker.js'
+import { createDeliveryJobHandler, DELIVERY_WORKER_OPTIONS, OWNED_DELIVERY_RETRY_DELAY_MS } from '../src/delivery-worker.js'
 import { DeliveryOwnedElsewhereError } from '../src/processor.js'
 import { incomingPayload, tenants } from './fixtures.js'
 
@@ -60,6 +60,10 @@ describe('delivery worker', () => {
     const f = setup(error)
     f.state.failDelivery.mockRejectedValueOnce(new Error('db down'))
     await expect(f.handle(f.job as never)).rejects.toBe(error)
+  })
+
+  it('survives more than one worker crash before BullMQ gives up on a job', () => {
+    expect(DELIVERY_WORKER_OPTIONS.maxStalledCount).toBeGreaterThan(1)
   })
 
   it('completes normally when processing succeeds', async () => {

@@ -11,6 +11,13 @@ import type { TenantKey } from './domain.js'
  */
 export const OWNED_DELIVERY_RETRY_DELAY_MS = 5 * 60_000 + 15_000
 
+/**
+ * BullMQ fails a job outright once it has stalled more often than
+ * maxStalledCount (default 1), without running the handler, so no human is
+ * told. Each stall is a crashed worker; allow a few before giving up.
+ */
+export const DELIVERY_WORKER_OPTIONS = { concurrency: 4, maxStalledCount: 3 } as const
+
 type JobLike = Pick<Job<DeliveryJob>, 'id' | 'data' | 'opts' | 'attemptsMade' | 'moveToDelayed'>
 
 export function createDeliveryJobHandler(dependencies: {

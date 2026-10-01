@@ -419,7 +419,7 @@ export class MessageProcessor {
     const reviewOnly = humanOwned || (outcome.category === 'beratung' && !documentAssistance)
     // "???" after an unanswered question is a reminder of that question, not a
     // greeting: the brain answers it from the history instead of "wir sind da".
-    const nudgeOnOpenQuestion = isBareNudge(rawQuestion) && hasOpenCustomerQuestion(conversationContext.turns)
+    const nudgeOnOpenQuestion = isBareNudge(question) && hasOpenCustomerQuestion(conversationContext.turns)
     if (nudgeOnOpenQuestion && !reviewOnly) {
       console.log(
         JSON.stringify({

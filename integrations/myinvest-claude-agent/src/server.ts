@@ -21,7 +21,7 @@ import { discoverAutomaticLearningSources, resolveAutomaticLearningSource } from
 import { ManualDraftService, proposalSchema } from './manual-draft.js'
 import { manualDraftHandler } from './manual-draft-route.js'
 import { autonomyStatusHandler } from './autonomy-status-route.js'
-import { createDeliveryJobHandler } from './delivery-worker.js'
+import { createDeliveryJobHandler, DELIVERY_WORKER_OPTIONS } from './delivery-worker.js'
 import { MessageProcessor } from './processor.js'
 import { DeliveryQueue, QUEUE_NAME, type DeliveryJob } from './queue.js'
 import { PostgresAgentState } from './state.js'
@@ -116,7 +116,7 @@ const worker =
           state,
           requireTenant: (key) => config.tenants.requireByKey(key),
         }),
-        { connection: redis.duplicate(), concurrency: 4 },
+        { connection: redis.duplicate(), ...DELIVERY_WORKER_OPTIONS },
       )
 
 worker?.on('failed', (job, error) =>
