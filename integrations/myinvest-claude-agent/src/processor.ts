@@ -13,7 +13,7 @@ import type { ChatwootPort } from './chatwoot-client.js'
 import type { AudioTranscriptionPort } from './audio-transcription.js'
 import type { ChatwootConversationContextStore } from './chatwoot-delivery-repository.js'
 import type { TenantConfig } from './config.js'
-import type { ChatwootWebhookPayload, ConversationContext, TenantKey } from './domain.js'
+import type { ChatwootWebhookPayload, ConversationContext, ConversationTurn, TenantKey } from './domain.js'
 import type { AgentState } from './state.js'
 import type {
   SupportBrainAnswer,
@@ -23,7 +23,7 @@ import type {
 } from './support-brain.js'
 import { privateLearningReferences } from './support-brain.js'
 import { resolveSupportRoute, type SupportRoute } from './support-routing.js'
-import { directSupportReply, handoffNote, normalizeForTriage, triage, type TriageOutcome } from './triage.js'
+import { directSupportReply, handoffNote, isBareNudge, normalizeForTriage, triage, type TriageOutcome } from './triage.js'
 
 /**
  * Spiegel der humanOnly-Kategorien der Triage: wer eines dieser Labels traegt,
@@ -60,6 +60,40 @@ function isOwnDocumentReview(question: string, outcome: TriageOutcome, labels: r
   if (/\b(?:dringend|urgent|sofort|rechts\w*|rechtlich\w*|berat\w*|klausel\w*|haftung\w*|pruef\w*|kuendig\w*|widerruf\w*|storn\w*|erstatt\w*|kund\w*|fremd\w*)\b/.test(text)) return false
   const residual = triage(text.replace(document, ' '))
   return !residual.humanOnly && residual.category !== 'beratung'
+}
+
+/**
+ * Another run still holds the ledger claim for this message. Within one queue
+ * that is almost always a crashed earlier run of the same job: the queue
+ * retries it after ~30 s, but the claim only expires after five minutes. The
+ * worker must retry after the claim expires instead of completing the job,
+ * otherwise the customer message is dropped without any answer.
+ */
+export class DeliveryOwnedElsewhereError extends Error {
+  constructor(readonly status: 'processing' | 'sending') {
+    super(`Agent delivery is still claimed (${status})`)
+    this.name = 'DeliveryOwnedElsewhereError'
+  }
+}
+
+type CompletedWithoutReplyReason =
+  | 'source_changed_before_answer'
+  | 'source_changed_before_voice_draft'
+  | 'source_changed_before_send'
+  | 'draft_kept_for_automation'
+
+/**
+ * True when the customer's latest substantive message (before the current one)
+ * has not been answered by anyone yet. Trailing nudges and greetings are
+ * skipped; any agent or human turn closes the question.
+ */
+function hasOpenCustomerQuestion(turns: readonly ConversationTurn[]): boolean {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index]!
+    if (turn.role !== 'customer') return false
+    if (!isBareNudge(turn.text) && !directSupportReply(turn.text)) return true
+  }
+  return false
 }
 
 export class MessageProcessor {
@@ -237,6 +271,7 @@ export class MessageProcessor {
             status: delivery.status,
           }),
         )
+        throw new DeliveryOwnedElsewhereError(delivery.status)
       }
       return
     }
@@ -249,7 +284,7 @@ export class MessageProcessor {
       const fresh = await this.dependencies.context.loadCurrentSource({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: conversationId, currentMessageId: payload.id, tenant: supportRoute.tenant, channel: supportRoute.channel })
       const identity = fresh?.executionContext
       if (!identity || identity.accountId !== payload.account.id || identity.accountId !== tenant.accountId || identity.inboxId !== tenant.inboxId || (payload.inboxId !== undefined && identity.inboxId !== payload.inboxId) || identity.conversationId !== conversationId || identity.sourceMessageId !== payload.id || Date.parse(identity.sourceReceivedAt) !== Date.parse(payload.created_at) || fresh.content.trim() !== rawQuestion || payload.event !== 'message_created' || payload.message_type !== 'incoming' || payload.private || payload.agentAction === 'preprocessed') {
-        await this.completeSuperseded(tenant.key, payload.id)
+        await this.completeWithoutReply(tenant.key, conversationId, payload.id, 'source_changed_before_answer')
         return
       }
       executionContext = identity
@@ -338,7 +373,7 @@ export class MessageProcessor {
         (current.hasAudioAttachment === true || Boolean(current.audioAttachment)) !== hasAudioAttachment ||
         current.audioAttachment?.id !== audioAttachment?.id ||
         current.audioAttachment?.byteSize !== audioAttachment?.byteSize) {
-        await this.completeSuperseded(tenant.key, payload.id)
+        await this.completeWithoutReply(tenant.key, conversationId, payload.id, 'source_changed_before_voice_draft')
         return
       }
       const caption = rawQuestion ? `\n\nBegleittext (ungeprüft): „${redactConversationText(rawQuestion)}“` : ''
@@ -382,7 +417,20 @@ export class MessageProcessor {
     // ueber die aufgeloeste Produktroute; ihr Gehirn-Urteil und die Bremsen
     // gelten wie im eigenen Account, statt dauerhaft nur Entwurf zu sein.
     const reviewOnly = humanOwned || (outcome.category === 'beratung' && !documentAssistance)
-    const directReply = reviewOnly ? undefined : directSupportReply(question)
+    // "???" after an unanswered question is a reminder of that question, not a
+    // greeting: the brain answers it from the history instead of "wir sind da".
+    const nudgeOnOpenQuestion = isBareNudge(rawQuestion) && hasOpenCustomerQuestion(conversationContext.turns)
+    if (nudgeOnOpenQuestion && !reviewOnly) {
+      console.log(
+        JSON.stringify({
+          event: 'agent_nudge_open_question',
+          tenant: tenant.key,
+          conversationId,
+          messageId: payload.id,
+        }),
+      )
+    }
+    const directReply = reviewOnly || nudgeOnOpenQuestion ? undefined : directSupportReply(question)
     const presenceAnswer: SupportBrainAnswer | undefined = directReply
       ? {
           action: 'answer',
@@ -555,7 +603,7 @@ export class MessageProcessor {
       )
       return
     }
-    if (retainAutomation && written) await this.completeSuperseded(tenant.key, payload.id)
+    if (retainAutomation && written) await this.completeWithoutReply(tenant.key, conversationId, payload.id, 'draft_kept_for_automation')
     else await this.dependencies.state.completeHandoff(tenant.key, payload.id, conversationId)
   }
 
@@ -563,9 +611,24 @@ export class MessageProcessor {
    * Eine atomare Reservierung beansprucht genau einen Slot. Erst danach wird
    * die live Chatwoot-/AgentState-Autorisierung direkt vor dem Send erneuert.
    */
-  private async completeSuperseded(tenant: TenantKey, messageId: number): Promise<void> {
+  private async completeWithoutReply(
+    tenant: TenantKey,
+    conversationId: number,
+    messageId: number,
+    reason: CompletedWithoutReplyReason,
+  ): Promise<void> {
     if (!this.dependencies.state.completeWithoutReply) throw new Error('Source changed; terminal completion unavailable')
     await this.dependencies.state.completeWithoutReply(tenant, messageId)
+    // Without this line a dropped reply leaves no trace for the operator.
+    console.log(
+      JSON.stringify({
+        event: 'agent_delivery_completed_without_reply',
+        reason,
+        tenant,
+        conversationId,
+        messageId,
+      }),
+    )
   }
 
   private async autoAnswer(input: {
@@ -676,7 +739,7 @@ export class MessageProcessor {
     if (this.dependencies.context.loadCurrentSource) {
       const current = await this.dependencies.context.loadCurrentSource({ accountId: tenant.accountId, inboxId: tenant.inboxId, conversationDisplayId: conversationId, currentMessageId: deliveryId, tenant: input.productTenant, channel: input.productChannel })
       if (!current || JSON.stringify(current.executionContext) !== JSON.stringify(input.executionContext) || redactConversationText(current.content.trim()) !== input.question) {
-        await this.completeSuperseded(tenant.key, deliveryId)
+        await this.completeWithoutReply(tenant.key, conversationId, deliveryId, 'source_changed_before_send')
         return
       }
     }

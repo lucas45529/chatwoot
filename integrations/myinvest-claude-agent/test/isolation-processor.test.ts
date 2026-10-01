@@ -8,7 +8,7 @@ import {
 } from '../src/auto-send.js'
 import type { ConversationContext, TenantKey } from '../src/domain.js'
 import { PostgresKnowledgeRepository } from '../src/knowledge/repository.js'
-import { MessageProcessor } from '../src/processor.js'
+import { DeliveryOwnedElsewhereError, MessageProcessor } from '../src/processor.js'
 import type { SupportBrainAnswer } from '../src/support-brain.js'
 import { triage } from '../src/triage.js'
 import { incomingPayload, PSEUDONYMIZATION_KEY, tenants } from './fixtures.js'
@@ -422,6 +422,37 @@ describe('MessageProcessor', () => {
     expect(presence.state.completeReply).toHaveBeenCalledWith('saas', 55)
   })
 
+  it('lets the brain answer a bare "???" that follows an unanswered customer question', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const nudge = setup({
+      autoSendEnabled: true,
+      answer: SAFE_ANSWER,
+      context: { turns: [
+        { role: 'assistant', text: 'Hey, ja — wir sind da. Wie können wir dir helfen?' },
+        { role: 'customer', text: 'Ich komme nicht in die App rein, was mache ich?' },
+        { role: 'customer', text: '???' },
+      ] },
+    })
+    await nudge.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: '???' }) })
+    expect(nudge.answer).toHaveBeenCalledWith(expect.objectContaining({ question: '???' }))
+    expect(nudge.sendMessage).not.toHaveBeenCalledWith(tenants[0], 77, 'Hey, ja — wir sind da. Wie können wir dir helfen?', 55, 'answer')
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('agent_nudge_open_question'))
+    logSpy.mockRestore()
+  })
+
+  it('keeps the greeting for a bare "???" when the last question was already answered', async () => {
+    const nudge = setup({
+      autoSendEnabled: true,
+      context: { turns: [
+        { role: 'customer', text: 'Ich komme nicht in die App rein, was mache ich?' },
+        { role: 'assistant', text: 'Setz bitte dein Passwort über „Passwort vergessen“ zurück.' },
+      ] },
+    })
+    await nudge.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content: '???' }) })
+    expect(nudge.answer).not.toHaveBeenCalled()
+    expect(nudge.sendMessage).toHaveBeenCalledWith(tenants[0], 77, 'Hey, ja — wir sind da. Wie können wir dir helfen?', 55, 'answer')
+  })
+
   it('laesst auch die deterministische Begruessung bei ausgeschaltetem Kill-Switch nur als Entwurf zu', async () => {
     const presence = setup()
 
@@ -673,7 +704,10 @@ describe('MessageProcessor', () => {
     for (const status of ['replied', 'handed_off', 'processing', 'sending'] as const) {
       const duplicate = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
       duplicate.state.beginDelivery.mockResolvedValueOnce({ status, acquired: false })
-      await duplicate.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+      const run = duplicate.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
+      // A still-claimed delivery must be retried later, never silently completed.
+      if (status === 'processing' || status === 'sending') await expect(run).rejects.toBeInstanceOf(DeliveryOwnedElsewhereError)
+      else await run
       expect(duplicate.sendMessage).not.toHaveBeenCalled()
       expect(duplicate.autoSend.reserve).not.toHaveBeenCalled()
       expect(duplicate.setPriority).not.toHaveBeenCalled()
@@ -1325,6 +1359,7 @@ describe('trusted customer execution context', () => {
     expect(f.loadCurrentSource).toHaveBeenCalledTimes(2)
   })
   it.each(['before_brain', 'before_send'])('does not act/send when superseded: %s', async stage => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const f = setup({ trustedSource: true, autoSendEnabled: true, answer: SAFE_ANSWER })
     if (stage === 'before_brain') f.loadCurrentSource.mockResolvedValueOnce(undefined)
     else f.answer.mockImplementationOnce(async () => { f.loadCurrentSource.mockResolvedValue(undefined); return SAFE_ANSWER })
@@ -1334,6 +1369,9 @@ describe('trusted customer execution context', () => {
     expect(f.saveDraft).not.toHaveBeenCalled()
     expect(f.state.completeWithoutReply).toHaveBeenCalledWith('saas', 55)
     expect(f.state.completeHandoff).not.toHaveBeenCalled()
+    const reason = stage === 'before_brain' ? 'source_changed_before_answer' : 'source_changed_before_send'
+    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`"event":"agent_delivery_completed_without_reply","reason":"${reason}".*"messageId":55`)))
+    logSpy.mockRestore()
   })
   it('does not acknowledge an already superseded sensitive request', async () => {
     const f = setup({ trustedSource: true, autoSendEnabled: true })

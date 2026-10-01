@@ -63,6 +63,11 @@ const SUPPORT_PRESENCE_REPLY = 'Hey, ja — wir sind da. Wie können wir dir hel
 const PRESENCE_OR_GREETING =
   /^(?:hallo|hi|hey|moin|guten morgen|guten tag|guten abend|ist jemand (?:da|hier)|seid ihr (?:da|hier)|jemand (?:da|hier)|koennt ihr mir helfen|kann mir jemand helfen|ich brauche hilfe|brauche hilfe)$/
 
+/** A message made only of question marks: the customer is nudging after silence. */
+export function isBareNudge(input: string): boolean {
+  return /^\s*\?+\s*$/.test(input)
+}
+
 /**
  * Antworten, die kein Wissensdokument brauchen. Nur vollstaendige, kurze
  * Praesenz-/Begruessungsfragen matchen; "Guten Morgen, mein Kunde wurde ..."
@@ -74,7 +79,7 @@ export function directSupportReply(input: string): string | undefined {
     .replace(/\s+/g, ' ')
     .trim()
   // A bare "???" is a nudge after silence, not an empty message.
-  if (!normalized && /^\s*\?+\s*$/.test(input)) return SUPPORT_PRESENCE_REPLY
+  if (!normalized && isBareNudge(input)) return SUPPORT_PRESENCE_REPLY
   return PRESENCE_OR_GREETING.test(normalized) ? SUPPORT_PRESENCE_REPLY : undefined
 }
 

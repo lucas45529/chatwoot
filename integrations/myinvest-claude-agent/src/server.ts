@@ -21,6 +21,7 @@ import { discoverAutomaticLearningSources, resolveAutomaticLearningSource } from
 import { ManualDraftService, proposalSchema } from './manual-draft.js'
 import { manualDraftHandler } from './manual-draft-route.js'
 import { autonomyStatusHandler } from './autonomy-status-route.js'
+import { createDeliveryJobHandler } from './delivery-worker.js'
 import { MessageProcessor } from './processor.js'
 import { DeliveryQueue, QUEUE_NAME, type DeliveryJob } from './queue.js'
 import { PostgresAgentState } from './state.js'
@@ -110,32 +111,11 @@ const worker =
     ? undefined
     : new Worker<DeliveryJob>(
         QUEUE_NAME,
-        async (job) => {
-          const tenant = config.tenants.requireByKey(job.data.tenantKey)
-          const maxAttempts = job.opts.attempts ?? 1
-          const isFinalAttempt = job.attemptsMade + 1 >= maxAttempts
-          try {
-            await processor.process({
-              tenant,
-              payload: job.data.payload,
-              isFinalAttempt,
-            })
-          } catch (error) {
-            if (isFinalAttempt) {
-              await processor.recordFinalFailure({ tenant, payload: job.data.payload, error })
-            }
-            try {
-              await state.failDelivery(tenant.key, job.data.payload.id)
-            } catch (stateError) {
-              console.error(
-                'Agent delivery failure could not be persisted',
-                job.id,
-                stateError instanceof Error ? stateError.message : String(stateError),
-              )
-            }
-            throw error
-          }
-        },
+        createDeliveryJobHandler({
+          processor,
+          state,
+          requireTenant: (key) => config.tenants.requireByKey(key),
+        }),
         { connection: redis.duplicate(), concurrency: 4 },
       )
 
