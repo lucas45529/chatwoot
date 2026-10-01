@@ -155,10 +155,13 @@ describe('WhatsApp audio review', () => {
   })
 
   it('drops a transcript if the customer source changes while it is processed', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const flow = processorFixture('Bitte überweise 500 Euro.')
     flow.loadCurrentSource.mockResolvedValueOnce(source).mockResolvedValueOnce(undefined)
     await flow.processor.process({ tenant, payload: incomingPayload({ content: '' }) })
     expect(flow.state.completeWithoutReply).toHaveBeenCalledWith('saas', 55)
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"reason":"source_changed_before_voice_draft"'))
+    logSpy.mockRestore()
     expect(flow.saveDraft).not.toHaveBeenCalled()
     expect(flow.sendMessage).not.toHaveBeenCalled()
   })

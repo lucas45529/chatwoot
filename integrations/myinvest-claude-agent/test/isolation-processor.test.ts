@@ -440,6 +440,23 @@ describe('MessageProcessor', () => {
     logSpy.mockRestore()
   })
 
+  it.each([
+    ['only a greeting before', [{ role: 'customer' as const, text: 'Hallo' }], '???'],
+    ['an earlier nudge after an answered question', [
+      { role: 'customer' as const, text: 'Wie lade ich Unterlagen hoch?' },
+      { role: 'assistant' as const, text: 'Über „Dokumente“ im Menü.' },
+      { role: 'customer' as const, text: '???' },
+    ], '???'],
+    ['a greeting (not a nudge) after an open question', [
+      { role: 'customer' as const, text: 'Ich komme nicht in die App rein, was mache ich?' },
+    ], 'Moin'],
+  ])('keeps the greeting with %s', async (_label, turns, content) => {
+    const nudge = setup({ autoSendEnabled: true, context: { turns } })
+    await nudge.processor.process({ tenant: tenants[0]!, payload: incomingPayload({ content }) })
+    expect(nudge.answer).not.toHaveBeenCalled()
+    expect(nudge.sendMessage).toHaveBeenCalledWith(tenants[0], 77, 'Hey, ja — wir sind da. Wie können wir dir helfen?', 55, 'answer')
+  })
+
   it('keeps the greeting for a bare "???" when the last question was already answered', async () => {
     const nudge = setup({
       autoSendEnabled: true,
@@ -1523,10 +1540,13 @@ describe('source-bound routine automation', () => {
     expect(f.autoSend.markSent).not.toHaveBeenCalled()
   })
   it('keeps a genuine non-handoff review draft eligible for a later routine message', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const f = setup({ trustedSource: true, autoSendEnabled: true })
     await f.processor.process({ tenant: tenants[0]!, payload: incomingPayload() })
     expect(f.state.completeHandoff).not.toHaveBeenCalled()
     expect(f.state.completeWithoutReply).toHaveBeenCalledWith('saas', 55)
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"reason":"draft_kept_for_automation"'))
+    logSpy.mockRestore()
     expect(f.handoff).not.toHaveBeenCalled()
     expect(f.assign).not.toHaveBeenCalled()
   })

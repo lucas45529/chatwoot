@@ -22,10 +22,13 @@ function setup(processError?: unknown) {
 }
 
 describe('delivery worker', () => {
-  it('retries a still-claimed delivery after the claim expires instead of dropping it', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {})
+  it.each([0, 2])('retries a still-claimed delivery after the claim expires instead of dropping it (attempt %i)', async attemptsMade => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const f = setup(new DeliveryOwnedElsewhereError('processing'))
+    f.job.attemptsMade = attemptsMade
     await expect(f.handle(f.job as never, 'token-1')).rejects.toBeInstanceOf(DelayedError)
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('"event":"agent_delivery_retry_after_claim"'))
+    logSpy.mockRestore()
     expect(f.job.moveToDelayed).toHaveBeenCalledWith(1_000 + OWNED_DELIVERY_RETRY_DELAY_MS, 'token-1')
     expect(OWNED_DELIVERY_RETRY_DELAY_MS).toBeGreaterThan(5 * 60_000)
     // The claim belongs to another run: this run must not touch the ledger.
@@ -40,7 +43,23 @@ describe('delivery worker', () => {
     await expect(f.handle(f.job as never, 'token-1')).rejects.toBe(error)
     expect(f.state.failDelivery).toHaveBeenCalledWith('saas', 55)
     expect(f.processor.recordFinalFailure).toHaveBeenCalledOnce()
+    expect(f.processor.process).toHaveBeenCalledWith(expect.objectContaining({ isFinalAttempt: true }))
     expect(f.job.moveToDelayed).not.toHaveBeenCalled()
+  })
+
+  it('leaves the human handoff to the final attempt only', async () => {
+    const f = setup(new Error('brain down'))
+    await expect(f.handle(f.job as never)).rejects.toThrow('brain down')
+    expect(f.processor.recordFinalFailure).not.toHaveBeenCalled()
+    expect(f.state.failDelivery).toHaveBeenCalledWith('saas', 55)
+  })
+
+  it('keeps the original error when the ledger update fails too', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const error = new Error('brain down')
+    const f = setup(error)
+    f.state.failDelivery.mockRejectedValueOnce(new Error('db down'))
+    await expect(f.handle(f.job as never)).rejects.toBe(error)
   })
 
   it('completes normally when processing succeeds', async () => {
