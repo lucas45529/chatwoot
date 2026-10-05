@@ -393,7 +393,22 @@ export class MessageProcessor {
     const humanInConversation =
       conversationContext.humanEverReplied ||
       conversationContext.turns.some((turn) => turn.role === 'human')
-    const humanOwned = humanInConversation || wasHandedOff || humanOnlyLabel
+    // Eine offene Terminpruefung der Website gehoert dem Team: Folgenachrichten
+    // wie "." oder "?" bekommen keine isolierte oeffentliche Antwort und keine
+    // zweite Aktion, solange kein Mensch geantwortet hat.
+    const websiteReviewOpen = conversationContext.websiteReviewOpen === true
+    if (websiteReviewOpen) {
+      console.log(
+        JSON.stringify({
+          event: 'agent_website_review_open',
+          tenant: tenant.key,
+          conversationId,
+          messageId: payload.id,
+        }),
+      )
+    }
+    const humanOwned =
+      humanInConversation || wasHandedOff || humanOnlyLabel || websiteReviewOpen
     if (humanInConversation || humanOnlyLabel || wasHandedOff) {
       await this.dependencies.autoSend.blockConversation({
         tenantKey: tenant.key,
@@ -718,7 +733,11 @@ export class MessageProcessor {
     }
     const liveVerdict = autoSendDecision({
       enabled: this.dependencies.autoSendEnabled,
-      humanInConversation: liveHuman || liveHumanOnlyLabel || liveHandedOff,
+      humanInConversation:
+        liveHuman ||
+        liveHumanOnlyLabel ||
+        liveHandedOff ||
+        liveContext.websiteReviewOpen === true,
       answer,
       binding: input.executionContext ? { requestId: supportBrainRequestId(this.dependencies.pseudonymizationKey, tenant.accountId, deliveryId), sourceMessageId: input.executionContext.sourceMessageId, reviewOnly: false } : undefined,
     })

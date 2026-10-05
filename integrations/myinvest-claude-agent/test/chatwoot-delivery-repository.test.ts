@@ -300,6 +300,42 @@ describe('PostgresChatwootDeliveryStore conversation context', () => {
     expect(metadataSql).toContain("NOT COALESCE(human_message.additional_attributes ? 'campaign_id', false)")
     expect(historySql).toContain('AS from_myinvest_outbound')
   })
+
+  it.each([
+    ['offen: Website-Notiz nach letzter Menschenantwort', 'needs_human', '1672', '1500', true],
+    ['erledigt: Mensch hat danach geantwortet', 'needs_human', '1672', '1700', false],
+    ['anderer Zustand', 'rebooking_done', '1672', null, false],
+    ['keine Website-Notiz', 'needs_human', null, null, false],
+  ])('Website-Terminpruefung %s', async (_, supportState, noteId, humanId, open) => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          conversation_id: '189',
+          contact_id: '9',
+          contact_email: null,
+          cached_label_list: '',
+          last_human_message_id: humanId,
+          last_agent_handoff_id: null,
+          last_agent_draft_note: null,
+          support_state: supportState,
+          last_website_note_id: noteId,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+    const store = new PostgresChatwootDeliveryStore({ query }, PSEUDONYMIZATION_KEY)
+    const context = await store.loadContext({
+      accountId: 1,
+      inboxId: 1,
+      conversationDisplayId: 189,
+      currentMessageId: 1642,
+    })
+    expect(context?.websiteReviewOpen === true).toBe(open)
+    const metadataSql = query.mock.calls[0]![0] as string
+    expect(metadataSql).toContain("'myinvest_support_state' AS support_state")
+    expect(metadataSql).toContain("COALESCE(website_note.source_id LIKE 'mip:note:%', false)")
+    expect(metadataSql).toContain('website_note.private = true')
+  })
 })
 
 it('scopes regenerated delivery deduplication to its generation while preserving legacy queries', async () => {

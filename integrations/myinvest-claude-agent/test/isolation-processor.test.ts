@@ -1212,6 +1212,60 @@ describe('MessageProcessor auto-send', () => {
     )
   })
 
+  it('Audit #189/1642: ein Punkt nach offener Website-Terminpruefung bekommt keine isolierte oeffentliche Antwort', async () => {
+    const reviewOpen = setup({
+      autoSendEnabled: true,
+      answer: SAFE_ANSWER,
+      context: {
+        turns: [
+          { role: 'customer', text: 'Um 13:30 Uhr kann ich nicht, deswegen habe ich den Termin um 17:45 Uhr gebucht' },
+          { role: 'assistant', text: '[Automatische Nachricht] Danke dir für den Hinweis zu deiner Buchung.' },
+        ],
+        websiteReviewOpen: true,
+      },
+    })
+    await reviewOpen.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: '.' }),
+    })
+
+    expect(reviewOpen.sendMessage).not.toHaveBeenCalled()
+    expect(reviewOpen.autoSend.reserve).not.toHaveBeenCalled()
+    // Der Fall bleibt beim Menschen: nur interner Entwurf, Gehirn ohne Aktionen.
+    expect(reviewOpen.answer).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewOnly: true }),
+    )
+    expect(reviewOpen.saveDraft).toHaveBeenCalled()
+  })
+
+  it('prueft eine waehrend des Gehirnaufrufs entstandene Website-Pruefung direkt vor dem Senden', async () => {
+    const lateReview = setup({ autoSendEnabled: true, answer: SAFE_ANSWER })
+    const first = await lateReview.loadContext()
+    lateReview.loadContext
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce({ ...first, websiteReviewOpen: true })
+    await lateReview.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Wie erstelle ich meinen ersten Kontakt?' }),
+    })
+    expect(lateReview.loadContext).toHaveBeenCalledTimes(3)
+    expect(lateReview.sendMessage).not.toHaveBeenCalled()
+    expect(lateReview.saveDraft).toHaveBeenCalled()
+  })
+
+  it('antwortet nach erledigter Website-Pruefung wieder normal', async () => {
+    const reviewDone = setup({
+      autoSendEnabled: true,
+      answer: SAFE_ANSWER,
+      context: { websiteReviewOpen: false },
+    })
+    await reviewDone.processor.process({
+      tenant: tenants[0]!,
+      payload: incomingPayload({ content: 'Wie erstelle ich meinen ersten Kontakt?' }),
+    })
+    expect(reviewDone.sendMessage).toHaveBeenCalledOnce()
+  })
+
   it('wendet den Human-Lock auch auf deterministische Begruessungen an', async () => {
     const afterHuman = setup({
       autoSendEnabled: true,

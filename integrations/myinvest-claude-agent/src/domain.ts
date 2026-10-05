@@ -73,6 +73,12 @@ export interface ConversationContext {
   previousAgentDraft?: string
   /** Recent private bot marker tied to an earlier customer source; routing only, never a document grant. */
   documentAssistanceActive?: boolean
+  /**
+   * Die Website hat dieses Gespraech zur menschlichen Terminpruefung markiert
+   * (`myinvest_support_state = needs_human`) und seither hat kein Mensch
+   * oeffentlich geantwortet. Bis dahin gehoert der Fall dem Team.
+   */
+  websiteReviewOpen?: boolean
   /** Serverseitige Produkt-/Kanalidentitaet der aktuellen Eingangsnachricht. */
   supportRouting?: SupportRoutingMetadata
 }

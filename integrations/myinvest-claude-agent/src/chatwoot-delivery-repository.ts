@@ -53,6 +53,8 @@ interface ContextMetadataRow extends Record<string, unknown> {
   document_assistance_active: boolean
   conversation_tenant: string | null
   conversation_channel: string | null
+  support_state: string | null
+  last_website_note_id: string | null
   source_tenant: string | null
 }
 
@@ -178,9 +180,19 @@ export class PostgresChatwootDeliveryStore
               conversation.cached_label_list,
               conversation.custom_attributes ->> 'myinvest_tenant' AS conversation_tenant,
               conversation.custom_attributes ->> 'myinvest_channel' AS conversation_channel,
+              conversation.custom_attributes ->> 'myinvest_support_state' AS support_state,
               CASE WHEN json_typeof(source_message.content_attributes) = 'string'
                    THEN (source_message.content_attributes #>> '{}')::json ->> 'myinvest_tenant'
                    ELSE source_message.content_attributes ->> 'myinvest_tenant' END AS source_tenant,
+              (
+                SELECT max(website_note.id)::text
+                  FROM messages AS website_note
+                 WHERE website_note.account_id = $1
+                   AND website_note.conversation_id = conversation.id
+                   AND website_note.inbox_id = conversation.inbox_id
+                   AND website_note.private = true
+                   AND COALESCE(website_note.source_id LIKE 'mip:note:%', false)
+              ) AS last_website_note_id,
               (
                 SELECT max(human_message.id)::text
                   FROM messages AS human_message
@@ -288,6 +300,11 @@ export class PostgresChatwootDeliveryStore
       humanEverReplied: lastHumanMessageId > 0,
       previousAgentDraft: extractAgentDraft(conversation.last_agent_draft_note),
       ...(conversation.document_assistance_active === true ? { documentAssistanceActive: true } : {}),
+      // Eine Website-Pruefnotiz ohne spaetere Menschenantwort haelt den Fall beim Team.
+      ...(conversation.support_state === 'needs_human' &&
+        Number(conversation.last_website_note_id ?? 0) > lastHumanMessageId
+        ? { websiteReviewOpen: true }
+        : {}),
       supportRouting: {
         conversationTenant: conversation.conversation_tenant,
         conversationChannel: conversation.conversation_channel,
