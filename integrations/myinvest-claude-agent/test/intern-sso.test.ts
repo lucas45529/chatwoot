@@ -264,4 +264,75 @@ describe('Beta embedded SSO cookie isolation', () => {
     await expect(service.createSession(ticket(), BETA_ORIGIN)).rejects.toMatchObject({ status: 409 })
     expect(request).not.toHaveBeenCalled()
   })
+
+  it('reuses one verified Chatwoot session instead of a login per open (login/ip throttle)', async () => {
+    const set = vi.fn().mockResolvedValue('OK')
+    const request = vi.fn(async (url: URL) =>
+      url.pathname === '/auth/sign_in' ? authResponse() : new Response('{}', { status: 200 }),
+    )
+    const service = new InternSsoService(config, { set }, request as unknown as typeof fetch, () => NOW)
+    for (let open = 0; open < 8; open += 1) {
+      const session = await service.createSession(ticket({ nonce: `abcdefghijklmnopqrstuv${open}x` }))
+      expect(session.cookie).toContain('cw_d_session_info=')
+    }
+    const signIns = request.mock.calls.filter(([url]) => url.pathname === '/auth/sign_in')
+    expect(signIns).toHaveLength(1)
+    const checks = request.mock.calls.filter(([url]) => url.pathname === '/api/v1/profile')
+    expect(checks).toHaveLength(7)
+    expect(checks[0]![1]).toMatchObject({ method: 'GET', headers: expect.objectContaining({ 'access-token': 'private-access-token', client: 'private-client', uid: 'support@example.com' }) })
+    // Every open still consumes its own one-time ticket.
+    expect(set).toHaveBeenCalledTimes(8)
+  })
+
+  it('signs in again when the cached session was revoked, and never reuses one close to expiry', async () => {
+    let profileStatus = 200
+    const request = vi.fn(async (url: URL) =>
+      url.pathname === '/auth/sign_in' ? authResponse() : new Response('{}', { status: profileStatus }),
+    )
+    let now = NOW
+    const service = new InternSsoService(config, { set: vi.fn().mockResolvedValue('OK') }, request as unknown as typeof fetch, () => now)
+    const signIns = () => request.mock.calls.filter(([url]) => url.pathname === '/auth/sign_in').length
+    await service.createSession(ticket())
+    profileStatus = 401
+    await service.createSession(ticket({ nonce: 'revokedrevokedrevoked1' }))
+    expect(signIns()).toBe(2)
+    profileStatus = 200
+    now = NOW + 14 * 24 * 60 * 60 - 60 * 60
+    await service.createSession(ticket({ iat: now, exp: now + 45, nonce: 'nearexpirynearexpiry1' }))
+    expect(signIns()).toBe(3)
+  })
+
+  it('shares one in-flight login between parallel opens', async () => {
+    let release: (value: Response) => void = () => {}
+    const request = vi.fn((url: URL) =>
+      url.pathname === '/auth/sign_in' ? new Promise<Response>((resolve) => { release = resolve }) : Promise.resolve(new Response('{}', { status: 200 })),
+    )
+    const service = new InternSsoService(config, { set: vi.fn().mockResolvedValue('OK') }, request as unknown as typeof fetch, () => NOW)
+    const first = service.createSession(ticket({ nonce: 'parallelparallelpara1' }))
+    const second = service.createSession(ticket({ nonce: 'parallelparallelpara2' }))
+    await vi.waitFor(() => expect(request).toHaveBeenCalled())
+    release(authResponse())
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+    expect(request.mock.calls.filter(([url]) => url.pathname === '/auth/sign_in')).toHaveLength(1)
+  })
+
+  it('keeps the session and counts no login when Chatwoot is only briefly unhealthy', async () => {
+    let profile: () => Promise<Response> = async () => new Response('{}', { status: 200 })
+    const request = vi.fn(async (url: URL) => (url.pathname === '/auth/sign_in' ? authResponse() : profile()))
+    const service = new InternSsoService(config, { set: vi.fn().mockResolvedValue('OK') }, request as unknown as typeof fetch, () => NOW)
+    const signIns = () => request.mock.calls.filter(([url]) => url.pathname === '/auth/sign_in').length
+    await service.createSession(ticket())
+    for (const [index, failure] of [
+      async () => new Response('{}', { status: 503 }),
+      async () => new Response('{}', { status: 429 }),
+      async () => { throw new Error('socket hang up') },
+    ].entries()) {
+      profile = failure
+      await expect(service.createSession(ticket({ nonce: `transienttransient${index}xx` }))).rejects.toMatchObject({ status: 502 })
+    }
+    profile = async () => new Response('{}', { status: 200 })
+    await service.createSession(ticket({ nonce: 'recoveredrecovered1xx' }))
+    expect(signIns()).toBe(1)
+    for (const [, init] of request.mock.calls) expect(init?.signal).toBeInstanceOf(AbortSignal)
+  })
 })

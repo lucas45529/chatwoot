@@ -141,6 +141,16 @@ function sessionCookie(
   return `cw_d_session_info=${value}; Path=/; Max-Age=${maxAge}; Expires=${new Date(expiry * 1_000).toUTCString()}; Secure; ${isolation}`
 }
 
+/** Never hand out a reused session with less than a day left. */
+const SESSION_REUSE_MIN_REMAINING_SECONDS = 24 * 60 * 60
+/** Same bound as the rest of the sidecar's Chatwoot calls. */
+const CHATWOOT_TIMEOUT_MS = 10_000
+
+interface ChatwootSession {
+  headers: Record<string, string>
+  expiry: number
+}
+
 export class InternSsoService {
   constructor(
     private readonly config: InternSsoConfig,
@@ -148,6 +158,117 @@ export class InternSsoService {
     private readonly request: typeof fetch = fetch,
     private readonly now: () => number = () => Math.floor(Date.now() / 1000),
   ) {}
+
+  /**
+   * Chatwoot throttles `/auth/sign_in` to 5 logins per IP in 5 minutes, and
+   * every SSO login comes from this container's one IP. A fresh login per
+   * opened Postfach locked the whole team out with 502 after five opens. The
+   * shared support session is therefore reused while Chatwoot still accepts
+   * it (`change_headers_on_each_request` is off, tokens are static) and is
+   * verified per open with an authenticated GET that the login throttle does
+   * not count. Only a 401 forces a new login; a transient Chatwoot error keeps
+   * the session and fails this open. Parallel opens share one in-flight login.
+   * Trade-off: "Log out" inside one embed revokes the shared token, so other
+   * open embeds see 401 until they are reopened through SSO.
+   */
+  private cached: ChatwootSession | null = null
+  private pendingLogin: Promise<ChatwootSession> | null = null
+
+  private async chatwootSession(now: number): Promise<ChatwootSession> {
+    const cached = this.cached
+    if (cached && cached.expiry - now > SESSION_REUSE_MIN_REMAINING_SECONDS) {
+      const probe = await this.probe(cached)
+      if (probe === 'accepted') return cached
+      // Chatwoot briefly unhealthy: keep the session, count no login.
+      if (probe === 'unavailable') {
+        throw new InternSsoError(502, 'Chatwoot session check unavailable')
+      }
+      // Revoked (e.g. "Log out" in an embed). A parallel open may already
+      // hold a fresh one.
+      if (this.cached !== cached && this.cached) return this.cached
+      if (this.cached === cached) this.cached = null
+    }
+    this.pendingLogin ??= this.signIn(now).finally(() => {
+      this.pendingLogin = null
+    })
+    return this.pendingLogin
+  }
+
+  private async probe(session: ChatwootSession): Promise<'accepted' | 'revoked' | 'unavailable'> {
+    let response: Response
+    try {
+      response = await this.request(
+        new URL('/api/v1/profile', this.config.chatwootBaseUrl),
+        {
+          method: 'GET',
+          redirect: 'manual',
+          signal: AbortSignal.timeout(CHATWOOT_TIMEOUT_MS),
+          headers: {
+            'access-token': session.headers['access-token']!,
+            client: session.headers.client!,
+            uid: session.headers.uid!,
+            'token-type': session.headers['token-type']!,
+            'user-agent': 'MyInvest-Intern-SSO/1',
+            'x-forwarded-proto': 'https',
+          },
+        },
+      )
+    } catch {
+      return 'unavailable'
+    }
+    if (response.status === 200) return 'accepted'
+    return response.status === 401 ? 'revoked' : 'unavailable'
+  }
+
+  private async signIn(now: number): Promise<ChatwootSession> {
+    let authResponse: Response
+    try {
+      authResponse = await this.request(
+        new URL('/auth/sign_in', this.config.chatwootBaseUrl),
+        {
+          method: 'POST',
+          redirect: 'manual',
+          signal: AbortSignal.timeout(CHATWOOT_TIMEOUT_MS),
+          headers: {
+            'content-type': 'application/json',
+            'user-agent': 'MyInvest-Intern-SSO/1',
+            'x-forwarded-proto': 'https',
+          },
+          body: JSON.stringify({
+            email: this.config.email,
+            password: this.config.password,
+          }),
+        },
+      )
+    } catch {
+      throw new InternSsoError(502, 'Chatwoot authentication unavailable')
+    }
+    if (authResponse.status !== 200) {
+      throw new InternSsoError(502, 'Chatwoot authentication rejected')
+    }
+
+    const required = ['access-token', 'client', 'expiry', 'token-type', 'uid'] as const
+    const authHeaders: Record<string, string> = {}
+    for (const name of required) {
+      const value = authResponse.headers.get(name)
+      if (!value) throw new InternSsoError(502, 'Chatwoot authentication incomplete')
+      authHeaders[name] = value
+    }
+    const authorization = authResponse.headers.get('authorization')
+    if (authorization) authHeaders.authorization = authorization
+    const expiry = Number(authHeaders.expiry)
+    if (
+      !Number.isSafeInteger(expiry) ||
+      expiry <= now ||
+      expiry > now + 90 * 24 * 60 * 60
+    ) {
+      throw new InternSsoError(502, 'Chatwoot authentication expiry invalid')
+    }
+
+    const session = { headers: authHeaders, expiry }
+    this.cached = session
+    return session
+  }
 
   async createSession(token: string, requestOrigin?: string): Promise<InternSsoSession> {
     if (!isInternEmbedOrigin(this.config.embedOrigin ?? BETA_EMBED_ORIGIN) ||
@@ -186,48 +307,7 @@ export class InternSsoService {
     }
     if (claimed !== 'OK') throw new InternSsoError(409, 'ticket already used')
 
-    let authResponse: Response
-    try {
-      authResponse = await this.request(
-        new URL('/auth/sign_in', this.config.chatwootBaseUrl),
-        {
-          method: 'POST',
-          redirect: 'manual',
-          headers: {
-            'content-type': 'application/json',
-            'user-agent': 'MyInvest-Intern-SSO/1',
-            'x-forwarded-proto': 'https',
-          },
-          body: JSON.stringify({
-            email: this.config.email,
-            password: this.config.password,
-          }),
-        },
-      )
-    } catch {
-      throw new InternSsoError(502, 'Chatwoot authentication unavailable')
-    }
-    if (authResponse.status !== 200) {
-      throw new InternSsoError(502, 'Chatwoot authentication rejected')
-    }
-
-    const required = ['access-token', 'client', 'expiry', 'token-type', 'uid'] as const
-    const authHeaders: Record<string, string> = {}
-    for (const name of required) {
-      const value = authResponse.headers.get(name)
-      if (!value) throw new InternSsoError(502, 'Chatwoot authentication incomplete')
-      authHeaders[name] = value
-    }
-    const authorization = authResponse.headers.get('authorization')
-    if (authorization) authHeaders.authorization = authorization
-    const expiry = Number(authHeaders.expiry)
-    if (
-      !Number.isSafeInteger(expiry) ||
-      expiry <= now ||
-      expiry > now + 90 * 24 * 60 * 60
-    ) {
-      throw new InternSsoError(502, 'Chatwoot authentication expiry invalid')
-    }
+    const { headers: authHeaders, expiry } = await this.chatwootSession(now)
 
     return {
       location: this.config.returnPath,
