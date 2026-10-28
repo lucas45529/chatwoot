@@ -10,7 +10,7 @@ provider clients or messaging credentials.
   NOCREATEROLE/NOREPLICATION. Apply `sql/learning-gateway-role.sql` in the agent
   database using one administrator transaction. It grants only knowledge
   candidate/document reads and writes, append-only learning audit, and durable
-  nonce claims. It does not grant delivery, customer mail or schema access.
+  nonce claims. It does not grant delivery, customer mail or schema modification privileges.
 - Initialize one new login password in the protected gateway environment store;
   do not alter an existing role credential. If a role already exists without its
   owned protected store, stop and resolve ownership.
@@ -45,8 +45,12 @@ claims live in the new PostgreSQL nonce table.
 5. Before routing, test all three signed automatic/status requests directly
    against the sidecar and reject invalid HMAC/replay/unsupported tenant/action.
    Do not claim/evaluate/publish production candidates or send test messages.
-6. Validate the complete merged Caddyfile, then switch only its existing learning
-   upstream with a normal reload. Re-read the live mounted file and verify the
+6. Keep `LEARNING_GATEWAY_CADDYFILE` pinned to the currently mounted live file.
+   Save its exact protected prestate, compare its current bytes/inode before
+   writing, then write only the reviewed merged bytes to the same inode and
+   fsync. An atomic rename would leave the running file bind mount on old data.
+   Validate the complete merged Caddyfile before the write, then use a normal
+   reload; restore the exact prestate in place if validation/reload fails. Re-read the live mounted file and verify the
    public signed status path. Confirm old customer agent image/start time is
    unchanged. Preserve all original compose files and the previous Caddyfile
    as the precise rollback reference.

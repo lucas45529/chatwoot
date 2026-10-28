@@ -14,7 +14,7 @@ it.skipIf(!process.env.LEARNING_TEST_DATABASE_URL)('proves least privilege and d
     await client.query('BEGIN')
     for (const migration of ['001_knowledge.sql', '002_learning.sql', '003_redaction_refresh.sql', '004_redaction_rereview.sql'])
       await client.query(readFileSync(new URL(`../migrations/${migration}`, import.meta.url), 'utf8'))
-    await client.query('CREATE TABLE agent_delivery_ledger (id bigint); CREATE TABLE customer_mail_credentials (id bigint)')
+    await client.query('CREATE TABLE IF NOT EXISTS agent_delivery_ledger (id bigint); CREATE TABLE customer_mail_credentials (id bigint)')
     await client.query(readFileSync(process.env.LEARNING_GATEWAY_ROLE_SQL ?? new URL('../../../deployment/myinvest/sql/learning-gateway-role.sql', import.meta.url), 'utf8'))
     await client.query('SET LOCAL ROLE mi_support_learning')
     const identity = await client.query(`SELECT current_user AS role, rolsuper, rolcreaterole, rolcreatedb,

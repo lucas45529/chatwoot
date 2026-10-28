@@ -33,6 +33,45 @@ class LearningGatewayCaddyTests(unittest.TestCase):
         self.assertEqual(changed.count('reverse_proxy claude-agent:8080'), 2)
         self.assertEqual(changed.replace('reverse_proxy support-learning:8080', 'reverse_proxy claude-agent:8080'), SOURCE)
 
+    def test_mismatched_indentation_cannot_capture_following_customer_route(self):
+        source = '''support.example.test {
+    handle /_agent/learning {
+        reverse_proxy current-learning:8080
+  }
+    handle /_agent/webhooks/chatwoot {
+        reverse_proxy claude-agent:8080
+    }
+}
+'''
+        with self.assertRaises(ValueError):
+            module.prepare_learning_caddy(source)
+
+    def test_valid_learning_route_uses_braces_not_closing_indentation(self):
+        source = '''support.example.test {
+    handle /_agent/learning {
+        reverse_proxy claude-agent:8080
+  }
+    handle /_agent/webhooks/chatwoot {
+        reverse_proxy claude-agent:8080
+    }
+}
+'''
+        changed = module.prepare_learning_caddy(source)
+        self.assertEqual(changed.count('reverse_proxy support-learning:8080'), 1)
+        self.assertIn('handle /_agent/webhooks/chatwoot {\n        reverse_proxy claude-agent:8080', changed)
+
+    def test_ignores_comment_and_quoted_braces_or_upstream_text(self):
+        source = SOURCE.replace('uri strip_prefix /_agent', 'header X-Note "{ reverse_proxy claude-agent:8080 }"\n        # } reverse_proxy claude-agent:8080\n        uri strip_prefix /_agent')
+        changed = module.prepare_learning_caddy(source)
+        self.assertIn('header X-Note "{ reverse_proxy claude-agent:8080 }"', changed)
+        self.assertIn('# } reverse_proxy claude-agent:8080', changed)
+        self.assertEqual(changed.count('reverse_proxy support-learning:8080'), 1)
+
+    def test_refuses_unclosed_file_block_or_quote(self):
+        for source in [SOURCE[:SOURCE.index('    handle /_agent/draft')].rstrip(), SOURCE + '\n"unclosed']:
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                module.prepare_learning_caddy(source)
+
     def test_is_idempotent(self):
         first = module.prepare_learning_caddy(SOURCE)
         self.assertEqual(module.prepare_learning_caddy(first), first)
