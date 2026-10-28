@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import type { TenantRegistry } from '../config.js'
+import type { LearningTenantRegistry } from './gateway-config.js'
 import { tenantKeySchema, type TenantKey } from '../domain.js'
 import { extractAgentDraft } from '../chatwoot-delivery-repository.js'
 import { resolveSupportRoute } from '../support-routing.js'
@@ -567,7 +567,7 @@ function sourceFromRow(row: CandidateRow): AutomaticLearningSource | undefined {
   }
 }
 
-function configuredTenants(tenants: TenantRegistry) {
+function configuredTenants(tenants: LearningTenantRegistry) {
   return tenants.all.filter(
     (
       tenant,
@@ -579,7 +579,7 @@ function configuredTenants(tenants: TenantRegistry) {
 
 export async function discoverAutomaticLearningSources(
   database: ChatwootLearningQueryable,
-  tenants: TenantRegistry,
+  tenants: LearningTenantRegistry,
   options: DiscoverAutomaticLearningSourcesOptions = {},
 ): Promise<AutomaticLearningDiscovery> {
   const limit = z.number().int().min(1).max(100).parse(options.limit ?? 50)
@@ -631,7 +631,7 @@ export async function discoverAutomaticLearningSources(
 
 export async function resolveAutomaticLearningSource(
   database: ChatwootLearningQueryable,
-  tenants: TenantRegistry,
+  tenants: LearningTenantRegistry,
   input: {
     source: AutomaticLearningSourceIds
     contentHash: string

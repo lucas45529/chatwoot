@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { loadConversationHistory } from '../conversation-history.js'
 import type { SupportBrainHistoryTurn, SupportChannel } from '../support-brain.js'
-import type { TenantRegistry } from '../config.js'
+import type { LearningTenantRegistry } from './gateway-config.js'
 import type { TenantKey } from '../domain.js'
 import { extractAgentDraft } from '../chatwoot-delivery-repository.js'
 import { resolveSupportRoute } from '../support-routing.js'
@@ -34,7 +34,7 @@ interface ReadonlyDatabase {
  * IDs, never an authoritative question, original answer or tenant. The
  * configured bot ID avoids granting the runtime access to credential tables. */
 export class PostgresLearningSourceResolver implements LearningSourceResolver {
-  constructor(private readonly database: ReadonlyDatabase, private readonly tenants: TenantRegistry) {}
+  constructor(private readonly database: ReadonlyDatabase, private readonly tenants: LearningTenantRegistry) {}
 
   async resolve(input: LearningSource): Promise<ResolvedLearningSource> {
     const parsed = learningSourceSchema.safeParse(input)

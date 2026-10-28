@@ -1,0 +1,31 @@
+services:
+  support-learning:
+    image: ${LEARNING_GATEWAY_IMAGE:?Set the verified immutable learning gateway image}
+    user: "10003:10003"
+    command: ["node", "dist/learning-server.js"]
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ${LEARNING_GATEWAY_ENV_FILE:?Set the protected learning-only environment file}
+    environment:
+      NODE_ENV: production
+      RUN_MODE: web
+      AUTO_SEND_ENABLED: "false"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 768m
+    cpus: "1.0"
+    pids_limit: 128
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+  caddy:
+    volumes:
+      - ${LEARNING_GATEWAY_CADDYFILE:?Set the reviewed merged Caddyfile}:/etc/caddy/Caddyfile:ro
